@@ -285,43 +285,36 @@ function cjkDenseSession(turns: number, charsPerMessage: number): Session {
   return session
 }
 
-test('kernel range source: CJK sessions lose ranges to the kernel char-based merge floor (0.0.101 characterization)', () => {
-  // Kernel 0.0.101 rewrote `mergeRangesToThreshold`: it batches candidates by
-  // ARRAY-INDEX GAPS and DROPS any batch below `minCompressRange`. That floor is
-  // counted in CHARS, while every other threshold on the nudge path is counted in
-  // TOKENS — and CJK carries ~1 token per char, so a CJK-heavy batch clears the
-  // token floor while still sitting under the char floor and is thrown away.
+test('kernel range source: CJK sessions keep every range under the token-based merge floor (#511 fix)', () => {
+  // Pin: acp-kernel 0.0.101-pr.512.369 (PR #512, closes issue #511). Upstream
+  // 0.0.101 sized `minCompressRange` in CHARS while every other threshold on this
+  // path counts TOKENS: CJK carries ~1 token per char and latin ~1 per 4, so a
+  // CJK-heavy batch cleared the token floor, died on the char floor, and — since
+  // 0.0.101 batches by array-index gaps and DROPS any batch below the floor — the
+  // whole tail disappeared. On this fixture the table offered 6 ranges in latin
+  // and only 3 in CJK, so consumed tool output could not be compressed at all in
+  // the most common (CJK) language scenario.
   //
-  // Consequence on this fixture (6 structurally identical work turns): with latin
-  // text the table offers 6 ranges; with CJK text of the same shape it offers 3,
-  // so the whole tail is unreclaimable — the model cannot compress those consumed
-  // tool outputs at all, which is the one thing the range table exists for.
+  // PR #512 counts the floor in tokens (default 1250) and the tail returns: the
+  // CJK fixture now offers MORE ranges than the latin one, because the same token
+  // floor is met by short CJK messages the char floor used to discard.
   //
-  // The CONTROL is what proves the gate is the char floor rather than "small CJK
-  // content": growing the same fixture's per-message size from 1600 to 4000 chars
-  // brings the latin count back. Flip these numbers — and the margin comment in
-  // `tests/kernel-count-tokens-default.test.ts` — when the kernel stops sizing
-  // that floor in chars; the real fix belongs upstream, not here.
-  //
-  // UPSTREAM: https://github.com/ranxianglei/acp-kernel/issues/511 (filed
-  // 2026-10-08) — the floor is compared against CHARACTERS while every other
-  // threshold on this path is token-based. When that fix ships: bump the pin,
-  // then flip this test from characterization to regression (the CJK fixture must
-  // offer the same 6 ranges as the latin control) and delete this marker.
-  // Tracked in docs/upstream-tracker.md.
+  // RE-VERIFY when the fix reaches an official release: bump the pin to that
+  // version, re-run this file, and keep these numbers (they are the fixed
+  // behavior, not a characterization). Tracked in docs/upstream-tracker.md.
   const latinSession = denseSession(6)
   const latin = buildCompressibleSeqRanges(latinSession, kernelProbe(latinSession).view, { preserveRecent: 0 })
   assert.equal(latin.length, 6, 'the latin fixture offers one range per work turn')
 
   const cjkSession = cjkDenseSession(6, 1600)
   const cjk = buildCompressibleSeqRanges(cjkSession, kernelProbe(cjkSession).view, { preserveRecent: 0 })
-  assert.equal(cjk.length, 3, 'CJK: the char-based merge floor drops the tail ranges')
+  assert.equal(cjk.length, 7, 'CJK: the token-based merge floor keeps every range (was 3 under the char floor)')
   assert.ok(
-    cjk[cjk.length - 1]!.end < latin[latin.length - 1]!.end,
-    'the dropped tail is real: the CJK table stops well before the latin one',
+    cjk[cjk.length - 1]!.end >= latin[latin.length - 1]!.end,
+    'the CJK table no longer stops short of the latin one',
   )
 
   const biggerSession = cjkDenseSession(6, 4000)
   const bigger = buildCompressibleSeqRanges(biggerSession, kernelProbe(biggerSession).view, { preserveRecent: 0 })
-  assert.equal(bigger.length, 6, 'control: larger CJK messages clear the CHAR floor and the ranges return')
+  assert.equal(bigger.length, 7, 'control: larger CJK messages keep the same range count')
 })
