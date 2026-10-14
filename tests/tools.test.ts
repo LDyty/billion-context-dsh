@@ -507,7 +507,11 @@ test('M3: acp_status renders the upstream kernel breakdown without window rows',
   // — a live checkpoint seq per ACTIVE block (the report itself is blind to
   // summary nodes, rule 9). After one tier-1 compress, b1 must map to its
   // checkpoint seq.
-  assert.match(filledText, /Checkpoint seqs \(active blocks — compress a checkpoint seq to distill it\): b\d+ → seq \d+/, 'active blocks map their kernel ref to the checkpoint seq — the distill entry point')
+  assert.match(
+    filledText,
+    /Checkpoint seqs \(active blocks — compress a checkpoint seq to distill it; [^)]*\): b\d+ → seq \d+/,
+    'active blocks map their kernel ref to the checkpoint seq — the distill entry point',
+  )
   assert.ok(!/estimated context/.test(filledText), 'still no window-occupancy row after compression')
   assert.ok(!/context window/.test(filledText), 'still no window row after compression')
 })

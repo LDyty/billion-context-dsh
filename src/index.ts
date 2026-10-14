@@ -239,6 +239,13 @@ export interface AcpConfig {
    * reached if the plumbing broke). Default: enabled.
    */
   readonly settingsEnabled?: boolean
+  /**
+   * How `compress` handles a plain range that crosses a LIVE block's
+   * checkpoint carrier: `split` (default) folds the runs around the carrier(s)
+   * and keeps them visible; `reject` restores the old hard refusal with the
+   * block-id recipe. Composition-layer switch (not a settings knob).
+   */
+  readonly carrierSpans?: 'split' | 'reject'
   /** Per-stage prompt template overrides (nudge / range table / system prompt / tool descriptions). See docs/configurable-prompts-design.md. */
   readonly prompts?: AcpPrompts
 }
@@ -248,6 +255,10 @@ const DEFAULT_CONFIG: AcpConfig = {
   autoTools: true,
   autoCommand: true,
   autoNudge: true,
+  // Salvage spans that cross a live carrier instead of bouncing them back: the
+  // model reads those ranges off acp_status (which does not break at carriers)
+  // and otherwise retries the same span (live-measured, 2026-10-13).
+  carrierSpans: 'split',
   // Same default as the host's compaction-basic policy: one owned retry per
   // unrelieved overflow, then the original error is preserved.
   maxOverflowRetries: 1,
@@ -617,6 +628,7 @@ export class AcpCompactionEngine extends CompactionEngine {
       get nudgeMaxContextLimitPct() { return engine.readSettingsSource().nudgeMaxContextLimitPct },
       get nudgeEmergencyThresholdPct() { return engine.readSettingsSource().nudgeEmergencyThresholdPct },
       coreOverrides: this.config.coreOverrides,
+      carrierSpans: this.config.carrierSpans,
       // Display-only: which named preset produced the thresholds above (if any),
       // so /acp-prune status can name it. The resolved pct values above are what the
       // kernel actually reads — this field never feeds kernelConfigFor.
@@ -735,6 +747,15 @@ export class AcpCompactionEngine extends CompactionEngine {
           // letting the silence look like a bug (issue #108 review).
           ctx.logger.warn(
             `billion-context-dsh: emergency nudge suppressed — per-turn budget of ${EMERGENCY_NUDGE_MAX_PER_TURN} spent (session ${payload.agent.session.id}); pressure is still above the emergency threshold`,
+          )
+        },
+        (kind) => {
+          // The kernel wants a nudge but the offered range table is empty: the
+          // surface is fragmented by injected control rows (or the reclaimable
+          // spans sit below the kernel's merge floor), so "compress now" would
+          // have no legal target. Log the reason instead of injecting it.
+          ctx.logger.warn(
+            `billion-context-dsh: ${kind} nudge suppressed — no compressible range is on offer (session ${payload.agent.session.id}); the surface is fragmented by injected rows or the remaining spans are below the kernel floor`,
           )
         },
       )

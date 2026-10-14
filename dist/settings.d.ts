@@ -145,6 +145,13 @@ export declare const AcpPluginConfigSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeMaxContextLimitPct: z<number, number, "plain">;
     nudgeEmergencyThresholdPct: z<number, number, "plain">;
     autoNudge: z<boolean, boolean, "plain">;
+    /**
+     * Composition-layer policy for a plain range that crosses a live block's
+     * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
+     * a behavior switch, not a tuning knob, so it stays out of the settings form
+     * and is edited in the profile patch like `autoTools` / `settingsEnabled`.
+     */
+    carrierSpans: z<"reject" | "split", "reject" | "split", "plain">;
 }>>, Schemastery.ObjectT<NoInfer<{
     modelContextLimit: z<number, number, "plain">;
     autoModelContextLimit: z<boolean, boolean, "plain">;
@@ -152,6 +159,13 @@ export declare const AcpPluginConfigSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeMaxContextLimitPct: z<number, number, "plain">;
     nudgeEmergencyThresholdPct: z<number, number, "plain">;
     autoNudge: z<boolean, boolean, "plain">;
+    /**
+     * Composition-layer policy for a plain range that crosses a live block's
+     * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
+     * a behavior switch, not a tuning knob, so it stays out of the settings form
+     * and is edited in the profile patch like `autoTools` / `settingsEnabled`.
+     */
+    carrierSpans: z<"reject" | "split", "reject" | "split", "plain">;
 }>>, "plain">;
 /** What changed between two settings snapshots, and what the engine must do about it. */
 export interface SettingsChangeEffect {

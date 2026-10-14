@@ -209,6 +209,13 @@ export const AcpPluginConfigSchema = z.object({
   nudgeMaxContextLimitPct: markVolatile(z.number().min(0).max(1)),
   nudgeEmergencyThresholdPct: markVolatile(z.number().min(0).max(1)),
   autoNudge: markVolatile(z.boolean()),
+  /**
+   * Composition-layer policy for a plain range that crosses a live block's
+   * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
+   * a behavior switch, not a tuning knob, so it stays out of the settings form
+   * and is edited in the profile patch like `autoTools` / `settingsEnabled`.
+   */
+  carrierSpans: z.union([z.const('split'), z.const('reject')]),
 })
 
 /** What changed between two settings snapshots, and what the engine must do about it. */

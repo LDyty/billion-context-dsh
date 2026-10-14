@@ -552,6 +552,32 @@ export function checkpointCompactionIdOf(event: SessionEvent): string | null {
  */
 export type SurfaceEventClass = 'real' | 'metadata' | 'checkpoint' | 'instruction'
 
+/**
+ * Host "state echo" channels that are safe to fold ONCE SUPERSEDED.
+ *
+ * Every one of these writes a fresh row whenever the host's state changes, so
+ * only the NEWEST row of a kind carries current state; older rows are history,
+ * exactly like a finished turn — and unlike an AGENTS.md row they are never
+ * re-injected for being absent (the host writes the next one on its own
+ * schedule or on the next round).
+ *
+ * They stay barriers by default for the conservative reason in
+ * `classifySurfaceEvent` (an unaudited direct kind must not silently become
+ * compressible). Treating the stale ones as foldable fixes the 2026-10-14
+ * fragmentation: 241 such rows (goal 186 / time-context 20 / team-message 17)
+ * on a 906-node surface split it into 3-4 node runs, the offered range table
+ * collapsed to six entries (three the same span, one ~0 tokens), pressure kept
+ * rising and the nudge asked for a compression with no legal target. The newest
+ * row of each kind stays a barrier — that is the row the model needs to see.
+ */
+export const STALE_FOLDABLE_HOST_KINDS: ReadonlySet<string> = new Set([
+  'goal', // goal round driver: one row per round
+  'tool-goal', // goal tool echo
+  'time-context', // periodic time snapshot
+  'team-message', // agent-team delivery (conversation content, one-shot)
+  'agent-message', // message from another agent
+])
+
 /** Plugin names the engine itself authors — safe to fold into real segments. */
 export const METADATA_PLUGINS: ReadonlySet<string> = new Set([
   'acp-nudge', // nudge echo (src/nudge.ts)

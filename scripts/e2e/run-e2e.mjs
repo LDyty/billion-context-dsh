@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { Context } from '@deepseek-ai/cordis'
 import { foldSurface } from '@deepseek-ai/dsh-session'
-const scenarioNames = ['basic-compress', 'nudge-rhythm', 'compress-then-decompress', 'acp-status', 'overflow-recovery', 'jsonl-compress']
+const scenarioNames = ['basic-compress', 'nudge-rhythm', 'compress-then-decompress', 'acp-status', 'overflow-recovery', 'jsonl-compress', 'carrier-split']
 const countsOf = (events) => {
   const starts = events.filter((event) => event.type === 'compaction/start').length
   const ends = events.filter((event) => event.type === 'compaction/end').length
@@ -345,7 +345,33 @@ const checksJsonlCompress = (result, stored) => {
   list.push(['stored: conversation continued after the transaction', stored.some((event) => event.type === 'assistant/message' && event.seq > endSeq), ''])
   return list
 }
-const checksOf = { 'basic-compress': checksBasic, 'nudge-rhythm': checksRhythm, 'compress-then-decompress': checksDecompress, 'acp-status': checksStatus, 'overflow-recovery': checksOverflow, 'jsonl-compress': checksJsonlCompress }
+/**
+ * The carrier-split scenario is the live shape the split policy exists for: a
+ * middle exchange is compressed into a checkpoint (the carrier), more traffic
+ * lands, and then a PLAIN range spanning the carrier from an earlier to a later
+ * live node is requested. Pre-policy that call came back "Compressed 0 block(s) …
+ * still-active block"; the split policy folds the runs around the carrier and
+ * leaves it on the surface.
+ */
+const checksCarrierSplit = (result) => {
+  const list = []
+  const summaries = result.events.filter((event) => event.type === 'compaction/summary')
+  const carriers = result.events.filter((event) => event.type === 'user/message' && event.data?.source?.kind === 'compact-checkpoint')
+  list.push(['a checkpoint carrier was written', carriers.length >= 1, `carriers=${carriers.length}`])
+  list.push(['no hard refusal for the crossing span', !containsOf(result.events, 'still-active block'), ''])
+  list.push(['the split is reported', containsOf(result.events, 'split around checkpoint'), ''])
+  list.push(['the split names what stayed visible', containsOf(result.events, 'stay visible'), ''])
+  list.push(['the folded runs landed as their own blocks', summaries.length >= 3, `summaries=${summaries.length} (1 middle + 2 runs)`])
+  list.push([
+    'the carrier is still on the surface',
+    carriers.length > 0 && carriers.every((event) => result.surfaceNodes.includes(event.seq)),
+    `surface=${result.surfaceNodes.join(',')}`,
+  ])
+  list.push(['conversation continued after end', continuationOf(result.events, lastEndSeq(result.events)), ''])
+  list.push(['strict tool pairing in final request', wirePairing(result.requests), ''])
+  return list
+}
+const checksOf = { 'basic-compress': checksBasic, 'nudge-rhythm': checksRhythm, 'compress-then-decompress': checksDecompress, 'acp-status': checksStatus, 'overflow-recovery': checksOverflow, 'jsonl-compress': checksJsonlCompress, 'carrier-split': checksCarrierSplit }
 const loadScenario = async (name) => {
   return JSON.parse(readFileSync(new URL(`./scenarios/${name}.json`, import.meta.url), 'utf8'))
 }

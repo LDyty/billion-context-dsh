@@ -131,6 +131,13 @@ export interface AcpConfig {
      * reached if the plumbing broke). Default: enabled.
      */
     readonly settingsEnabled?: boolean;
+    /**
+     * How `compress` handles a plain range that crosses a LIVE block's
+     * checkpoint carrier: `split` (default) folds the runs around the carrier(s)
+     * and keeps them visible; `reject` restores the old hard refusal with the
+     * block-id recipe. Composition-layer switch (not a settings knob).
+     */
+    readonly carrierSpans?: 'split' | 'reject';
     /** Per-stage prompt template overrides (nudge / range table / system prompt / tool descriptions). See docs/configurable-prompts-design.md. */
     readonly prompts?: AcpPrompts;
 }
@@ -158,6 +165,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeMaxContextLimitPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
+        carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
     }>>, Schemastery.ObjectT<NoInfer<{
         modelContextLimit: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoModelContextLimit: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
@@ -165,6 +173,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeMaxContextLimitPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
+        carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
     }>>, "plain">;
     /** The framework-agnostic ACP compression core, reused verbatim. */
     readonly kernel: CompressionCore;

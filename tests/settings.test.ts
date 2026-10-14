@@ -710,20 +710,24 @@ test('M6: a settings service speaking neither API degrades gracefully (issue #17
 
 // ── Issue #193: the forms line registers and hot-applies ──────────────────────
 
-test('M6: static Config schema exposes exactly the six knobs, all volatile, no defaults (issue #193)', () => {
+test('M6: static Config schema exposes the six volatile knobs plus non-volatile switches, no defaults (issue #193)', () => {
   // The loader validates our composition row against this schema AND
   // SettingsForms builds its form from it — the field set IS the public
-  // settings contract. A seventh key or a dropped .volatile() would silently
-  // change what hosts expose.
+  // settings contract. A seventh VOLATILE key or a dropped .volatile() would
+  // silently change what hosts expose; a non-volatile key is a composition
+  // switch (accepted by the loader, absent from the form by design) — see
+  // src/settings.ts, which lists both classes explicitly.
   // schemastery exposes object fields under `.dict` (not zod's `.shape`).
-  assert.deepEqual(Object.keys(AcpPluginConfigSchema.dict), [
+  const settingsKeys = [
     'modelContextLimit',
     'autoModelContextLimit',
     'nudgeMinContextLimitPct',
     'nudgeMaxContextLimitPct',
     'nudgeEmergencyThresholdPct',
     'autoNudge',
-  ])
+  ]
+  const compositionKeys = ['carrierSpans']
+  assert.deepEqual(Object.keys(AcpPluginConfigSchema.dict), [...settingsKeys, ...compositionKeys])
   // The volatile marker exists from the 0.2.0 line's schemastery onward; the
   // 0.1.5/0.1.6 lines ship schemastery 3.18.2, which has no `.volatile()`
   // helper at all, and calling it there throws at module load. The engine
@@ -734,14 +738,18 @@ test('M6: static Config schema exposes exactly the six knobs, all volatile, no d
   // missing defaults are asserted unconditionally, because those ARE the
   // public contract on every line.
   const volatileSupported = typeof (z.number() as { volatile?: unknown }).volatile === 'function'
-  for (const field of Object.values(AcpPluginConfigSchema.dict)) {
+  for (const [key, field] of Object.entries(AcpPluginConfigSchema.dict)) {
     // schemastery's zod extension marks volatile fields with meta.volatile —
     // the exact flag dsh-settings' volatileForm() reads off the schema.
     const marker = (field as { meta?: { volatile?: boolean } }).meta?.volatile
-    assert.equal(marker, volatileSupported ? true : undefined,
-      volatileSupported
-        ? 'a runtime with .volatile() support must carry the marker (SettingsForms reads it)'
-        : 'a runtime without .volatile() must not carry the marker (the call would throw at load)')
+    if (settingsKeys.includes(key)) {
+      assert.equal(marker, volatileSupported ? true : undefined,
+        volatileSupported
+          ? 'a runtime with .volatile() support must carry the marker (SettingsForms reads it)'
+          : 'a runtime without .volatile() must not carry the marker (the call would throw at load)')
+    } else {
+      assert.equal(marker, undefined, `${key} is a composition switch: it must never become a settings-form row`)
+    }
     assert.equal((field as { defaultValue?: unknown }).defaultValue, undefined, 'a default here would shadow preset-filled base values')
   }
 })

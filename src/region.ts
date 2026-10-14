@@ -31,6 +31,7 @@ import {
   isCheckpointNode,
   isRealUserTurn,
   isSkillCatalogRow,
+  STALE_FOLDABLE_HOST_KINDS,
   toolCallIdOfResultEvent,
   toolCallsOf,
   withSummaryFramePrefix,
@@ -1142,6 +1143,75 @@ export function newestSkillCatalogSeqOf(session: Session): number | null {
  * stay compressible — removing them while the newest copy stays visible is the
  * real cleanup.
  */
+/** One row of the surface-kind histogram behind `/acp-prune status`'s context map. */
+export interface SurfaceKindCount {
+  /** Display label: the source kind, or `plugin:<name>` for plugin rows. */
+  readonly label: string
+  readonly count: number
+  /** True when the range table treats this row as a barrier (never offered, splits spans). */
+  readonly barrier: boolean
+}
+
+/**
+ * Count the live surface's nodes by source kind, marking the barriers.
+ *
+ * This is the diagnostic half of the 2026-10-14 fragmentation case: the table
+ * came back with six entries (three the same span, one ~0 tokens) on a 906-node
+ * surface because 241 injected control rows (goal 186 / time-context 20 /
+ * team-message 17 / agent-instructions 10) split it into 3-4 node runs. One line
+ * now shows that instead of an afternoon of log forensics.
+ */
+export function surfaceKindCounts(session: Session): SurfaceKindCount[] {
+  const staleFoldable = staleFoldableHostRowSeqs(session)
+  const counts = new Map<string, { count: number; barrier: boolean }>()
+  for (const seq of session.surface.nodes) {
+    const event = eventAtOf(session, seq)
+    if (event === undefined) continue
+    const source = (event.data as { source?: { kind?: string; plugin?: string } } | undefined)?.source
+    const label = source?.plugin === undefined ? (source?.kind ?? event.type) : `plugin:${source.plugin}`
+    // A superseded host state echo is no longer a barrier once it is stale —
+    // the map must report the EFFECTIVE decision, not the raw classifier's.
+    const barrier = classifySurfaceEvent(event) === 'instruction' && !staleFoldable.has(seq)
+    const entry = counts.get(label) ?? { count: 0, barrier }
+    entry.count += 1
+    counts.set(label, entry)
+  }
+  return [...counts.entries()]
+    .map(([label, entry]) => ({ label, count: entry.count, barrier: entry.barrier }))
+    .sort((a, b) => b.count - a.count)
+}
+
+/**
+ * Surface seqs of SUPERSEDED host "state echo" rows — the ones the range table
+ * may fold even though `classifySurfaceEvent` calls their kind a barrier.
+ *
+ * Reads the visible surface in order and keeps, per audited kind
+ * ({@link STALE_FOLDABLE_HOST_KINDS}), only the newest row; every older row of
+ * that kind is superseded history and no longer splits a compressible span. The
+ * newest row stays a barrier, so the model always sees current goal/time/team
+ * state. Live case: 2026-10-14, 241 such rows chopped a 906-node surface.
+ */
+export function staleFoldableHostRowSeqs(session: Session): Set<number> {
+  const newest = new Map<string, number>()
+  const candidates: { seq: number; kind: string }[] = []
+  for (const seq of session.surface.nodes) {
+    const event = eventAtOf(session, seq)
+    if (event === undefined || event.type !== 'user/message') continue
+    const kind = (event.data as { source?: { kind?: string } } | undefined)?.source?.kind
+    if (kind === undefined || !STALE_FOLDABLE_HOST_KINDS.has(kind)) continue
+    // Only rows the classifier would otherwise treat as a barrier need the
+    // override; anything already foldable is left untouched.
+    if (classifySurfaceEvent(event) !== 'instruction') continue
+    candidates.push({ seq, kind })
+    newest.set(kind, seq)
+  }
+  const stale = new Set<number>()
+  for (const candidate of candidates) {
+    if (newest.get(candidate.kind) !== candidate.seq) stale.add(candidate.seq)
+  }
+  return stale
+}
+
 export function guardedSurfaceSeqsOf(session: Session): Set<number> {
   const guarded = new Set<number>()
   const newestInstructions = newestInstructionSeqsOf(session)
@@ -1264,6 +1334,7 @@ function compressibleSegmentsOf(
   toIndex: number,
   protectedSeqs: ReadonlySet<number>,
   mediaPriceOf?: MediaPriceOf,
+  staleFoldableSeqs: ReadonlySet<number> = new Set(),
 ): CompressibleSegment[] {
   const nodes = session.surface.nodes
   const segments: CompressibleSegment[] = []
@@ -1292,7 +1363,7 @@ function compressibleSegmentsOf(
       // here too; the system-side GC that removes them lands separately
       // (instruction hygiene PR2). Engine-authored metadata rows (nudge echo,
       // compress-pair stub) intentionally fall through and stay foldable.
-      || classifySurfaceEvent(event) === 'instruction'
+      || (classifySurfaceEvent(event) === 'instruction' && !staleFoldableSeqs.has(seq))
     ) {
       flush()
       continue
@@ -1377,6 +1448,9 @@ export function buildCompressibleSeqRanges(
   const indexOfSeq = new Map<number, number>()
   for (let index = 0; index < nodes.length; index += 1) indexOfSeq.set(nodes[index]!, index)
   const protectedSeqs = protectedSurfaceSeqs(session, opts.preserveRecent ?? 5)
+  // Superseded host state echoes stop splitting spans (see the helper): the
+  // 2026-10-14 fix. Computed once here — it is a whole-surface scan.
+  const staleFoldableSeqs = staleFoldableHostRowSeqs(session)
   const out: SeqCompressibleRange[] = []
   for (const range of kernelView.ranges) {
     const startSeq = seqOfKernelRef(kernelView.refs, range.startRef)
@@ -1392,6 +1466,7 @@ export function buildCompressibleSeqRanges(
       Math.max(from, to),
       protectedSeqs,
       opts.mediaPriceOf,
+      staleFoldableSeqs,
     )
     for (const segment of segments) {
       try {
@@ -1410,11 +1485,27 @@ export function buildCompressibleSeqRanges(
       }
     }
   }
+  // The kernel geometry can hand the same host span several times (distinct
+  // kernel ranges resolving onto one host segment after a replacement) and can
+  // hand back spans that price at ~0 tokens. Both are useless to the caller:
+  // the duplicate wastes one of the table's six slots, and the empty span can
+  // only ever produce "Compressed 0 block(s)". Live-measured 2026-10-14 on a
+  // 906-node surface: the offered table was 6 entries, 3 of them the SAME span
+  // and one of them ~0 tokens, while the nudge demanded an immediate
+  // compression — i.e. the model was asked to compress with no legal target.
+  const seen = new Set<string>()
+  const usable = out.filter((range) => {
+    if (range.tokens <= 0) return false
+    const key = `${range.start}..${range.end}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
   // Oldest-first: the order is stable across turns (the oldest ranges do not
   // move as new messages land), so the model can consume ranges front-to-back
   // without re-ranking each nudge — matching the kernel's `oldest first` list
   // and the host's own front-to-back compression rhythm.
-  return out.sort((a, b) => a.start - b.start)
+  return usable.sort((a, b) => a.start - b.start)
 }
 
 /**
@@ -1532,6 +1623,40 @@ export function liveCheckpointCarriersInSpan(
     if (kernelBlockId !== undefined) hits.push({ seq, kernelBlockId })
   }
   return hits.sort((a, b) => a.seq - b.seq)
+}
+
+/**
+ * Split a positional seq span at the given barrier seqs into contiguous runs.
+ *
+ * The compress path uses this to salvage a requested plain range that crosses a
+ * live block's checkpoint carrier: the carrier itself must stay on the surface
+ * (see `liveCheckpointCarriersInSpan`), while the content around it is still
+ * foldable. Splitting — rather than rewriting the span into block ids — keeps
+ * the model's own summary attached to the content it actually asked to fold
+ * (`bN..bM` would distill the blocks instead, a different operation).
+ *
+ * Order is the SPAN's, not numeric order: the surface is locally unordered
+ * after a replacement (a checkpoint node lands mid-array carrying a larger
+ * seq), and the barrier seqs are positions in that same array, so the caller
+ * must pass `shadowedSeqsOf`'s slice for both.
+ */
+export function splitSpanAtSeqs(
+  seqs: readonly number[],
+  barriers: readonly number[],
+): number[][] {
+  const barrierSet = new Set(barriers)
+  const runs: number[][] = []
+  let current: number[] = []
+  for (const seq of seqs) {
+    if (barrierSet.has(seq)) {
+      if (current.length > 0) runs.push(current)
+      current = []
+      continue
+    }
+    current.push(seq)
+  }
+  if (current.length > 0) runs.push(current)
+  return runs
 }
 
 /**

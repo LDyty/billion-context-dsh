@@ -14,9 +14,10 @@
  *    call-less empty assistant nodes are not anchorable at all. The tier-3 walk in
  *    `edgeRefForSeq` therefore never walks forward into a later checkpoint.
  *
- * 2. (CONTRACT since the acp-kernel 0.0.101 pin) A PLAIN range whose span
- *    crosses a live block's checkpoint carrier is REJECTED, and every carrier is
- *    marked for the kernel. The kernel recognizes a host-carried summary through
+ * 2. (CONTRACT since the acp-kernel 0.0.101 pin; POLICY updated 2026-10-13) A
+ *    PLAIN range whose span crosses a live block's checkpoint carrier must never
+ *    fold that carrier, and every carrier is marked for the kernel. The kernel
+ *    recognizes a host-carried summary through
  *    `CoreMessage.summaryOfBlockId` (upstream #335, fixed by acp-kernel #338): for
  *    a plain message-ref range it keeps such a carrier visible and reports the
  *    exclusion in its warning list, while block-ref boundaries (bN..bM, tier 2/3)
@@ -24,8 +25,13 @@
  *    (`kernelBlockIdByCompactionId` → `projectEvent`), and because the host
  *    transaction replaces the whole span in ONE `surfaceOp` — which would hide
  *    the carrier the kernel just kept — the compress path (and
- *    `/acp-prune compress`) refuses the span and hands back the block-id call
- *    instead. Before the pin the crossed checkpoint was folded silently: the
+ *    `/acp-prune compress`) never hands such a span to the transaction. Default
+ *    policy `carrierSpans: 'split'`: cut the span into the runs around each
+ *    carrier and fold those, so the carrier stays visible and the model's summary
+ *    covers exactly the folded seqs. Policy `carrierSpans: 'reject'`: refuse the
+ *    whole span and hand back the block-id call (the pre-2026-10-13 behavior).
+ *    Block-ref boundaries (bN..bM, tier 2/3) still fold the carrier legitimately.
+ *    Before the 0.0.101 pin the crossed checkpoint was folded silently: the
  *    superseded block's summary left the visible surface with no signal.
  */
 import assert from 'node:assert/strict'
@@ -37,6 +43,7 @@ import { kernelConfigFor } from '../src/config.ts'
 import { AcpStateStore } from '../src/state.ts'
 import { blockRegistry, blockRefForSummarySeq, rebuildBlockLedger, resolveSurfaceRange, shadowedSeqsOf } from '../src/region.ts'
 import { edgeRefForSeq, makeTools, type ToolEnvironment } from '../src/tools.ts'
+import { acpCommand } from '../src/commands.ts'
 import {
   appendAssistant,
   appendEmptyToolResult,
@@ -216,7 +223,7 @@ test('cross-checkpoint span: no range edge ever takes a checkpoint ref the model
   )
 })
 
-test('cross-checkpoint span: a PLAIN range that crosses a live checkpoint carrier is rejected', async () => {
+test('cross-checkpoint span: a PLAIN range that crosses a live checkpoint carrier is split around it (default policy)', async () => {
   const env = makeEnv()
   const session = crossCheckpointFixture('checkpoint-plain-range')
   const compress = tool(env, 'compress')
@@ -238,16 +245,21 @@ test('cross-checkpoint span: a PLAIN range that crosses a live checkpoint carrie
     execStub(session, 'call-checkpoint-plain-2'),
   )
   const text = (second as { text: string }).text
-  assert.match(text, /Compressed 0 block/)
-  assert.match(text, /still-active block/, 'the reject names the reason')
-  assert.match(text, /startSeq: "b1"/, 'the reject hands back the block-id call')
+  // Default policy: the runs on either side of the carrier land as their own
+  // blocks instead of the whole call bouncing (live-measured motivation —
+  // acp_status lists spans that cross carriers, and the model retried them).
+  assert.match(text, /Compressed [1-9]\d* block/, 'the foldable runs around the carrier land')
+  assert.match(text, /split around checkpoint/, 'the result says the span was cut')
+  assert.match(text, /stay visible/, 'the result says the carrier was not folded')
 
   const ledger = rebuildBlockLedger(session.snapshotEvents())
-  assert.equal(ledger.length, 1, 'no second block: the crossing span never landed')
+  assert.ok(ledger.length >= 2, `the split wrote its own block(s) (got ${ledger.length})`)
   assert.ok(
     session.surface.nodes.includes(checkpointSeq as never),
     `the live carrier stays visible on the surface (seq ${checkpointSeq})`,
   )
+
+  const carrierBlockId = blockRegistry(session)[0]!.kernelBlockId
 
   // The projection marks the carrier with its kernel block id — the datum the
   // kernel's exclusion rests on. Pinned against `blockRegistry` so the two
@@ -255,7 +267,7 @@ test('cross-checkpoint span: a PLAIN range that crosses a live checkpoint carrie
   const projected = eventsToCoreMessages(session.snapshotEvents()).find((message) => message.id === String(checkpointSeq))
   assert.equal(
     projected?.summaryOfBlockId,
-    blockRegistry(session)[0]!.kernelBlockId,
+    carrierBlockId,
     'the checkpoint carrier carries its kernel block id',
   )
 
@@ -272,17 +284,18 @@ test('cross-checkpoint span: a PLAIN range that crosses a live checkpoint carrie
   // to name `b1`, a boundary form no parser accepted (`invalid seq "b1"`).
   // Executing the suggestion verbatim is the only way to keep the two in sync.
   const suggested = await compress.execute(
-    { content: [{ startSeq: 'b1', endSeq: 'b1', summary: `${summary} Distilled.` }] } as never,
+    { content: [{ startSeq: carrierBlockId, endSeq: carrierBlockId, summary: `${summary} Distilled.` }] } as never,
     execStub(session, 'call-checkpoint-distill'),
   )
   const suggestedText = (suggested as { text: string }).text
   assert.match(suggestedText, /Compressed 1 block/, 'the suggested block-id call lands')
   assert.match(suggestedText, /tier 2/, 'a block-id boundary distills instead of folding')
   const distilled = rebuildBlockLedger(session.snapshotEvents())
-  assert.equal(distilled.length, 2, 'the distill wrote its own block')
-  assert.equal(distilled[1]!.tier, 2)
+  const lastBlock = distilled[distilled.length - 1]!
+  assert.equal(distilled.length, ledger.length + 1, 'the distill wrote its own block')
+  assert.equal(lastBlock.tier, 2)
   assert.deepEqual(
-    [...distilled[1]!.parentBlockIds],
+    [...lastBlock.parentBlockIds],
     [ledger[0]!.blockId],
     'the distilled block records its parent',
   )
@@ -310,8 +323,8 @@ test('cross-checkpoint span: an unknown block id boundary fails with guidance, n
   assert.equal(rebuildBlockLedger(session.snapshotEvents()).length, 0, 'nothing landed')
 })
 
-test('cross-checkpoint span: the carrier guard holds while the checkpoint is inside the protection window too', async () => {
-  const env = makeEnv()
+test('cross-checkpoint span: carrierSpans:"reject" keeps the pre-2026-10-13 hard refusal', async () => {
+  const env = { ...makeEnv(), carrierSpans: 'reject' as const }
   const session = crossCheckpointFixture('checkpoint-protected')
   const compress = tool(env, 'compress')
 
@@ -344,4 +357,41 @@ test('cross-checkpoint span: the carrier guard holds while the checkpoint is ins
     session.surface.nodes.includes(checkpointSeq as never),
     `the carrier is still visible (seq ${checkpointSeq})`,
   )
+})
+
+test('cross-checkpoint span: /acp-prune compress splits around a live carrier too (default policy)', async () => {
+  const env = makeEnv()
+  const session = crossCheckpointFixture('checkpoint-command-split')
+  const compress = tool(env, 'compress')
+
+  const first = await compress.execute(
+    { content: [{ startSeq: 6, endSeq: 9, summary: SUMMARY }] } as never,
+    execStub(session, 'call-checkpoint-command'),
+  )
+  assert.match((first as { text: string }).text, /Compressed 1 block/)
+  const checkpointSeq = checkpointSeqs(session)[0]!
+  appendTraffic(session, 17, 8)
+  const lastSeq = session.surface.nodes[session.surface.nodes.length - 1]!
+
+  // The command path carries the SAME policy as the tool: a human typing the
+  // crossing span gets the runs around the carrier folded, not a refusal.
+  const result = await acpCommand(env).handler({
+    commandId: 'cmd-test' as never,
+    agent: {
+      id: session.id,
+      session,
+      options: { provider: 'test-provider', model: 'test-model' },
+      ctx: { tokenMeter: undefined },
+    },
+    rawInput: `compress 1 ${lastSeq - 2} ${SUMMARY} Whole span.`,
+    signal: new AbortController().signal,
+  } as never)
+  const text = (result as { text: string }).text
+  assert.match(text, /Compressed [1-9]\d* block\(s\) around checkpoint/, 'the command folds the runs around the carrier')
+  assert.match(text, /stay visible/, 'the command says the carrier was not folded')
+  assert.ok(
+    session.surface.nodes.includes(checkpointSeq as never),
+    `the carrier is still visible after the command (seq ${checkpointSeq})`,
+  )
+  assert.ok(rebuildBlockLedger(session.snapshotEvents()).length >= 2, 'the command wrote its own block(s)')
 })

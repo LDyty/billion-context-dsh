@@ -1,0 +1,35 @@
+{
+  "name": "carrier-split",
+  "persona": "You are a concise coding agent.",
+  "engine": { "modelContextLimit": 2000, "autoCommand": false },
+  "userTurns": [
+    { "filler": { "topic": "alpha", "count": 250 } },
+    { "filler": { "topic": "bravo", "count": 250 } },
+    { "filler": { "topic": "charlie", "count": 250 } },
+    { "filler": { "topic": "delta", "count": 250 } },
+    { "filler": { "topic": "echo", "count": 250 } },
+    "Compress the bravo exchange (the second one) now.",
+    { "filler": { "topic": "foxtrot", "count": 250 } },
+    "Now compress the span from the first exchange through the fifth."
+  ],
+  "responses": [
+    { "kind": "text", "filler": { "topic": "alpha", "count": 250 } },
+    { "kind": "text", "filler": { "topic": "bravo", "count": 250 } },
+    { "kind": "text", "filler": { "topic": "charlie", "count": 250 } },
+    { "kind": "text", "filler": { "topic": "delta", "count": 250 } },
+    { "kind": "text", "filler": { "topic": "echo", "count": 250 } },
+    {
+      "kind": "tool",
+      "name": "compress",
+      "argsTemplate": "{\"content\": [{\"startSeq\": {{U2}}, \"endSeq\": {{A2}}, \"summary\": \"Exchange 2 distilled: the bravo survey documented the durable surface rows, the ledger reconciliation steps and the region transaction order.\"}]}"
+    },
+    { "kind": "text", "text": "Compressed the middle exchange into a checkpoint." },
+    { "kind": "text", "filler": { "topic": "foxtrot", "count": 250 } },
+    {
+      "kind": "tool",
+      "name": "compress",
+      "argsTemplate": "{\"content\": [{\"startSeq\": {{U1}}, \"endSeq\": {{A5}}, \"summary\": \"Span 1..5 distilled: the alpha through echo surveys, all superseded by the foxtrot ledger.\"}]}"
+    },
+    { "kind": "text", "text": "Done." }
+  ]
+}

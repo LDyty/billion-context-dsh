@@ -254,7 +254,7 @@ test('#168: acp_status lists the new-shape block\'s checkpoint seq (distill entr
   const text = await statusText(makeEnv(), session)
   assert.match(
     text,
-    /Checkpoint seqs \(active blocks — compress a checkpoint seq to distill it\): b1 → seq 6, b2 → seq 12/,
+    /Checkpoint seqs \(active blocks — compress a checkpoint seq to distill it; [^)]*\): b1 → seq 6, b2 → seq 12/,
     'both blocks map their kernel ref to the checkpoint seq — the T2/T3 distill route',
   )
 })

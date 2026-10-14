@@ -845,7 +845,7 @@ function defaultConfig(modelContextLimit, overrides = {}) {
     promotionThreshold: 5,
     truncate: { threshold: 0.95, terminalEscapeAfter: 3 },
     compress: {
-      minCompressRange: 5e3,
+      minCompressRange: 1250,
       maxSummaryLength: 2e4,
       minSummaryLength: 50
     },
@@ -4333,16 +4333,16 @@ function mergeBatch(batch) {
 function rangeChars(r) {
   return r.chars ?? r.tokens * 4;
 }
-function mergeRangesToThreshold(ranges, minChars) {
-  if (minChars <= 0 || ranges.length === 0) return ranges;
+function mergeRangesToThreshold(ranges, minTokens) {
+  if (minTokens <= 0 || ranges.length === 0) return ranges;
   const result = [];
   let batch = [];
-  let batchChars = 0;
+  let batchTokens = 0;
   const closeBatch = () => {
     if (batch.length > 0) {
-      if (batchChars >= minChars) result.push(mergeBatch(batch));
+      if (batchTokens >= minTokens) result.push(mergeBatch(batch));
       batch = [];
-      batchChars = 0;
+      batchTokens = 0;
     }
   };
   for (const r of ranges) {
@@ -4351,15 +4351,15 @@ function mergeRangesToThreshold(ranges, minChars) {
       closeBatch();
     }
     batch.push(r);
-    batchChars += rangeChars(r);
-    if (batchChars >= minChars) closeBatch();
+    batchTokens += r.tokens;
+    if (batchTokens >= minTokens) closeBatch();
   }
   if (batch.length > 0 && result.length > 0) {
     const prev = result[result.length - 1];
     const contiguous = prev.endIndex === void 0 || batch[0].startIndex === void 0 || batch[0].startIndex <= prev.endIndex + 1;
     if (contiguous) {
       result[result.length - 1] = mergeBatch([prev, ...batch]);
-    } else if (batchChars >= minChars) {
+    } else if (batchTokens >= minTokens) {
       result.push(mergeBatch(batch));
     }
   }
@@ -4601,7 +4601,7 @@ function createCore(ports = {}) {
       if (entry.end > acceptedMaxIndex) acceptedMaxIndex = entry.end;
     }
     if (input.config.compress.minCompressRange > 0 && input.ranges.length > 0) {
-      let totalRangeChars = 0;
+      let totalRangeTokens = 0;
       let hasBlockBoundaryRange = false;
       let countedRanges = 0;
       for (const [spec, resolution] of classifications) {
@@ -4613,10 +4613,10 @@ function createCore(ports = {}) {
         countedRanges++;
         for (const id of resolution.resolved.messageIds) {
           const msg = input.messages.find((m) => m.id === id);
-          totalRangeChars += msg?.text?.length ?? 0;
+          totalRangeTokens += msg ? countMessageTokens(msg, countTokens) : 0;
         }
       }
-      if (!allRefold && !hasBlockBoundaryRange && totalRangeChars < input.config.compress.minCompressRange) {
+      if (!allRefold && !hasBlockBoundaryRange && totalRangeTokens < input.config.compress.minCompressRange) {
         const diagnostics = refGateDiagnostics(
           state,
           input.ranges.length,
@@ -4647,7 +4647,7 @@ function createCore(ports = {}) {
         const danglingRefs = consumedRanges.flatMap(
           (spec) => danglingMessageRefs(state, input.messages, spec)
         );
-        let gateMessage = resolvableCount === 0 && consumedRanges.length === 0 && unknownCount > 0 ? `None of the ${input.ranges.length} requested range(s) resolved \u2014 every ref is unknown to this session. Refs are per-session snapshots, assigned once when a message is first rendered; no compress reassigns them, so unknown refs cannot come from an earlier compress in this session. They come from a different generation: a previous session instance (switching model or upstream mid-conversation starts a fresh session whose refs restart at m00001), the generation before a native-compaction rebase (which also resets refs to m00001), or a typo. ${diagnostics} Run acp_status, then call the compress tool again using only the refs it reports.` : consumedRanges.length > 0 ? danglingRefs.length > 0 ? `Requested range(s) cannot be anchored (e.g. ${firstConsumed.startRef}..${firstConsumed.endRef}) \u2014 the refs exist in this session's ref map, but the messages they point to are no longer in the visible context and no active block covers them: the message content changed (or the message was filtered out of the view) and now carries a new ref, leaving your old refs dangling. ${diagnostics} Run acp_status, then call the compress tool again using only the refs it reports.` : `Requested range(s) already compressed (e.g. ${firstConsumed.startRef}..${firstConsumed.endRef}) \u2014 ${coverDetail}${refoldDetail}. Nothing new to compress in that window. ${diagnostics} Continue the task, or run acp_status and target one of the CURRENT compressible ranges it reports.${tierActionHint(input.config, state)}` : countedRanges > 0 ? `Total compressible content too small (${totalRangeChars} chars across ${countedRanges} range(s), min ${input.config.compress.minCompressRange}). Combine more messages into your range(s) to meet the threshold.${refoldSuffix(okBlockedReasons)}` : null;
+        let gateMessage = resolvableCount === 0 && consumedRanges.length === 0 && unknownCount > 0 ? `None of the ${input.ranges.length} requested range(s) resolved \u2014 every ref is unknown to this session. Refs are per-session snapshots, assigned once when a message is first rendered; no compress reassigns them, so unknown refs cannot come from an earlier compress in this session. They come from a different generation: a previous session instance (switching model or upstream mid-conversation starts a fresh session whose refs restart at m00001), the generation before a native-compaction rebase (which also resets refs to m00001), or a typo. ${diagnostics} Run acp_status, then call the compress tool again using only the refs it reports.` : consumedRanges.length > 0 ? danglingRefs.length > 0 ? `Requested range(s) cannot be anchored (e.g. ${firstConsumed.startRef}..${firstConsumed.endRef}) \u2014 the refs exist in this session's ref map, but the messages they point to are no longer in the visible context and no active block covers them: the message content changed (or the message was filtered out of the view) and now carries a new ref, leaving your old refs dangling. ${diagnostics} Run acp_status, then call the compress tool again using only the refs it reports.` : `Requested range(s) already compressed (e.g. ${firstConsumed.startRef}..${firstConsumed.endRef}) \u2014 ${coverDetail}${refoldDetail}. Nothing new to compress in that window. ${diagnostics} Continue the task, or run acp_status and target one of the CURRENT compressible ranges it reports.${tierActionHint(input.config, state)}` : countedRanges > 0 ? `Total compressible content too small (${totalRangeTokens} tokens across ${countedRanges} range(s), min ${input.config.compress.minCompressRange}). Combine more messages into your range(s) to meet the threshold.${refoldSuffix(okBlockedReasons)}` : null;
         if (gateMessage === null) {
           return {
             state: input.state,
@@ -5396,7 +5396,7 @@ function resolveMinPressureBenefit(modelContextLimit, nudge) {
 function pendingByTier(state, recommendation, countTokens, minCompressRange) {
   const out = {};
   const merged = recommendation?.recommendedRanges ?? [];
-  const effective = minCompressRange > 0 ? merged.filter((r) => (r.chars ?? r.tokens * 4) >= minCompressRange) : merged;
+  const effective = minCompressRange > 0 ? merged.filter((r) => r.tokens >= minCompressRange) : merged;
   out[1] = {
     pending: effective.reduce((s, r) => s + r.tokens, 0),
     targetBlocks: []
@@ -6711,6 +6711,18 @@ function checkpointCompactionIdOf(event) {
   const source = event.data.source;
   return typeof source?.compactionId === "string" ? source.compactionId : null;
 }
+var STALE_FOLDABLE_HOST_KINDS = /* @__PURE__ */ new Set([
+  "goal",
+  // goal round driver: one row per round
+  "tool-goal",
+  // goal tool echo
+  "time-context",
+  // periodic time snapshot
+  "team-message",
+  // agent-team delivery (conversation content, one-shot)
+  "agent-message"
+  // message from another agent
+]);
 var METADATA_PLUGINS = /* @__PURE__ */ new Set([
   "acp-nudge",
   // nudge echo (src/nudge.ts)
@@ -7411,6 +7423,39 @@ function newestSkillCatalogSeqOf(session) {
   }
   return null;
 }
+function surfaceKindCounts(session) {
+  const staleFoldable = staleFoldableHostRowSeqs(session);
+  const counts = /* @__PURE__ */ new Map();
+  for (const seq of session.surface.nodes) {
+    const event = eventAtOf(session, seq);
+    if (event === void 0) continue;
+    const source = event.data?.source;
+    const label = source?.plugin === void 0 ? source?.kind ?? event.type : `plugin:${source.plugin}`;
+    const barrier = classifySurfaceEvent(event) === "instruction" && !staleFoldable.has(seq);
+    const entry = counts.get(label) ?? { count: 0, barrier };
+    entry.count += 1;
+    counts.set(label, entry);
+  }
+  return [...counts.entries()].map(([label, entry]) => ({ label, count: entry.count, barrier: entry.barrier })).sort((a, b) => b.count - a.count);
+}
+function staleFoldableHostRowSeqs(session) {
+  const newest = /* @__PURE__ */ new Map();
+  const candidates = [];
+  for (const seq of session.surface.nodes) {
+    const event = eventAtOf(session, seq);
+    if (event === void 0 || event.type !== "user/message") continue;
+    const kind = event.data?.source?.kind;
+    if (kind === void 0 || !STALE_FOLDABLE_HOST_KINDS.has(kind)) continue;
+    if (classifySurfaceEvent(event) !== "instruction") continue;
+    candidates.push({ seq, kind });
+    newest.set(kind, seq);
+  }
+  const stale = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    if (newest.get(candidate.kind) !== candidate.seq) stale.add(candidate.seq);
+  }
+  return stale;
+}
 function guardedSurfaceSeqsOf(session) {
   const guarded = /* @__PURE__ */ new Set();
   const newestInstructions = newestInstructionSeqsOf(session);
@@ -7455,7 +7500,7 @@ function protectedSurfaceSeqs(session, preserve) {
   if (newestCatalog !== null) protectedSeqs.add(newestCatalog);
   return protectedSeqs;
 }
-function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, mediaPriceOf) {
+function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, mediaPriceOf, staleFoldableSeqs = /* @__PURE__ */ new Set()) {
   const nodes = session.surface.nodes;
   const segments = [];
   let current = null;
@@ -7467,7 +7512,7 @@ function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, medi
     const seq = nodes[index];
     if (seq === void 0) continue;
     const event = eventAtOf(session, seq);
-    if (event === void 0 || protectedSeqs.has(seq) || isCheckpointNode(event) || isSystemNode(event) || classifySurfaceEvent(event) === "instruction") {
+    if (event === void 0 || protectedSeqs.has(seq) || isCheckpointNode(event) || isSystemNode(event) || classifySurfaceEvent(event) === "instruction" && !staleFoldableSeqs.has(seq)) {
       flush();
       continue;
     }
@@ -7504,6 +7549,7 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
   const indexOfSeq = /* @__PURE__ */ new Map();
   for (let index = 0; index < nodes.length; index += 1) indexOfSeq.set(nodes[index], index);
   const protectedSeqs = protectedSurfaceSeqs(session, opts.preserveRecent ?? 5);
+  const staleFoldableSeqs = staleFoldableHostRowSeqs(session);
   const out = [];
   for (const range of kernelView.ranges) {
     const startSeq = seqOfKernelRef(kernelView.refs, range.startRef);
@@ -7516,7 +7562,8 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
       Math.min(from, to),
       Math.max(from, to),
       protectedSeqs,
-      opts.mediaPriceOf
+      opts.mediaPriceOf,
+      staleFoldableSeqs
     );
     for (const segment of segments) {
       try {
@@ -7534,7 +7581,15 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
       }
     }
   }
-  return out.sort((a, b) => a.start - b.start);
+  const seen = /* @__PURE__ */ new Set();
+  const usable = out.filter((range) => {
+    if (range.tokens <= 0) return false;
+    const key = `${range.start}..${range.end}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return usable.sort((a, b) => a.start - b.start);
 }
 function surfaceSummary(session) {
   const nodes = session.surface.nodes;
@@ -7597,6 +7652,21 @@ function liveCheckpointCarriersInSpan(session, seqs) {
     if (kernelBlockId !== void 0) hits.push({ seq, kernelBlockId });
   }
   return hits.sort((a, b) => a.seq - b.seq);
+}
+function splitSpanAtSeqs(seqs, barriers) {
+  const barrierSet = new Set(barriers);
+  const runs = [];
+  let current = [];
+  for (const seq of seqs) {
+    if (barrierSet.has(seq)) {
+      if (current.length > 0) runs.push(current);
+      current = [];
+      continue;
+    }
+    current.push(seq);
+  }
+  if (current.length > 0) runs.push(current);
+  return runs;
 }
 function blockRefForSummarySeq(session, seq) {
   const event = eventAtOf(session, seq);
@@ -7952,6 +8022,10 @@ function resolveTokenCount(agent, coreMessages) {
 function kernelRangeViewOf(nudge, state) {
   return { ranges: nudge.compressibleRanges ?? [], refs: state.messageRefs };
 }
+function hasActionableTarget(session, nudge, state) {
+  if (nudge.tier !== null && nudge.tier !== void 0) return true;
+  return buildCompressibleSeqRanges(session, kernelRangeViewOf(nudge, state)).length > 0;
+}
 function mediaSuffixOf(range) {
   if (range.images === 0 && range.files === 0) return "";
   const parts = [];
@@ -7966,14 +8040,21 @@ function meterMediaPriceResolver(agent, session) {
     return prices.get(seq) ?? 0;
   };
 }
+var RANGE_TABLE_LIMIT = 6;
+var RANGE_TABLE_LARGE_WINDOW = 8;
+function selectRangeTableRanges(all) {
+  if (all.length <= RANGE_TABLE_LIMIT) return [...all];
+  return [...all].sort((a, b) => b.tokens - a.tokens).slice(0, RANGE_TABLE_LARGE_WINDOW).sort((a, b) => a.start - b.start).slice(0, RANGE_TABLE_LIMIT);
+}
 function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
   const ranges = buildCompressibleSeqRanges(
     session,
     kernelView,
     mediaPriceOf === void 0 ? {} : { mediaPriceOf }
-  ).slice(0, 6);
-  if (ranges.length === 0) return "";
-  const lines = ranges.map(
+  );
+  const shown = selectRangeTableRanges(ranges);
+  if (shown.length === 0) return "";
+  const lines = shown.map(
     (range) => renderTemplate(prompts.rangeTable.line, {
       start: range.start,
       end: range.end,
@@ -7988,8 +8069,12 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     "",
     renderTemplate(prompts.rangeTable.header, { surface: surfaceSummary(session) }),
-    renderTemplate(prompts.rangeTable.title, { count: ranges.length }),
+    renderTemplate(prompts.rangeTable.title, { count: shown.length }),
     ...lines,
+    // Name what the cap hid: with a fragmented surface the table used to show a
+    // handful while dozens more sat unlisted, and the model had no way to know
+    // (2026-10-14: 128 offerable ranges, six rows printed).
+    ...ranges.length > shown.length ? [`  (${ranges.length - shown.length} more range(s) not shown \u2014 acp_status with scope:"uncompressed", view:"ranges" lists them)`] : [],
     prompts.rangeTable.footer
   ].join("\n");
 }
@@ -8020,7 +8105,7 @@ function computeSurfaceBreakdown(state, messages, total, growth) {
   return { system, tool, summaries, code, text, total, growth };
 }
 var EMERGENCY_NUDGE_MAX_PER_TURN = 3;
-function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHit) {
+function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHit, onNothingToCompress) {
   const session = agent.session;
   const state = env.store.stateFor(session);
   const coreMessages = allLogMessages(session);
@@ -8038,6 +8123,10 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
   );
   nudge.contextBreakdown = computeSurfaceBreakdown(turn.state, statusMessages, tokenCount, nudge.contextBreakdown?.growth ?? 0);
   const emergency = nudge.breakdown?.emergencyOverride === 1;
+  if (!hasActionableTarget(session, nudge, turn.state)) {
+    onNothingToCompress?.(emergency ? "emergency" : "normal");
+    return null;
+  }
   const turnNumber = findOpenTurn(sessionEventsOf(session)) ?? 0;
   if (!emergency) {
     if (lastNudgeTurn.get(session.id) === turnNumber) return null;
@@ -8528,6 +8617,8 @@ async function handleCompress(env, args, exec) {
   const seenRangeKeys = /* @__PURE__ */ new Set();
   const duplicateRangeNotes = [];
   const guardedSeqs = guardedSurfaceSeqsOf(session);
+  const splitNotes = [];
+  const carrierSpans = env.carrierSpans ?? "split";
   for (const range of args.content) {
     const startSeq = parseBoundary2(range.startSeq, byRef, session);
     const endSeq = parseBoundary2(range.endSeq, byRef, session);
@@ -8563,7 +8654,50 @@ async function handleCompress(env, args, exec) {
     if (startBlockRef == null && endBlockRef == null) {
       const carriers = liveCheckpointCarriersInSpan(session, shadowedSpan);
       if (carriers.length > 0) {
-        rejectedNotes.push(liveCarrierRejectionNote(resolved.start, resolved.end, carriers));
+        if (carrierSpans === "reject") {
+          rejectedNotes.push(liveCarrierRejectionNote(resolved.start, resolved.end, carriers));
+          continue;
+        }
+        const carrierLabel = carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(", ");
+        const keptRuns = [];
+        const foldedRuns = [];
+        for (const run of splitSpanAtSeqs(shadowedSpan, carriers.map((carrier) => carrier.seq))) {
+          const first = run[0];
+          const last = run[run.length - 1];
+          if (first === void 0 || last === void 0) continue;
+          let sub;
+          try {
+            sub = resolveSurfaceRange(session, first, last);
+          } catch {
+            continue;
+          }
+          const subShadowed = shadowedSeqsOf(session, sub.start, sub.end);
+          if (subShadowed.length === 0 || guardedRowsInSpan(guardedSeqs, subShadowed).length > 0) continue;
+          const subStartRef = blockRefForSummarySeq(session, sub.start) ?? edgeRefForSeq(session, byRaw, sub.start, "start", sub.end);
+          const subEndRef = blockRefForSummarySeq(session, sub.end) ?? edgeRefForSeq(session, byRaw, sub.end, "end", sub.start);
+          if (subStartRef === void 0 || subEndRef === void 0) continue;
+          if (seenRangeKeys.has(`${subStartRef}::${subEndRef}`)) continue;
+          keptRuns.push({
+            ...sub,
+            startSeq: sub.start,
+            endSeq: sub.end,
+            startRef: subStartRef,
+            endRef: subEndRef,
+            summary: range.summary,
+            ...range.topic === void 0 ? {} : { topic: range.topic },
+            ...Array.isArray(range.verifiedReadings) && range.verifiedReadings.length > 0 ? { verifiedReadings: range.verifiedReadings.map(String) } : {}
+          });
+          foldedRuns.push(`${sub.start}..${sub.end}`);
+        }
+        if (keptRuns.length === 0) {
+          rejectedNotes.push(liveCarrierRejectionNote(resolved.start, resolved.end, carriers));
+          continue;
+        }
+        for (const kept of keptRuns) seenRangeKeys.add(`${kept.startRef}::${kept.endRef}`);
+        ranges.push(...keptRuns);
+        splitNotes.push(
+          `  seqs ${resolved.start}..${resolved.end} split around checkpoint ${carrierLabel} \u2014 folded ${foldedRuns.join(", ")}; the carrier(s) stay visible, so this summary covers ONLY the folded seqs`
+        );
         continue;
       }
     }
@@ -8588,7 +8722,7 @@ async function handleCompress(env, args, exec) {
     });
   }
   if (ranges.length === 0) {
-    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes];
+    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes];
     if (alreadyCompressedNotes.length > 0) {
       text.push("  (all requested ranges were already compressed \u2014 decompress a block to recover its originals)");
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
@@ -8690,6 +8824,7 @@ async function handleCompress(env, args, exec) {
     ...alreadyCompressedNotes,
     ...duplicateRangeNotes,
     ...rejectedNotes,
+    ...splitNotes,
     ...lines
   ];
   const footer = totalSkipped > 0 ? `  (${totalSkipped} range(s) skipped or failed \u2014 see above)` : "";
@@ -8882,7 +9017,8 @@ async function handleStatus(env, rawArgs, exec) {
     }
     const checkpointRows = blockRegistry(session).filter((entry) => entry.active && entry.summarySeq !== null).map((entry) => `${entry.kernelBlockId} \u2192 seq ${entry.summarySeq}`);
     if (checkpointRows.length > 0) {
-      lines.push("", `Checkpoint seqs (active blocks \u2014 compress a checkpoint seq to distill it): ${checkpointRows.join(", ")}`);
+      const crossing = (env.carrierSpans ?? "split") === "reject" ? 'a plain span that crosses one is refused (carrierSpans:"reject")' : "a plain span that crosses one is split around it, so the carrier stays visible";
+      lines.push("", `Checkpoint seqs (active blocks \u2014 compress a checkpoint seq to distill it; ${crossing}): ${checkpointRows.join(", ")}`);
     }
     const mediaOnSurface = surface.some((event) => {
       const counts = attachmentsOfEvent(event);
@@ -8897,7 +9033,10 @@ async function handleStatus(env, rawArgs, exec) {
   }
   lines.push("", `Surface: ${surfaceSummary(session)}`);
   if (args.scope === "uncompressed") {
-    lines.push("", "Note: drilldown rows are kernel refs (mN) \u2014 feed them straight to compress (auto-mapped to the live surface seq); an unknown mN fails with guidance.");
+    lines.push(
+      "",
+      "Note: drilldown rows are kernel refs (mN) \u2014 feed them straight to compress (auto-mapped to the live surface seq); an unknown mN fails with guidance. This listing does NOT break at live checkpoint carriers (unlike the nudge range table), so a range read off it can cross one: compress then folds the runs around that carrier instead of the whole span, and says so in its result."
+    );
   }
   return { text: lines.join("\n") };
 }
@@ -9017,7 +9156,14 @@ var AcpPluginConfigSchema = z.object({
   nudgeMinContextLimitPct: markVolatile(z.number().min(0).max(1)),
   nudgeMaxContextLimitPct: markVolatile(z.number().min(0).max(1)),
   nudgeEmergencyThresholdPct: markVolatile(z.number().min(0).max(1)),
-  autoNudge: markVolatile(z.boolean())
+  autoNudge: markVolatile(z.boolean()),
+  /**
+   * Composition-layer policy for a plain range that crosses a live block's
+   * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
+   * a behavior switch, not a tuning knob, so it stays out of the settings form
+   * and is edited in the profile patch like `autoTools` / `settingsEnabled`.
+   */
+  carrierSpans: z.union([z.const("split"), z.const("reject")])
 });
 function describeSettingsChange(prev, next) {
   const warnings = [];
@@ -9175,6 +9321,29 @@ async function statusText(env, agent) {
       lines.push(`  next nudge: ~${toNudge.toLocaleString()} tokens to go (usage ${Math.round(nudge.contextUsage * 100)}% \u2192 ${Math.round(maxPct * 100)}% line)`);
     }
   }
+  const kinds = surfaceKindCounts(session);
+  const barrierRows = kinds.filter((kind) => kind.barrier);
+  const barrierTotal = barrierRows.reduce((sum, kind) => sum + kind.count, 0);
+  const nodeTotal = session.surface.nodes.length;
+  const offered = buildCompressibleSeqRanges(session, {
+    ranges: turn.nudge?.compressibleRanges ?? [],
+    refs: turn.state.messageRefs ?? { byRef: {} }
+  });
+  const offeredTokens = offered.reduce((sum, range) => sum + range.tokens, 0);
+  const largest = offered.reduce((max, range) => Math.max(max, range.tokens), 0);
+  const surfaceNodes = [...session.surface.nodes];
+  lines.push(
+    "  \u2500\u2500 context map \u2500\u2500",
+    `  surface: ${nodeTotal} nodes (seqs ${surfaceNodes[0] ?? "-"}..${surfaceNodes[surfaceNodes.length - 1] ?? "-"})`,
+    barrierTotal === 0 ? "  injected rows: none (no barrier splits the surface)" : `  injected rows: ${barrierTotal} (${Math.round(barrierTotal / Math.max(1, nodeTotal) * 100)}%) \u2014 ` + barrierRows.slice(0, 8).map((kind) => `${kind.label} ${kind.count}`).join(" \xB7 "),
+    `  compressible: ${offered.length} range(s), ~${offeredTokens} tokens (largest ${largest})`
+  );
+  if (offered.length === 0) {
+    lines.push(
+      "  \u26A0 no compressible range is on offer \u2014 the surface is fragmented by injected rows (or the remaining spans sit below the kernel floor).",
+      "    The nudge is suppressed while this holds (it would ask the model for an action with no legal target); a fresh session or fewer goal/team injections restores it."
+    );
+  }
   for (const block of ledger) {
     const tier = block.tier > 1 ? ` [T${block.tier}]` : "";
     lines.push(`  - ${block.blockId.slice(0, 8)}${tier}: seqs ${block.start}..${block.end} \u2014 ${block.summary.slice(0, 80)}`);
@@ -9203,7 +9372,40 @@ function compressText(env, agent, args) {
   }
   const carriers = liveCheckpointCarriersInSpan(session, shadowed);
   if (carriers.length > 0) {
-    return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`;
+    if ((env.carrierSpans ?? "split") === "reject") {
+      return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`;
+    }
+    const carrierLabel = carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(", ");
+    const folded = [];
+    for (const run of splitSpanAtSeqs(shadowed, carriers.map((carrier) => carrier.seq))) {
+      const first = run[0];
+      const last = run[run.length - 1];
+      if (first === void 0 || last === void 0) continue;
+      let sub;
+      try {
+        sub = resolveSurfaceRange(session, first, last);
+      } catch {
+        continue;
+      }
+      const subShadowed = shadowedSeqsOf(session, sub.start, sub.end);
+      if (subShadowed.length === 0) continue;
+      if (guardedRowsInSpan(guardedSurfaceSeqsOf(session), subShadowed).length > 0) continue;
+      const { provider: provider2, model: model2 } = routeFor(agent);
+      const { compactionId: compactionId2 } = runCompactionTransaction(session, {
+        start: sub.start,
+        end: sub.end,
+        shadowedSeqs: subShadowed,
+        summary: [{ type: "text", text: summary }],
+        shadowedTokenCount: shadowedTokensViaMeter(session, subShadowed, agent.ctx),
+        provider: provider2,
+        model: model2
+      });
+      folded.push(`${compactionId2.slice(0, 8)} (seqs ${sub.start}..${sub.end})`);
+    }
+    if (folded.length === 0) {
+      return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`;
+    }
+    return `Compressed ${folded.length} block(s) around checkpoint ${carrierLabel}: ${folded.join(", ")} \u2014 the carrier(s) stay visible`;
   }
   const shadowedTokens = shadowedTokensViaMeter(session, shadowed, agent.ctx);
   const { provider, model } = routeFor(agent);
@@ -9392,6 +9594,10 @@ var DEFAULT_CONFIG = {
   autoTools: true,
   autoCommand: true,
   autoNudge: true,
+  // Salvage spans that cross a live carrier instead of bouncing them back: the
+  // model reads those ranges off acp_status (which does not break at carriers)
+  // and otherwise retries the same span (live-measured, 2026-10-13).
+  carrierSpans: "split",
   // Same default as the host's compaction-basic policy: one owned retry per
   // unrelieved overflow, then the original error is preserved.
   maxOverflowRetries: 1,
@@ -9591,6 +9797,7 @@ var AcpCompactionEngine = class extends CompactionEngine {
         return engine.readSettingsSource().nudgeEmergencyThresholdPct;
       },
       coreOverrides: this.config.coreOverrides,
+      carrierSpans: this.config.carrierSpans,
       // Display-only: which named preset produced the thresholds above (if any),
       // so /acp-prune status can name it. The resolved pct values above are what the
       // kernel actually reads — this field never feeds kernelConfigFor.
@@ -9664,6 +9871,11 @@ var AcpCompactionEngine = class extends CompactionEngine {
         () => {
           ctx.logger.warn(
             `billion-context-dsh: emergency nudge suppressed \u2014 per-turn budget of ${EMERGENCY_NUDGE_MAX_PER_TURN} spent (session ${payload.agent.session.id}); pressure is still above the emergency threshold`
+          );
+        },
+        (kind) => {
+          ctx.logger.warn(
+            `billion-context-dsh: ${kind} nudge suppressed \u2014 no compressible range is on offer (session ${payload.agent.session.id}); the surface is fragmented by injected rows or the remaining spans are below the kernel floor`
           );
         }
       );

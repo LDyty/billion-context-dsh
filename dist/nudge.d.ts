@@ -39,6 +39,20 @@ export interface NudgeOutcome {
  */
 export declare function resolveTokenCount(agent: Agent, coreMessages: CoreMessage[]): number;
 /**
+ * Whether the kernel's recommendation has a LEGAL target on this surface.
+ *
+ * A tier-2/3 recommendation targets existing blocks (their checkpoint seqs), so
+ * it is always actionable. A plain T1 recommendation needs at least one offered
+ * compressible span: with the surface fragmented by injected control rows (or
+ * with the remaining spans below the kernel's merge floor) the offer table comes
+ * back empty, and then "Context limit reached — compress now" asks for an action
+ * with no legal target at all. Live-measured 2026-10-14 (session-a41fb964): 906
+ * surface nodes, 241 barrier rows (goal 186 / time-context 20 / team-message 17 /
+ * agent-instructions 10), ~2K tokens offerable — every nudge in that window was
+ * unactionable, and the model degraded while trying to comply.
+ */
+export declare function hasActionableTarget(session: import('@deepseek-ai/dsh-session').Session, nudge: NudgeDecision, state: CompressionState): boolean;
+/**
  * Lazy per-seq media price. The FIRST lookup triggers one meter measurement, so
  * the range walk only asks about seqs that really carry an attachment — a
  * media-free session never pays for the measurement (issue #117, issue #110).
@@ -46,6 +60,30 @@ export declare function resolveTokenCount(agent: Agent, coreMessages: CoreMessag
  * same vocabulary as the nudge table.
  */
 export declare function meterMediaPriceResolver(agent: Agent, session: import('@deepseek-ai/dsh-session').Session): MediaPriceOf;
+/** Rows the nudge range table prints. */
+export declare const RANGE_TABLE_LIMIT = 6;
+/**
+ * How many of the LARGEST ranges the table considers before ordering by age.
+ * See {@link selectRangeTableRanges}.
+ */
+export declare const RANGE_TABLE_LARGE_WINDOW = 8;
+/**
+ * Pick the rows the nudge range table prints: **the oldest among the large**.
+ *
+ * Ordering policy, live-tuned 2026-10-14 on a 914-node / 128-range surface:
+ * plain oldest-first spent the six rows on whatever happened to be oldest —
+ * including 195-token slivers that cost a model turn for nothing — while the
+ * 124,877-token span sat below the fold. Pure size-first would instead push the
+ * model to compress fresh work it may still need. The compromise: consider the
+ * few largest spans (they are the ones worth a turn), then print the OLDEST of
+ * those (consumed history first, matching the kernel's front-to-back rhythm and
+ * the stable-ordering property the table has always had).
+ */
+export declare function selectRangeTableRanges<T extends {
+    start: number;
+    end: number;
+    tokens: number;
+}>(all: readonly T[]): T[];
 /**
  * Render the compressible-range table as seq refs for the model.
  *
@@ -102,11 +140,16 @@ export declare const EMERGENCY_NUDGE_MAX_PER_TURN = 3;
  * `onEmergencyCapHit` (optional) fires when the kernel still wants an
  * emergency nudge but the per-turn budget is spent — the host uses it to log
  * why the model stops receiving nudges (issue #108 review).
+ *
+ * `onNothingToCompress` (optional) fires when the kernel wants a nudge but the
+ * offered range table is EMPTY (no reclaimable span above the host guards and
+ * the kernel's merge floor) — the injection is skipped instead of asking the
+ * model for an action with no legal target (2026-10-14 fragmentation case).
  */
 export declare function buildNudge(agent: Agent, env: NudgeEnvironment, lastNudgeTurn: Map<string, number>, emergencyNudges: Map<string, {
     turn: number;
     count: number;
-}>, onEmergencyCapHit?: () => void): NudgeOutcome | null;
+}>, onEmergencyCapHit?: () => void, onNothingToCompress?: (kind: 'normal' | 'emergency') => void): NudgeOutcome | null;
 /**
  * Render the nudge message text. DEFAULT (no `config.prompts.nudge` override)
  * calls the kernel's own `renderNudgeText` — EFFICIENCY_NOTE/EMERGENCY_HEADER,

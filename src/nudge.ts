@@ -115,6 +115,28 @@ function kernelRangeViewOf(nudge: NudgeDecision, state: CompressionState): Kerne
 }
 
 /**
+ * Whether the kernel's recommendation has a LEGAL target on this surface.
+ *
+ * A tier-2/3 recommendation targets existing blocks (their checkpoint seqs), so
+ * it is always actionable. A plain T1 recommendation needs at least one offered
+ * compressible span: with the surface fragmented by injected control rows (or
+ * with the remaining spans below the kernel's merge floor) the offer table comes
+ * back empty, and then "Context limit reached — compress now" asks for an action
+ * with no legal target at all. Live-measured 2026-10-14 (session-a41fb964): 906
+ * surface nodes, 241 barrier rows (goal 186 / time-context 20 / team-message 17 /
+ * agent-instructions 10), ~2K tokens offerable — every nudge in that window was
+ * unactionable, and the model degraded while trying to comply.
+ */
+export function hasActionableTarget(
+  session: import('@deepseek-ai/dsh-session').Session,
+  nudge: NudgeDecision,
+  state: CompressionState,
+): boolean {
+  if (nudge.tier !== null && nudge.tier !== undefined) return true
+  return buildCompressibleSeqRanges(session, kernelRangeViewOf(nudge, state)).length > 0
+}
+
+/**
  * Range-row suffix naming the image/file blocks a span carries, so the model
  * does not read "~0 tokens" as "nothing to reclaim" for a picture-heavy span
  * (issue #117). Counts, not prices: the price sits in the token column.
@@ -148,6 +170,38 @@ export function meterMediaPriceResolver(
   }
 }
 
+/** Rows the nudge range table prints. */
+export const RANGE_TABLE_LIMIT = 6
+
+/**
+ * How many of the LARGEST ranges the table considers before ordering by age.
+ * See {@link selectRangeTableRanges}.
+ */
+export const RANGE_TABLE_LARGE_WINDOW = 8
+
+/**
+ * Pick the rows the nudge range table prints: **the oldest among the large**.
+ *
+ * Ordering policy, live-tuned 2026-10-14 on a 914-node / 128-range surface:
+ * plain oldest-first spent the six rows on whatever happened to be oldest —
+ * including 195-token slivers that cost a model turn for nothing — while the
+ * 124,877-token span sat below the fold. Pure size-first would instead push the
+ * model to compress fresh work it may still need. The compromise: consider the
+ * few largest spans (they are the ones worth a turn), then print the OLDEST of
+ * those (consumed history first, matching the kernel's front-to-back rhythm and
+ * the stable-ordering property the table has always had).
+ */
+export function selectRangeTableRanges<T extends { start: number; end: number; tokens: number }>(
+  all: readonly T[],
+): T[] {
+  if (all.length <= RANGE_TABLE_LIMIT) return [...all]
+  return [...all]
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, RANGE_TABLE_LARGE_WINDOW)
+    .sort((a, b) => a.start - b.start)
+    .slice(0, RANGE_TABLE_LIMIT)
+}
+
 /**
  * Render the compressible-range table as seq refs for the model.
  *
@@ -167,10 +221,11 @@ export function rangeTable(
     session,
     kernelView,
     mediaPriceOf === undefined ? {} : { mediaPriceOf },
-  ).slice(0, 6)
+  )
+  const shown = selectRangeTableRanges(ranges)
   // 零范围:整块省略(保留现状的提前返回与 nudge 尾部 '\n')。
-  if (ranges.length === 0) return ''
-  const lines = ranges.map((range) =>
+  if (shown.length === 0) return ''
+  const lines = shown.map((range) =>
     renderTemplate(prompts.rangeTable.line, {
       start: range.start,
       end: range.end,
@@ -185,8 +240,14 @@ export function rangeTable(
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     '',
     renderTemplate(prompts.rangeTable.header, { surface: surfaceSummary(session) }),
-    renderTemplate(prompts.rangeTable.title, { count: ranges.length }),
+    renderTemplate(prompts.rangeTable.title, { count: shown.length }),
     ...lines,
+    // Name what the cap hid: with a fragmented surface the table used to show a
+    // handful while dozens more sat unlisted, and the model had no way to know
+    // (2026-10-14: 128 offerable ranges, six rows printed).
+    ...(ranges.length > shown.length
+      ? [`  (${ranges.length - shown.length} more range(s) not shown — acp_status with scope:"uncompressed", view:"ranges" lists them)`]
+      : []),
     prompts.rangeTable.footer,
   ].join('\n')
 }
@@ -277,6 +338,11 @@ export const EMERGENCY_NUDGE_MAX_PER_TURN = 3
  * `onEmergencyCapHit` (optional) fires when the kernel still wants an
  * emergency nudge but the per-turn budget is spent — the host uses it to log
  * why the model stops receiving nudges (issue #108 review).
+ *
+ * `onNothingToCompress` (optional) fires when the kernel wants a nudge but the
+ * offered range table is EMPTY (no reclaimable span above the host guards and
+ * the kernel's merge floor) — the injection is skipped instead of asking the
+ * model for an action with no legal target (2026-10-14 fragmentation case).
  */
 export function buildNudge(
   agent: Agent,
@@ -284,6 +350,7 @@ export function buildNudge(
   lastNudgeTurn: Map<string, number>,
   emergencyNudges: Map<string, { turn: number; count: number }>,
   onEmergencyCapHit?: () => void,
+  onNothingToCompress?: (kind: 'normal' | 'emergency') => void,
 ): NudgeOutcome | null {
   const session = agent.session
   const state = env.store.stateFor(session)
@@ -317,6 +384,22 @@ export function buildNudge(
   )
   nudge.contextBreakdown = computeSurfaceBreakdown(turn.state, statusMessages, tokenCount, nudge.contextBreakdown?.growth ?? 0)
   const emergency = nudge.breakdown?.emergencyOverride === 1
+
+  // Never demand a compression the surface cannot offer. The kernel decides
+  // WHEN to nudge from pressure/growth, but only the HOST knows whether any
+  // legal target exists: with the surface fragmented by injected control rows
+  // the offered table can come back empty (or priced at ~0 tokens), and the
+  // emergency copy — "Context limit reached — compress now" — then asks for an
+  // action with no legal target at all. The model retries, its turn degenerates,
+  // and the nudge re-injects (bounded per turn, so it also wastes the budget).
+  // Live-measured 2026-10-14 (session-a41fb964): 906 surface nodes, 241 barrier
+  // rows (goal 186 / time-context 20 / team-message 17 / agent-instructions 10),
+  // only ~2K tokens offerable — every emergency nudge in that window was
+  // unactionable. Suppress the injection instead, and let the caller log it.
+  if (!hasActionableTarget(session, nudge, turn.state)) {
+    onNothingToCompress?.(emergency ? 'emergency' : 'normal')
+    return null
+  }
 
   const turnNumber = findOpenTurn(sessionEventsOf(session)) ?? 0
   if (!emergency) {

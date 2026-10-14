@@ -248,6 +248,7 @@ DSH 的每个模型请求都派生自其 append-only 会话日志（*surface*）
 | `autoTools` | `true` | 在 `ctx.tools` 注册四个模型工具 |
 | `autoCommand` | `true` | 在 `ctx.commands` 注册 `/acp-prune` 命令 |
 | `autoNudge` | `true` | 当内核建议时向 `agent/pre-step` 注入 nudge（运行时热调：`/acp-prune config`） |
+| `carrierSpans` | `split` | plain（普通 seq）范围跨过**活跃块的 checkpoint 载体**时怎么办：`split`（默认）把该范围按载体切成若干段、只压两侧可压的部分，并在结果里回报哪些 seq 被保留（载体继续可见，摘要只覆盖被折的 seq）；`reject` 恢复旧的硬拒（整条拒绝 + 提示改用块号 `bN` 蒸馏）。组合行专用（不进 settings 层），`/acp-prune compress` 走同一策略 |
 | `maxOverflowRetries` | `1` | 宿主确认的上下文超窗（`CONTEXT_WINDOW_EXCEEDED`）自动抢救预算：超窗时引擎挑一段**最大且合规**的范围做一次紧急压缩（摘要是引擎自己写的标记，不调模型——请求刚被拒，本就没有模型回合可写摘要；原文都留在日志里，`search_context`/`decompress` 找得回来），然后应答宿主的 `agent/request-error` 让该请求重试。预算按请求计数，模型有进展（落一条 assistant 消息）或 agent 回到 idle 即重置；`0` 关闭这个自动动作（错误原样抛给用户）。这是 ACP 唯一的自动压缩动作——压力侧始终只 nudge、由模型决定（组合行专用，不进 settings 层；原理与取舍见 [docs/overflow-recovery-design.md](docs/overflow-recovery-design.md)） |
 | `settingsEnabled` | `true`（未配置即启用） | （可选）整体关闭运行时设置集成（组合行专用，不进 settings 层——开关不能关掉自己；关闭后组合行 `config:` 仍是唯一生效通道） |
 | `prompts` | — | （可选）自定义提示词文案：nudge / 范围表 / system prompt / 工具描述按槽位覆盖（模板 + 命名占位符，构造期校验；见上文「自定义提示词文案」与 [docs/configurable-prompts-design.md](docs/configurable-prompts-design.md)） |
@@ -276,6 +277,29 @@ DSH 的每个模型请求都派生自其 append-only 会话日志（*surface*）
 - **两个暂未纳入的旋钮**：原始需求里的 `growthRatio`（内核已有 `nudge.growthRatio`，可经 `coreOverrides` 调）和 `protectedLastMessages`（≈ 内核 `preserveRecentMessages`）目前不是本项目的一等旋钮；是否采纳为命名键 / UI 项由维护者决定，未擅自并入预设。
 
 ## 已修复的问题
+
+### 长会话被注入行切碎时"压不动、还在催"（2026-10-14）
+
+goal 模式 / Agent 团队 / 时间上下文都会往**可见面**写控制行，而范围表把它们当**屏障**（遇
+到就断段）。当这类行多于内容时，可压范围会整体塌缩成几条边角料——实测一条 906 节点、
+可见面 ≈488K token 的会话，nudge 在喊 `⚠ Context limit reached — compress now`，能给的
+却只有 6 条范围（3 条是同一段、1 条 ~0 token），模型没有任何合法目标可压，只能反复重试并
+把回合走成静默结束。三处改动：
+
+1. **范围表卫生**：同名跨度只列一次，`~0 token` 的条目直接剔除（`buildCompressibleSeqRanges`）；
+2. **没有可执行目标就不催**：普通 T1 压缩在范围表为空时**抑制 nudge**（并写一条 warn 说明
+   原因），而不是让模型去执行一个没有合法目标动作（tier 2/3 蒸馏建议不受影响——它打的是已有块）；
+3. **`/acp-prune status` 新增 context map**：一行给 surface 规模，一行给**注入行分类计数**
+   （goal / time-context / team-message / agent-instructions …），一行给**当前可压范围汇总**，
+  没有范围时显式告警——把"为什么压不动"直接摆出来，不用再翻日志。
+4. **宿主"状态回显"审计（根治）**：`goal` / `tool-goal` / `time-context` / `team-message` /
+   `agent-message` 这五类通道**每轮/每次都会写一条新行**，所以只有**最新一条**承载当前状态、
+   必须留作屏障；更早的都是被取代的历史，**允许折叠**。实测效果：上面那条会话的 241 条屏障
+   行里，绝大多数（goal 185 / time-context 19 / team-message 16 / tool-goal 5）会变成可折，
+   真正剩下的屏障只有各类的最新一条 + AGENTS.md / 技能目录那几行——被切成 3~4 节点小片的
+   可见面重新变回可压的长段。指令行（AGENTS.md、技能目录）**不在**这个审计范围内，规则不变。
+
+配套回归测试：`tests/context-map.test.ts`（范围表去重 / 无可压范围时的可执行性判定 / context map 渲染）。
 
 > 下面这条是本项目自己撞出来的真实故障。已在内核 **acp-kernel 0.0.101** 修复，本仓 **v0.2.27** 起 pin 到该版本；老版本（≤ v0.2.26）仍会遇到。
 

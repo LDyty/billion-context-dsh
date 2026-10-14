@@ -337,6 +337,35 @@ export declare function newestSkillCatalogSeqOf(session: Session): number | null
  * stay compressible — removing them while the newest copy stays visible is the
  * real cleanup.
  */
+/** One row of the surface-kind histogram behind `/acp-prune status`'s context map. */
+export interface SurfaceKindCount {
+    /** Display label: the source kind, or `plugin:<name>` for plugin rows. */
+    readonly label: string;
+    readonly count: number;
+    /** True when the range table treats this row as a barrier (never offered, splits spans). */
+    readonly barrier: boolean;
+}
+/**
+ * Count the live surface's nodes by source kind, marking the barriers.
+ *
+ * This is the diagnostic half of the 2026-10-14 fragmentation case: the table
+ * came back with six entries (three the same span, one ~0 tokens) on a 906-node
+ * surface because 241 injected control rows (goal 186 / time-context 20 /
+ * team-message 17 / agent-instructions 10) split it into 3-4 node runs. One line
+ * now shows that instead of an afternoon of log forensics.
+ */
+export declare function surfaceKindCounts(session: Session): SurfaceKindCount[];
+/**
+ * Surface seqs of SUPERSEDED host "state echo" rows — the ones the range table
+ * may fold even though `classifySurfaceEvent` calls their kind a barrier.
+ *
+ * Reads the visible surface in order and keeps, per audited kind
+ * ({@link STALE_FOLDABLE_HOST_KINDS}), only the newest row; every older row of
+ * that kind is superseded history and no longer splits a compressible span. The
+ * newest row stays a barrier, so the model always sees current goal/time/team
+ * state. Live case: 2026-10-14, 241 such rows chopped a 906-node surface.
+ */
+export declare function staleFoldableHostRowSeqs(session: Session): Set<number>;
 export declare function guardedSurfaceSeqsOf(session: Session): Set<number>;
 /**
  * The kernel's own view of what can be compressed, as the engine hands it to
@@ -441,6 +470,22 @@ export declare function liveCheckpointCarriersInSpan(session: Session, seqs: rea
     seq: number;
     kernelBlockId: string;
 }[];
+/**
+ * Split a positional seq span at the given barrier seqs into contiguous runs.
+ *
+ * The compress path uses this to salvage a requested plain range that crosses a
+ * live block's checkpoint carrier: the carrier itself must stay on the surface
+ * (see `liveCheckpointCarriersInSpan`), while the content around it is still
+ * foldable. Splitting — rather than rewriting the span into block ids — keeps
+ * the model's own summary attached to the content it actually asked to fold
+ * (`bN..bM` would distill the blocks instead, a different operation).
+ *
+ * Order is the SPAN's, not numeric order: the surface is locally unordered
+ * after a replacement (a checkpoint node lands mid-array carrying a larger
+ * seq), and the barrier seqs are positions in that same array, so the caller
+ * must pass `shadowedSeqsOf`'s slice for both.
+ */
+export declare function splitSpanAtSeqs(seqs: readonly number[], barriers: readonly number[]): number[][];
 /**
  * The kernel block ref (`bN`) for a surface seq, when that seq is the
  * checkpoint summary node of a block — the edge the model must use to

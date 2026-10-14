@@ -36,6 +36,15 @@ export interface ToolEnvironment extends KernelConfigInput {
      */
     readonly compressCallIdsToHide?: Set<string>;
     /**
+     * How a plain (message-ref) range that crosses a LIVE block's checkpoint
+     * carrier is handled. `split` (default) folds the runs around the carrier(s)
+     * and reports what stayed visible; `reject` restores the pre-2026-10-13 hard
+     * refusal, which handed the call back with the block-id recipe instead.
+     * Block-ref boundaries (`bN..bM`) never reach this policy — distilling is
+     * what they are for.
+     */
+    readonly carrierSpans?: 'split' | 'reject';
+    /**
      * Read/write access to the runtime settings layer for `/acp-prune config`.
      * Absent surfaces (never expected — the engine always builds one) would
      * degrade the command to advice text.

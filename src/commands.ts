@@ -28,6 +28,9 @@ import {
   resolveSurfaceRange,
   runCompactionTransaction,
   liveCheckpointCarriersInSpan,
+  splitSpanAtSeqs,
+  buildCompressibleSeqRanges,
+  surfaceKindCounts,
   shadowedSeqsOf,
   sliceDecompressPage,
   DEFAULT_DECOMPRESS_PAGE,
@@ -102,6 +105,38 @@ async function statusText(env: ToolEnvironment, agent: Agent): Promise<string> {
   // Show ALL blocks, not just the oldest 10: /acp-prune status is how the user
   // confirms recent work survived compression, and the block list is folded
   // in the GUI anyway, so length has no cost (issue #47).
+  // Context map (2026-10-14): the operator-visible half of the fragmentation
+  // case. A long session under goal/team mode accumulates injected control rows
+  // that the range table treats as barriers; when they outnumber the content the
+  // offered table collapses and compression starves while pressure keeps rising.
+  // Three lines — how big the surface is, what is in the way, what can actually
+  // be compressed — the numbers that took an afternoon of log forensics.
+  const kinds = surfaceKindCounts(session)
+  const barrierRows = kinds.filter((kind) => kind.barrier)
+  const barrierTotal = barrierRows.reduce((sum, kind) => sum + kind.count, 0)
+  const nodeTotal = session.surface.nodes.length
+  const offered = buildCompressibleSeqRanges(session, {
+    ranges: turn.nudge?.compressibleRanges ?? [],
+    refs: (turn.state as { messageRefs?: { byRef: Record<string, string> } }).messageRefs ?? { byRef: {} },
+  })
+  const offeredTokens = offered.reduce((sum, range) => sum + range.tokens, 0)
+  const largest = offered.reduce((max, range) => Math.max(max, range.tokens), 0)
+  const surfaceNodes = [...session.surface.nodes]
+  lines.push(
+    '  ── context map ──',
+    `  surface: ${nodeTotal} nodes (seqs ${surfaceNodes[0] ?? '-'}..${surfaceNodes[surfaceNodes.length - 1] ?? '-'})`,
+    barrierTotal === 0
+      ? '  injected rows: none (no barrier splits the surface)'
+      : `  injected rows: ${barrierTotal} (${Math.round((barrierTotal / Math.max(1, nodeTotal)) * 100)}%) — `
+        + barrierRows.slice(0, 8).map((kind) => `${kind.label} ${kind.count}`).join(' · '),
+    `  compressible: ${offered.length} range(s), ~${offeredTokens} tokens (largest ${largest})`,
+  )
+  if (offered.length === 0) {
+    lines.push(
+      '  ⚠ no compressible range is on offer — the surface is fragmented by injected rows (or the remaining spans sit below the kernel floor).',
+      '    The nudge is suppressed while this holds (it would ask the model for an action with no legal target); a fresh session or fewer goal/team injections restores it.',
+    )
+  }
   for (const block of ledger) {
     const tier = block.tier > 1 ? ` [T${block.tier}]` : ''
     lines.push(`  - ${block.blockId.slice(0, 8)}${tier}: seqs ${block.start}..${block.end} — ${block.summary.slice(0, 80)}`)
@@ -158,7 +193,42 @@ function compressText(env: ToolEnvironment, agent: Agent, args: string[]): strin
   // refuses a range whose EDGE is a summary node.
   const carriers = liveCheckpointCarriersInSpan(session, shadowed)
   if (carriers.length > 0) {
-    return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`
+    // Same policy as the compress tool: `reject` refuses the span, `split`
+    // (default) folds the runs around each carrier and keeps them visible.
+    if ((env.carrierSpans ?? 'split') === 'reject') {
+      return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`
+    }
+    const carrierLabel = carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(', ')
+    const folded: string[] = []
+    for (const run of splitSpanAtSeqs(shadowed, carriers.map((carrier) => carrier.seq))) {
+      const first = run[0]
+      const last = run[run.length - 1]
+      if (first === undefined || last === undefined) continue
+      let sub: { start: number; end: number }
+      try {
+        sub = resolveSurfaceRange(session, first, last)
+      } catch {
+        continue
+      }
+      const subShadowed = shadowedSeqsOf(session, sub.start, sub.end)
+      if (subShadowed.length === 0) continue
+      if (guardedRowsInSpan(guardedSurfaceSeqsOf(session), subShadowed).length > 0) continue
+      const { provider, model } = routeFor(agent)
+      const { compactionId } = runCompactionTransaction(session, {
+        start: sub.start,
+        end: sub.end,
+        shadowedSeqs: subShadowed,
+        summary: [{ type: 'text', text: summary }],
+        shadowedTokenCount: shadowedTokensViaMeter(session, subShadowed, agent.ctx),
+        provider,
+        model,
+      })
+      folded.push(`${compactionId.slice(0, 8)} (seqs ${sub.start}..${sub.end})`)
+    }
+    if (folded.length === 0) {
+      return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`
+    }
+    return `Compressed ${folded.length} block(s) around checkpoint ${carrierLabel}: ${folded.join(', ')} — the carrier(s) stay visible`
   }
   // Price the reclaimed tokens in the HOST's token vocabulary (rule 12):
   // prefer the live meter's per-node prices, fall back to the exact mirror.
