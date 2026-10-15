@@ -1329,16 +1329,23 @@ interface CompressibleSegment {
  * with a much higher seq than its neighbours).
  */
 /**
- * Price one surface node the way the range builder prices it: the kernel's
- * CJK-aware text counter plus any media surcharge.
+ * Price one surface node the way the host prices it, plus any media surcharge.
  *
- * Text is priced with the kernel counter; image/file blocks add a media price on
- * top, because no text estimator can see them and a span that looked free was
- * ranked last by the model (issue #117). The routed surcharge (meter) and the
- * fixed structural estimate (host heuristic) are ADDED: the meter reports no
- * surcharge at all on every adapter that declares no visual price, and an absent
- * surcharge must never make a picture look free. The callback is only consulted
- * for a seq that really carries an attachment.
+ * The text side is `hostPriceEvent` — the wire estimate (per-block JSON length
+ * and role overhead), the same ruler the ledger and the compress result report
+ * in. Never `defaultCountTokens` here: pricing the message text instead
+ * understates a real prompt by roughly half on a message-dense tail, which is
+ * what made the table promise "reclaims ~13K" for a fold the result then
+ * reported as 17.7K, and what let the ⚠ line call a 110K rewrite "61K"
+ * (live-measured 2026-10-15, three folds: 1.4× / 1.8× / 2.3× low).
+ *
+ * Image/file blocks add a media price on top, because no wire estimate can see
+ * the provider's visual tokens and a span that looked free was ranked last by
+ * the model (issue #117). The routed surcharge (meter) and the fixed structural
+ * estimate (host heuristic) are ADDED: the meter reports no surcharge at all on
+ * every adapter that declares no visual price, and an absent surcharge must
+ * never make a picture look free. The callback is only consulted for a seq that
+ * really carries an attachment.
  *
  * @param event - the surface node's event.
  * @param seq - the node's surface seq (the media callback is keyed by seq).
@@ -1355,7 +1362,7 @@ function surfaceNodeTokens(
   const mediaPrice = attachments.images + attachments.files > 0
     ? (mediaPriceOf?.(seq) ?? 0) + hostMediaStructuralPrice(mediaBlocksOfEvent(event))
     : 0
-  return defaultCountTokens(extractEventText(event)) + mediaPrice
+  return hostPriceEvent(event) + mediaPrice
 }
 
 function compressibleSegmentsOf(

@@ -13,17 +13,27 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { buildCompressibleSeqRanges, staleFoldableHostRowSeqs } from '../src/region.ts'
 import { appendAssistant, appendUser, buildTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
 
-/** Append one host state-echo row and return its surface seq. */
+/**
+ * Append one host state-echo row and return its surface seq.
+ *
+ * The row is built with `createUserMessage`, i.e. the REAL host shape: for a
+ * `user/message` event the payload IS the message (`content` + `source` at the
+ * top level — see dsh-session's `deriveEventMessage`, which returns
+ * `event.data` verbatim for this type; the goal round driver appends exactly
+ * this shape, packages/goal/goal-round-driver/src/index.ts). A wrapper object
+ * `{ turn, step, message, source }` is the assistant/tool envelope and does not
+ * belong here — the range table prices each node with the host's
+ * `estimateMessage`, which reads `content` straight off the payload.
+ */
 function inject(session: Session, kind: string, extra: Record<string, unknown> = {}): number {
-  session.append('user/message', {
-    turn: 1,
-    step: 1,
-    message: { role: 'user', content: [{ type: 'text', text: `state echo ${kind}` }] },
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: `state echo ${kind}` }],
     source: { kind, ...extra },
-  } as never, { surfaceOp: 'append' })
+  } as never), { surfaceOp: 'append' })
   const nodes = session.surface.nodes
   return nodes[nodes.length - 1]!
 }

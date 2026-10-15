@@ -59,6 +59,15 @@ function cjkText(label: string, chars: number): string {
   return body.slice(0, chars) + ` [${label}]`
 }
 
+/**
+ * The host heuristic's per-block structural overhead (`BLOCK_OVERHEAD`,
+ * src/host-tokens.ts): what a block with no payable character content costs.
+ */
+const BLOCK_FLOOR = 4
+
+/** The host heuristic's per-message role framing (`ROLE_OVERHEAD`, src/host-tokens.ts). */
+const ROLE_FLOOR = 4
+
 /** A CJK-heavy session with real step/start events (the meter's measure() throws on step-less logs). */
 function buildCjkPairSession(pairs: number): Session {
   const session = Session.create('cjk-session')
@@ -331,6 +340,16 @@ test('L3: estimateHostContent mirrors the host estimator exactly (edge cases)', 
   // empty content / empty string.
   assert.equal(estimateHostContent([]), 0)
   assert.equal(estimateHostContent(''), 0)
+  // A content that is neither a block list nor a string: the host's own
+  // `estimateMessage` would throw here, but this mirror also prices events read
+  // back from a log, where a foreign writer's shape reaches us (see the
+  // wrapper-row test below). It must price structurally, never throw.
+  assert.equal(estimateHostContent(undefined as never), BLOCK_FLOOR, 'absent content prices to the structural floor')
+  assert.equal(
+    estimateHostContent({ role: 'user' } as never),
+    BLOCK_FLOOR + Math.ceil(JSON.stringify({ role: 'user' }).length / 4),
+    'an object content prices as one structural block',
+  )
 })
 
 test('L3: hostPriceEvent projects non-surface events to 0 and empty assistant messages to 0', () => {
@@ -356,6 +375,43 @@ test('L3: hostPriceEvent projects non-surface events to 0 and empty assistant me
   assert.equal(hostPriceEvent(byType.get('assistant/message')!), 0, 'empty-content assistant prices to 0 (deriveEventMessage null)')
   const user = byType.get('user/message')!
   assert.ok(hostPriceEvent(user) > 0, 'user message prices positive')
+})
+
+/**
+ * The mirror also prices rows read back from a FOREIGN write shape.
+ *
+ * `deriveEventMessage` returns a `user/message` payload VERBATIM (dsh-session
+ * `deriveEventMessage`, case `user/message` → `event.data`), so a row that
+ * wraps its message in the assistant/tool envelope (`{ turn, step, message,
+ * source }`) reaches `estimateHostMessage` with no `content` at all. The host
+ * never writes those, but a plugin, an older writer, or a test fixture can, and
+ * the range table prices EVERY surface node this way — before this guard the
+ * build threw `TypeError: blocks is not iterable` out of
+ * `buildCompressibleSeqRanges` and killed the whole nudge for the session
+ * (observed 2026-10-15 in tests/host-state-rows.test.ts; the fixture has since
+ * been corrected to the real shape, so this case is pinned directly).
+ */
+test('L3: a user/message row written in the assistant envelope prices to the floor instead of throwing', () => {
+  const session = Session.create('wrapped-row')
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', {
+    turn: 1,
+    step: 1,
+    message: { role: 'user', content: [{ type: 'text', text: cjkText('wrapped', 200) }] },
+    source: { kind: 'goal' },
+  } as never, { surfaceOp: 'append' })
+  const event = session.snapshotEvents().at(-1)!
+  assert.equal(event.type, 'user/message', 'the row really landed as a user/message event')
+  assert.equal(
+    hostPriceEvent(event),
+    BLOCK_FLOOR + ROLE_FLOOR,
+    'no payable content → the structural floor plus role framing, never a crash',
+  )
+  assert.equal(
+    shadowedHostTokens(session, [event.seq]),
+    BLOCK_FLOOR + ROLE_FLOOR,
+    'and the claim fallback prices it the same way',
+  )
 })
 
 test('L3: image-route meters price the claim in heuristicTokens — a node.tokens claim folds the projection negative (issue #103)', async () => {

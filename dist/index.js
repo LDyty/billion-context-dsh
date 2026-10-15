@@ -6829,6 +6829,10 @@ function estimateHostContent(blocks) {
     }
     return tokens2;
   }
+  if (!Array.isArray(blocks)) {
+    const json = JSON.stringify(blocks) ?? "";
+    return BLOCK_OVERHEAD + Math.ceil(json.length / CHARS_PER_TOKEN);
+  }
   let tokens = 0;
   for (const block of blocks) {
     switch (blockType(block)) {
@@ -7502,7 +7506,7 @@ function protectedSurfaceSeqs(session, preserve) {
 }
 function surfaceNodeTokens(event, seq, attachments, mediaPriceOf) {
   const mediaPrice = attachments.images + attachments.files > 0 ? (mediaPriceOf?.(seq) ?? 0) + hostMediaStructuralPrice(mediaBlocksOfEvent(event)) : 0;
-  return defaultCountTokens(extractEventText(event)) + mediaPrice;
+  return hostPriceEvent(event) + mediaPrice;
 }
 function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, mediaPriceOf, staleFoldableSeqs = /* @__PURE__ */ new Set()) {
   const nodes = session.surface.nodes;

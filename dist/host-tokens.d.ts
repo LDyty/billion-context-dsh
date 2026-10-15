@@ -55,6 +55,19 @@ export type HostContent = readonly HostBlock[] | string;
  * the ORIGINAL block object. A string content is iterated as an iterable, so
  * every CHARACTER falls to the default branch (`4+ceil(JSON.stringify(char)/4)`
  * — 5 tokens for any single unescaped character).
+ *
+ * A content that is neither a block list nor a string is priced with the same
+ * structural arm (`4+ceil(JSON.stringify/4)`) instead of throwing. The host's
+ * own `estimateMessage` would throw, but it only ever sees messages it built;
+ * this mirror also prices events read back from a session log, and the host's
+ * `deriveEventMessage` returns a `user/message` payload VERBATIM — so a row
+ * written in another envelope shape (a fixture, a plugin, an older writer)
+ * hands us a wrapper object. Iterating that threw "blocks is not iterable" out
+ * of the range-table build and killed the whole nudge for the session
+ * (observed 2026-10-15); a slightly-odd but finite price is recoverable, a
+ * crash is not. The structural arm is also the conservative choice: the
+ * wrapper's JSON contains the message text, so the price stays in the same
+ * ballpark rather than reading as free.
  */
 export declare function estimateHostContent(blocks: HostContent): number;
 /** Exact mirror of the host's `estimateMessage` (content + role framing). */

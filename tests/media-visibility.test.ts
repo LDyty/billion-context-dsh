@@ -27,7 +27,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
-import { createCore, defaultCountTokens, type CompressionCore } from 'acp-kernel'
+import { createCore, type CompressionCore } from 'acp-kernel'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
@@ -47,7 +47,7 @@ import {
 } from '../src/messages.ts'
 import { buildCompressibleSeqRanges } from '../src/region.ts'
 import { rangeTable } from '../src/nudge.ts'
-import { hostMediaStructuralPrice, mediaPriceViaMeter } from '../src/host-tokens.ts'
+import { hostMediaStructuralPrice, hostPriceEvent, mediaPriceViaMeter } from '../src/host-tokens.ts'
 import { DEFAULT_RESOLVED } from '../src/prompts.ts'
 import {
   appendAssistant,
@@ -272,9 +272,16 @@ test('#117: the range table prices media spans and marks them; text-only session
   assert.ok(mediaEvent, 'the media event resolves')
   const structural = hostMediaStructuralPrice(mediaBlocksOfEvent(mediaEvent))
   assert.ok(structural > 0, 'the host heuristic charges a two-digit token price for a media reference')
+  // The span's text side is priced in the HOST's wire vocabulary — the same
+  // ruler the ledger and the compress result report in — so this expected value
+  // is `hostPriceEvent` per node, NOT the kernel's CJK-aware
+  // `defaultCountTokens`: the two differ by ~1.4× on a message-dense span, and
+  // pricing the table with the kernel counter is what made the table promise
+  // ~13K for a fold the result then reported as 17.7K (live-measured
+  // 2026-10-15).
   const spanText = surfaceEventsOf(session)
     .filter((event) => event.seq >= bare.start && event.seq <= bare.end)
-    .reduce((sum, event) => sum + defaultCountTokens(extractEventText(event)), 0)
+    .reduce((sum, event) => sum + hostPriceEvent(event), 0)
   assert.equal(bare.tokens - spanText, structural, 'the fixed structural price is inside the token column')
   assert.equal(mediaRow.tokens - bare.tokens, 1500, 'the routed surcharge rides on top of the fallback')
 
