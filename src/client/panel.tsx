@@ -211,16 +211,28 @@ export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
     if (snapshot === null) return h('div', { className: 'acp-empty' }, '正在读取…')
     const { usage, surface } = snapshot
     const breakdown = usage.breakdown
+    const windowNote = usage.windowSource === 'engine'
+      ? '可持续输入预算'
+      : usage.windowSource === 'projection'
+        ? '路由原始窗口（未扣输出预留）'
+        : '内置默认值（引擎尚未测过这条会话）'
     return h('div', { className: 'acp-panel' },
       h('div', { className: 'acp-head' },
         h('b', null, `${String(usage.pct)}% 上下文`),
         h('span', null, `${compact(usage.tokens)} / ${compact(usage.window)}`),
+        h('span', { className: usage.windowSource === 'engine' ? 'acp-muted' : 'acp-warn' }, windowNote),
         h('span', { className: 'acp-muted' }, `表面 ${String(surface.nodes)} 节点 · ${String(surface.firstSeq)}..${String(surface.lastSeq)}`),
         h('span', { className: 'acp-muted' }, `表快照 ${stampOf(snapshot.capturedAt)}`),
       ),
       h('div', { className: 'acp-bar' }, h('span', { style: { width: `${String(Math.min(100, usage.pct))}%` } })),
+      // Two calibers, named: the pressure above is provider-anchored (it includes
+      // the system prompt and tool schemas as fixed overhead), while this line is
+      // the engine's TEXT estimate over the visible surface with checkpoint nodes
+      // replaced by their blocks' summaries. They do not add up to each other, and
+      // pretending otherwise is how a reader ends up distrusting both.
       h('div', { className: 'acp-muted' },
-        `tool ${compact(breakdown.tool)} · text ${compact(breakdown.text)} · code ${compact(breakdown.code)} · summaries ${compact(breakdown.summaries)}`),
+        `文本估算（另一把尺子，不含固定开销）：tool ${compact(breakdown.tool)} · text ${compact(breakdown.text)}`
+        + ` · code ${compact(breakdown.code)} · summaries ${compact(breakdown.summaries)}`),
       h('div', { className: 'acp-section' }, h('h4', null, '上下文地图（按提示顺序）'), h(ContextMap, { map: snapshot.map })),
       h('div', { className: 'acp-section' }, h('h4', null, '可压范围与清扫（与 nudge 同一套数字）'), h(RangeTable, { snapshot })),
       h('div', { className: 'acp-section' }, h('h4', null, `已压块 ${String(snapshot.blocks.length)}（展开看它当时的思考）`), h(Blocks, { blocks: snapshot.blocks })),

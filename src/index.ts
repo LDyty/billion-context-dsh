@@ -487,16 +487,37 @@ export class AcpCompactionEngine extends CompactionEngine {
         const coreMessages = allLogMessages(session)
         const surfaceEvents = surfaceEventsOf(session)
         const surfaceMessages = eventsToCoreMessages(surfaceEvents)
-        const pressure = surfaceMessages.reduce(
-          (sum, message) => sum + defaultCountTokens(message.text ?? ''),
-          0,
-        )
-        // No LLM probe from a UI read: the explicit setting wins, then the window
-        // the last nudge used, then the default. The window only shapes the
-        // kernel's thresholds here, never the geometry of the offered spans.
-        const windowLimit = this.readSettingsSource().modelContextLimit
-          ?? inspectCacheOf(sessionId)?.window
-          ?? DEFAULT_CONTEXT_WINDOW
+        // The SAME pressure chain the nudge uses (`resolveTokenCount`): the host
+        // projection first (provider-anchored, includes the fixed overhead the
+        // footer shows), then the meter's surface estimate, then the character
+        // heuristic. A UI read must not invent a second caliber — the panel's
+        // header is read as "the number the engine decides on".
+        const projections = this.ctx.get('sessionProjections') as {
+          snapshot?: (session: unknown) => {
+            values?: { contextPressure?: { projectedTokens?: number; contextWindow?: number } }
+          }
+        } | undefined
+        const projectedPressure = projections?.snapshot?.(session)?.values?.contextPressure?.projectedTokens
+        const meter = this.ctx.get('tokenMeter') as { measure?: (session: unknown) => { surfaceTokens?: number } } | undefined
+        const meterSurface = meter?.measure?.(session)?.surfaceTokens
+        const pressure = typeof projectedPressure === 'number' && projectedPressure > 0
+          ? projectedPressure
+          : (typeof meterSurface === 'number' && meterSurface > 0
+            ? meterSurface
+            : surfaceMessages.reduce((sum, message) => sum + defaultCountTokens(message.text ?? ''), 0))
+        // Denominator, in trust order: the explicit setting → the window the last
+        // nudge actually compressed against → the RAW route capacity the host
+        // disclosed → the built-in 128K fallback (and the panel says which one it
+        // used, because a raw capacity is not the sustainable input budget).
+        const projectedWindow = projections?.snapshot?.(session)?.values?.contextPressure?.contextWindow
+        const explicitLimit = this.readSettingsSource().modelContextLimit
+        const engineWindow = inspectCacheOf(sessionId)?.window
+        const windowLimit = explicitLimit
+          ?? engineWindow
+          ?? (typeof projectedWindow === 'number' && projectedWindow > 0 ? projectedWindow : DEFAULT_CONTEXT_WINDOW)
+        const windowSource: 'engine' | 'projection' | 'default' = explicitLimit !== undefined || engineWindow !== undefined
+          ? 'engine'
+          : (typeof projectedWindow === 'number' && projectedWindow > 0 ? 'projection' : 'default')
         const turn = this.kernel.processTurn({
           messages: coreMessages,
           state: cloned,
@@ -512,7 +533,7 @@ export class AcpCompactionEngine extends CompactionEngine {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs,
         }, this.prompts)
-        rememberPressure(sessionId, pressure, windowLimit)
+        rememberPressure(sessionId, pressure, windowLimit, windowSource)
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
           text: breakdown.text,

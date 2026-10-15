@@ -28,6 +28,8 @@ export interface AcpInspectCache {
     pressure?: number;
     /** The sustainable input budget the engine compresses against. */
     window?: number;
+    /** Where `window` came from (see the snapshot's `usage.windowSource`). */
+    windowSource?: 'engine' | 'projection' | 'default';
     breakdown?: {
         tool: number;
         text: number;
@@ -41,7 +43,7 @@ export interface AcpInspectCache {
 /** Remember the rows/sweeps one range-table build produced. */
 export declare function rememberRangeTable(sessionId: string, rows: readonly AcpInspectRow[], sweeps: readonly AcpInspectSweep[]): void;
 /** Remember the pressure gauge (cheap: every pre-step knows it). */
-export declare function rememberPressure(sessionId: string, pressure: number, window: number | undefined): void;
+export declare function rememberPressure(sessionId: string, pressure: number, window: number | undefined, windowSource?: 'engine' | 'projection' | 'default'): void;
 /** Remember the surface breakdown (only computed when a nudge actually fires). */
 export declare function rememberBreakdown(sessionId: string, breakdown: AcpInspectCache['breakdown']): void;
 export declare function inspectCacheOf(sessionId: string): AcpInspectCache | undefined;

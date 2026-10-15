@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createCore } from 'acp-kernel'
 import { AcpStateStore } from '../src/state.ts'
-import { buildInspectSnapshot, handleInspectRequest, inspectBlocksOf, inspectCacheOf } from '../src/inspect.ts'
+import { buildInspectSnapshot, handleInspectRequest, inspectBlocksOf, inspectCacheOf, rememberPressure } from '../src/inspect.ts'
 import { buildNudge, rangeTable } from '../src/nudge.ts'
 import { runCompactionTransaction } from '../src/region.ts'
 import { makeTools } from '../src/tools.ts'
@@ -181,6 +181,34 @@ test('inspect: a session the engine never built a table for still answers (empty
   assert.deepEqual(snapshot.rows, [], 'no remembered build → no rows (the panel says so instead of inventing them)')
   assert.equal(snapshot.capturedAt, 0)
   assert.ok(snapshot.map.length > 0, 'the live map is still served')
+})
+
+test('inspect: the panel says WHERE its denominator came from', () => {
+  const session = buildTextSession(12)
+  const settings = {
+    modelContextLimit: 800000,
+    nudgeMinContextLimitPct: 0.7,
+    nudgeMaxContextLimitPct: 0.85,
+    nudgeEmergencyThresholdPct: 0.95,
+  }
+  const snap = (): { usage: { window: number; windowSource: string; pct: number } } => buildInspectSnapshot({
+    sessionId: String(session.id),
+    session,
+    cache: inspectCacheOf(String(session.id)),
+    blocks: [],
+    settings,
+  })
+  // No cache at all, but an explicit setting: the engine's own budget.
+  assert.equal(snap().usage.windowSource, 'engine')
+  assert.equal(snap().usage.window, 800000)
+  // A raw route capacity (no output reservation subtracted) is NOT the engine's
+  // budget, and the panel must be able to tell the reader which one it shows.
+  rememberPressure(String(session.id), 100000, 744000, 'projection')
+  assert.equal(snap().usage.windowSource, 'projection')
+  assert.equal(snap().usage.window, 744000)
+  assert.equal(snap().usage.pct, 13)
+  rememberPressure(String(session.id), 100000, 744000, 'engine')
+  assert.equal(snap().usage.windowSource, 'engine', 'a nudge-recorded window upgrades the badge')
 })
 
 test('inspect: buildNudge remembers the pressure gauge the engine decided on', async () => {

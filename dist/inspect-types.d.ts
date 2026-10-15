@@ -90,6 +90,14 @@ export interface AcpInspectSnapshot {
         /** Provider-anchored pressure (the nudge's own gauge). */
         readonly tokens: number;
         readonly window: number;
+        /**
+         * Where the denominator came from, so the panel can say it out loud:
+         * `engine` = the budget the engine compresses against (explicit setting, or
+         * the sustainable input budget the last nudge used), `projection` = the raw
+         * route capacity the host disclosed, `default` = the built-in fallback (the
+         * least trustworthy case — a session the engine has never measured).
+         */
+        readonly windowSource: 'engine' | 'projection' | 'default';
         readonly pct: number;
         readonly breakdown: {
             readonly tool: number;

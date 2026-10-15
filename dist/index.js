@@ -8018,10 +8018,11 @@ function rememberRangeTable(sessionId, rows, sweeps) {
   cache2.sweeps = [...sweeps];
   caches.set(sessionId, cache2);
 }
-function rememberPressure(sessionId, pressure, window) {
+function rememberPressure(sessionId, pressure, window, windowSource) {
   const cache2 = caches.get(sessionId) ?? { capturedAt: Date.now(), rows: [], sweeps: [] };
   cache2.pressure = pressure;
   if (window !== void 0) cache2.window = window;
+  if (windowSource !== void 0) cache2.windowSource = windowSource;
   caches.set(sessionId, cache2);
 }
 function rememberBreakdown(sessionId, breakdown) {
@@ -8094,6 +8095,7 @@ function buildInspectSnapshot(input) {
   const cache2 = input.cache;
   const pressure = cache2?.pressure ?? 0;
   const window = cache2?.window ?? input.settings.modelContextLimit;
+  const windowSource = cache2?.windowSource ?? (input.settings.modelContextLimit === void 0 ? "default" : "engine");
   return {
     sessionId,
     capturedAt: cache2?.capturedAt ?? 0,
@@ -8105,6 +8107,7 @@ function buildInspectSnapshot(input) {
     usage: {
       tokens: pressure,
       window,
+      windowSource,
       pct: window > 0 ? Math.min(100, Math.round(pressure / window * 100)) : 0,
       breakdown: cache2?.breakdown ?? { tool: 0, text: 0, code: 0, summaries: 0, system: 0 }
     },
@@ -8485,7 +8488,7 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
   const surfaceEvents = surfaceEventsOf(session);
   const surfaceMessages = eventsToCoreMessages(surfaceEvents);
   const tokenCount = measuredTokenCount(agent, surfaceMessages);
-  rememberPressure(String(session.id), tokenCount, env.modelContextLimit);
+  rememberPressure(String(session.id), tokenCount, env.modelContextLimit, "engine");
   const config = kernelConfigFor(env);
   const turn = env.kernel.processTurn({ messages: coreMessages, state, config, tokenCount });
   env.store.set(session, turn.state);
@@ -10180,11 +10183,16 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
         const coreMessages = allLogMessages(session);
         const surfaceEvents = surfaceEventsOf(session);
         const surfaceMessages = eventsToCoreMessages(surfaceEvents);
-        const pressure = surfaceMessages.reduce(
-          (sum, message) => sum + defaultCountTokens(message.text ?? ""),
-          0
-        );
-        const windowLimit = this.readSettingsSource().modelContextLimit ?? inspectCacheOf(sessionId)?.window ?? DEFAULT_CONTEXT_WINDOW;
+        const projections = this.ctx.get("sessionProjections");
+        const projectedPressure = projections?.snapshot?.(session)?.values?.contextPressure?.projectedTokens;
+        const meter = this.ctx.get("tokenMeter");
+        const meterSurface = meter?.measure?.(session)?.surfaceTokens;
+        const pressure = typeof projectedPressure === "number" && projectedPressure > 0 ? projectedPressure : typeof meterSurface === "number" && meterSurface > 0 ? meterSurface : surfaceMessages.reduce((sum, message) => sum + defaultCountTokens(message.text ?? ""), 0);
+        const projectedWindow = projections?.snapshot?.(session)?.values?.contextPressure?.contextWindow;
+        const explicitLimit = this.readSettingsSource().modelContextLimit;
+        const engineWindow = inspectCacheOf(sessionId)?.window;
+        const windowLimit = explicitLimit ?? engineWindow ?? (typeof projectedWindow === "number" && projectedWindow > 0 ? projectedWindow : DEFAULT_CONTEXT_WINDOW);
+        const windowSource = explicitLimit !== void 0 || engineWindow !== void 0 ? "engine" : typeof projectedWindow === "number" && projectedWindow > 0 ? "projection" : "default";
         const turn = this.kernel.processTurn({
           messages: coreMessages,
           state: cloned,
@@ -10197,7 +10205,7 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs
         }, this.prompts);
-        rememberPressure(sessionId, pressure, windowLimit);
+        rememberPressure(sessionId, pressure, windowLimit, windowSource);
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
           text: breakdown.text,

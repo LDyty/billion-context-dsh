@@ -41,6 +41,8 @@ export interface AcpInspectCache {
   pressure?: number
   /** The sustainable input budget the engine compresses against. */
   window?: number
+  /** Where `window` came from (see the snapshot's `usage.windowSource`). */
+  windowSource?: 'engine' | 'projection' | 'default'
   breakdown?: {
     tool: number
     text: number
@@ -69,10 +71,16 @@ export function rememberRangeTable(
 }
 
 /** Remember the pressure gauge (cheap: every pre-step knows it). */
-export function rememberPressure(sessionId: string, pressure: number, window: number | undefined): void {
+export function rememberPressure(
+  sessionId: string,
+  pressure: number,
+  window: number | undefined,
+  windowSource?: 'engine' | 'projection' | 'default',
+): void {
   const cache = caches.get(sessionId) ?? { capturedAt: Date.now(), rows: [], sweeps: [] }
   cache.pressure = pressure
   if (window !== undefined) cache.window = window
+  if (windowSource !== undefined) cache.windowSource = windowSource
   caches.set(sessionId, cache)
 }
 
@@ -211,6 +219,8 @@ export function buildInspectSnapshot(input: {
   const cache = input.cache
   const pressure = cache?.pressure ?? 0
   const window = cache?.window ?? input.settings.modelContextLimit
+  const windowSource = cache?.windowSource
+    ?? (input.settings.modelContextLimit === undefined ? 'default' : 'engine')
   return {
     sessionId,
     capturedAt: cache?.capturedAt ?? 0,
@@ -222,6 +232,7 @@ export function buildInspectSnapshot(input: {
     usage: {
       tokens: pressure,
       window,
+      windowSource,
       pct: window > 0 ? Math.min(100, Math.round((pressure / window) * 100)) : 0,
       breakdown: cache?.breakdown ?? { tool: 0, text: 0, code: 0, summaries: 0, system: 0 },
     },

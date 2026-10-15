@@ -526,7 +526,10 @@ export function buildNudge(
   // The panel's pressure gauge is the SAME measurement the nudge decides on, so
   // the two can never disagree; it is remembered before the should-inject gate
   // because every step knows it (unlike the breakdown below).
-  rememberPressure(String(session.id), tokenCount, env.modelContextLimit)
+  // `env.modelContextLimit` is already the SUSTAINABLE input budget here (the
+  // pre-step passes `windowFor(agent).limit`, raw window minus the output cap),
+  // which is exactly what the panel should divide by.
+  rememberPressure(String(session.id), tokenCount, env.modelContextLimit, 'engine')
   const config = kernelConfigFor(env)
   const turn = env.kernel.processTurn({ messages: coreMessages, state, config, tokenCount })
   env.store.set(session, turn.state)
