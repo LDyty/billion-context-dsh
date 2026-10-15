@@ -8046,6 +8046,7 @@ async function handleInspectRequest(host, request) {
     const sessions = host.ctx.get("sessions");
     const session = typeof sessions?.get === "function" ? sessions.get(sessionId) : void 0;
     if (session === void 0 || session === null) return reply({ ok: true, value: null });
+    if (host.ensureFresh !== void 0) await host.ensureFresh(sessionId, session);
     const { settings } = host;
     return reply({
       ok: true,
@@ -10083,7 +10084,7 @@ function assertNudgeThresholdOrder(config) {
     throw new Error(`nudge thresholds are inverted (${describe}) \u2014 nudgeMinContextLimitPct must be <= nudgeEmergencyThresholdPct`);
   }
 }
-var AcpCompactionEngine = class extends CompactionEngine {
+var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
   /**
    * Static plugin config schema — cordis reads `plugin.Config` off the raw
    * plugin value at fiber start and validates the composition row against it
@@ -10133,11 +10134,87 @@ var AcpCompactionEngine = class extends CompactionEngine {
   async handleInspectRequest(request, ctx) {
     return handleInspectRequest({
       ctx,
+      ensureFresh: (sessionId, session) => this.ensureInspectView(sessionId, session),
       settings: this.readSettingsSource(),
       ...this.config.preset === void 0 ? {} : { preset: this.config.preset },
       kernelNudgeMinContextLimitPct: defaultConfig(DEFAULT_CONTEXT_WINDOW).nudge.minContextLimitPct,
       defaultContextWindow: DEFAULT_CONTEXT_WINDOW
     }, request);
+  }
+  /** How long a remembered table counts as fresh enough to serve as-is. */
+  static INSPECT_TABLE_TTL_MS = 15 * 60 * 1e3;
+  /** Floor between two on-demand builds, so a polling panel cannot hammer the kernel. */
+  static INSPECT_BUILD_FLOOR_MS = 20 * 1e3;
+  /** Last on-demand build per session (throttle) plus the in-flight promise. */
+  inspectBuilds = /* @__PURE__ */ new Map();
+  /**
+   * Make sure a table snapshot exists for one session.
+   *
+   * The nudge path only builds the table when it actually injects (pressure
+   * above the threshold), so after a restart — or through a quiet stretch — the
+   * panel would otherwise read nothing and report `0 / window`. This builds it
+   * NOW when the remembered copy is missing or older than the TTL.
+   *
+   * Two safety properties, both load-bearing:
+   *  - the kernel runs on a **structured clone** of the live state, so a UI read
+   *    can never move the engine's real refs/stats/nudge anchors (the clone's
+   *    result is discarded; only what `rangeTable` remembers is kept);
+   *  - a throttle plus single-flight per session, because the panel polls every
+   *    few seconds and a full processTurn on a 500-node surface is not free.
+   *
+   * @param sessionId - the session id the panel asked about.
+   * @param session - the live session handle.
+   */
+  async ensureInspectView(sessionId, session) {
+    const remembered = inspectCacheOf(sessionId);
+    if (remembered !== void 0 && remembered.rows.length > 0 && Date.now() - remembered.capturedAt < _AcpCompactionEngine.INSPECT_TABLE_TTL_MS) return;
+    const existing = this.inspectBuilds.get(sessionId);
+    if (existing?.inflight !== void 0) return existing.inflight;
+    if (existing !== void 0 && Date.now() - existing.at < _AcpCompactionEngine.INSPECT_BUILD_FLOOR_MS) return;
+    const entry = { at: Date.now() };
+    this.inspectBuilds.set(sessionId, entry);
+    entry.inflight = (async () => {
+      try {
+        const state = this.store.stateFor(session);
+        const cloned = structuredClone(state);
+        const coreMessages = allLogMessages(session);
+        const surfaceEvents = surfaceEventsOf(session);
+        const surfaceMessages = eventsToCoreMessages(surfaceEvents);
+        const pressure = surfaceMessages.reduce(
+          (sum, message) => sum + defaultCountTokens(message.text ?? ""),
+          0
+        );
+        const windowLimit = this.readSettingsSource().modelContextLimit ?? inspectCacheOf(sessionId)?.window ?? DEFAULT_CONTEXT_WINDOW;
+        const turn = this.kernel.processTurn({
+          messages: coreMessages,
+          state: cloned,
+          config: kernelConfigFor({ ...this.env, modelContextLimit: windowLimit }),
+          tokenCount: pressure
+        });
+        const statusMessages = eventsToCoreMessages(surfaceEvents.filter((event) => isCheckpointNode(event) === false));
+        const breakdown = computeSurfaceBreakdown(turn.state, statusMessages, pressure, 0);
+        rangeTable(session, {
+          ranges: turn.nudge?.compressibleRanges ?? [],
+          refs: turn.state.messageRefs
+        }, this.prompts);
+        rememberPressure(sessionId, pressure, windowLimit);
+        rememberBreakdown(sessionId, {
+          tool: breakdown.tool,
+          text: breakdown.text,
+          code: breakdown.code,
+          summaries: breakdown.summaries,
+          system: breakdown.system
+        });
+      } catch (error) {
+        this.ctx.logger.warn(
+          `billion-context-dsh: inspector table build failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      } finally {
+        entry.at = Date.now();
+        entry.inflight = void 0;
+      }
+    })();
+    return entry.inflight;
   }
   /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (installSection on ≤0.1.6 lines, volatile-ref re-read on the ≥0.1.7 forms line). */
   readSettingsSource = () => resolveAcpSettings({});

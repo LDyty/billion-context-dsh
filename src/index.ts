@@ -35,7 +35,7 @@ import {
   type CompactionTrigger,
   type ManualCompactAgentContext,
 } from '@deepseek-ai/dsh-compaction'
-import { createCore, defaultConfig, setDocCacheCap, type CompressionCore } from 'acp-kernel'
+import { createCore, defaultConfig, defaultCountTokens, setDocCacheCap, type CompressionCore } from 'acp-kernel'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
@@ -43,7 +43,7 @@ import { DEFAULT_SESSION_CACHE_LIMIT, LruMap } from './lru.ts'
 import { AcpStateStore } from './state.ts'
 import { makeTools, type ToolEnvironment } from './tools.ts'
 import { acpCommand } from './commands.ts'
-import { buildNudge, EMERGENCY_NUDGE_MAX_PER_TURN, meterMediaPriceResolver, resolveTokenCount } from './nudge.ts'
+import { buildNudge, computeSurfaceBreakdown, EMERGENCY_NUDGE_MAX_PER_TURN, meterMediaPriceResolver, rangeTable, resolveTokenCount } from './nudge.ts'
 import { ACP_SYSTEM_PROMPT_ORDER } from './system-prompt.ts'
 import { renderSystemPrompt, resolvePrompts, type AcpPrompts, type ResolvedPrompts } from './prompts.ts'
 import { DEFAULT_CONTEXT_WINDOW, probeModelWindow, projectedContextWindow, routeFor, type AcpWindow } from './window.ts'
@@ -55,9 +55,10 @@ import {
   stripOrphanedSurfaceToolMessages,
   type KernelRangeView,
 } from './region.ts'
-import { allLogMessages, eventsToCoreMessages, overflowMarkerSummary, surfaceEventsOf, toolCallIdOfResultEvent } from './messages.ts'
+import { allLogMessages, eventsToCoreMessages, isCheckpointNode, overflowMarkerSummary, surfaceEventsOf, toolCallIdOfResultEvent } from './messages.ts'
 import { shadowedTokensViaMeter } from './host-tokens.ts'
 import { handleInspectRequest } from './inspect.ts'
+import { inspectCacheOf, rememberBreakdown, rememberPressure } from './inspect.ts'
 import { kernelConfigFor } from './config.ts'
 import {
   ACP_SETTINGS_NAMESPACE,
@@ -436,11 +437,101 @@ export class AcpCompactionEngine extends CompactionEngine {
   private async handleInspectRequest(request: Request, ctx: Context): Promise<Response> {
     return handleInspectRequest({
       ctx,
+      ensureFresh: (sessionId, session) => this.ensureInspectView(sessionId, session),
       settings: this.readSettingsSource(),
       ...(this.config.preset === undefined ? {} : { preset: this.config.preset }),
       kernelNudgeMinContextLimitPct: defaultConfig(DEFAULT_CONTEXT_WINDOW).nudge.minContextLimitPct,
       defaultContextWindow: DEFAULT_CONTEXT_WINDOW,
     }, request)
+  }
+
+  /** How long a remembered table counts as fresh enough to serve as-is. */
+  private static readonly INSPECT_TABLE_TTL_MS = 15 * 60 * 1000
+  /** Floor between two on-demand builds, so a polling panel cannot hammer the kernel. */
+  private static readonly INSPECT_BUILD_FLOOR_MS = 20 * 1000
+  /** Last on-demand build per session (throttle) plus the in-flight promise. */
+  private readonly inspectBuilds = new Map<string, { at: number; inflight?: Promise<void> }>()
+
+  /**
+   * Make sure a table snapshot exists for one session.
+   *
+   * The nudge path only builds the table when it actually injects (pressure
+   * above the threshold), so after a restart — or through a quiet stretch — the
+   * panel would otherwise read nothing and report `0 / window`. This builds it
+   * NOW when the remembered copy is missing or older than the TTL.
+   *
+   * Two safety properties, both load-bearing:
+   *  - the kernel runs on a **structured clone** of the live state, so a UI read
+   *    can never move the engine's real refs/stats/nudge anchors (the clone's
+   *    result is discarded; only what `rangeTable` remembers is kept);
+   *  - a throttle plus single-flight per session, because the panel polls every
+   *    few seconds and a full processTurn on a 500-node surface is not free.
+   *
+   * @param sessionId - the session id the panel asked about.
+   * @param session - the live session handle.
+   */
+  private async ensureInspectView(sessionId: string, session: Session): Promise<void> {
+    const remembered = inspectCacheOf(sessionId)
+    if (remembered !== undefined && remembered.rows.length > 0
+      && Date.now() - remembered.capturedAt < AcpCompactionEngine.INSPECT_TABLE_TTL_MS) return
+    const existing = this.inspectBuilds.get(sessionId)
+    if (existing?.inflight !== undefined) return existing.inflight
+    if (existing !== undefined && Date.now() - existing.at < AcpCompactionEngine.INSPECT_BUILD_FLOOR_MS) return
+    const entry: { at: number; inflight?: Promise<void> } = { at: Date.now() }
+    this.inspectBuilds.set(sessionId, entry)
+    entry.inflight = (async (): Promise<void> => {
+      try {
+        const state = this.store.stateFor(session)
+        // NEVER the live state: processTurn writes refs, stats and nudge anchors.
+        const cloned = structuredClone(state)
+        const coreMessages = allLogMessages(session)
+        const surfaceEvents = surfaceEventsOf(session)
+        const surfaceMessages = eventsToCoreMessages(surfaceEvents)
+        const pressure = surfaceMessages.reduce(
+          (sum, message) => sum + defaultCountTokens(message.text ?? ''),
+          0,
+        )
+        // No LLM probe from a UI read: the explicit setting wins, then the window
+        // the last nudge used, then the default. The window only shapes the
+        // kernel's thresholds here, never the geometry of the offered spans.
+        const windowLimit = this.readSettingsSource().modelContextLimit
+          ?? inspectCacheOf(sessionId)?.window
+          ?? DEFAULT_CONTEXT_WINDOW
+        const turn = this.kernel.processTurn({
+          messages: coreMessages,
+          state: cloned,
+          config: kernelConfigFor({ ...this.env, modelContextLimit: windowLimit }),
+          tokenCount: pressure,
+        })
+        const statusMessages = eventsToCoreMessages(surfaceEvents.filter((event) => isCheckpointNode(event) === false))
+        const breakdown = computeSurfaceBreakdown(turn.state, statusMessages, pressure, 0)
+        // The same builder the nudge uses, so the panel and the model can never
+        // see different tables; its side effect (rememberRangeTable) is exactly
+        // what this method is for.
+        rangeTable(session, {
+          ranges: turn.nudge?.compressibleRanges ?? [],
+          refs: turn.state.messageRefs,
+        }, this.prompts)
+        rememberPressure(sessionId, pressure, windowLimit)
+        rememberBreakdown(sessionId, {
+          tool: breakdown.tool,
+          text: breakdown.text,
+          code: breakdown.code,
+          summaries: breakdown.summaries,
+          system: breakdown.system,
+        })
+      } catch (error) {
+        // A panel read must never take the engine down; an unbuildable table
+        // simply leaves the panel showing what it remembered.
+        this.ctx.logger.warn(
+          `billion-context-dsh: inspector table build failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      } finally {
+        entry.at = Date.now()
+        entry.inflight = undefined
+      }
+    })()
+    return entry.inflight
   }
   /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (installSection on ≤0.1.6 lines, volatile-ref re-read on the ≥0.1.7 forms line). */
   private readSettingsSource: () => AcpSettings = () => resolveAcpSettings({})

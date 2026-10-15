@@ -21,6 +21,16 @@ export const ACP_PANEL_CSS = `
 .acp-section > h4 { margin: 0; font-size: 12px; font-weight: 600; opacity: .8; letter-spacing: .02em; }
 .acp-map { display: flex; align-items: stretch; height: 34px; border-radius: 6px; overflow: hidden; gap: 0; }
 .acp-map > i { display: block; min-width: 1px; }
+.acp-map > i:hover, .acp-map > i:focus-visible { filter: brightness(1.35) saturate(1.15); outline: none; }
+.acp-tip {
+  position: fixed; z-index: 2147483000; pointer-events: none;
+  max-width: 300px; padding: 7px 9px; border-radius: 7px;
+  background: color-mix(in srgb, CanvasText 92%, Canvas);
+  color: Canvas; white-space: pre-line; font-size: 11px; line-height: 1.45;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+  opacity: 0; animation: acp-tip-in .09s ease-out forwards;
+}
+@keyframes acp-tip-in { to { opacity: 1; } }
 .acp-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; opacity: .75; }
 .acp-legend > span { display: inline-flex; align-items: center; gap: 4px; }
 .acp-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }

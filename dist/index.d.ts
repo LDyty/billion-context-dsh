@@ -211,6 +211,31 @@ export declare class AcpCompactionEngine extends CompactionEngine {
      * @returns `{ ok: true, value }` with a snapshot, or a typed failure.
      */
     private handleInspectRequest;
+    /** How long a remembered table counts as fresh enough to serve as-is. */
+    private static readonly INSPECT_TABLE_TTL_MS;
+    /** Floor between two on-demand builds, so a polling panel cannot hammer the kernel. */
+    private static readonly INSPECT_BUILD_FLOOR_MS;
+    /** Last on-demand build per session (throttle) plus the in-flight promise. */
+    private readonly inspectBuilds;
+    /**
+     * Make sure a table snapshot exists for one session.
+     *
+     * The nudge path only builds the table when it actually injects (pressure
+     * above the threshold), so after a restart — or through a quiet stretch — the
+     * panel would otherwise read nothing and report `0 / window`. This builds it
+     * NOW when the remembered copy is missing or older than the TTL.
+     *
+     * Two safety properties, both load-bearing:
+     *  - the kernel runs on a **structured clone** of the live state, so a UI read
+     *    can never move the engine's real refs/stats/nudge anchors (the clone's
+     *    result is discarded; only what `rangeTable` remembers is kept);
+     *  - a throttle plus single-flight per session, because the panel polls every
+     *    few seconds and a full processTurn on a 500-node surface is not free.
+     *
+     * @param sessionId - the session id the panel asked about.
+     * @param session - the live session handle.
+     */
+    private ensureInspectView;
     /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (installSection on ≤0.1.6 lines, volatile-ref re-read on the ≥0.1.7 forms line). */
     private readSettingsSource;
     /** Hot-apply driver: re-reads the live source and runs the change diff; called once per agent step, a no-op unless something changed. */

@@ -68,8 +68,10 @@ test('the committed client half keeps the dsh.client bundle contract', () => {
 	const required = [...js.matchAll(/require\("([^"]+)"/gu)].map((match) => match[1]!)
 	assert.deepEqual(
 		[...new Set(required)],
-		['react'],
-		'the only external is the platform-seeded react — anything else must be declared in dsh.client.external',
+		['react', 'react-dom', 'react/jsx-runtime'],
+		'the only externals are the platform-seeded react / react-dom / react/jsx-runtime '
+		+ '(the hover card portals to <body> and its JSX compiles to the automatic runtime) — '
+		+ 'anything else must be declared in dsh.client.external',
 	)
 	assert.ok(js.includes('/api/billion-context/inspect'), 'and it talks to the host route this repo registers')
 })

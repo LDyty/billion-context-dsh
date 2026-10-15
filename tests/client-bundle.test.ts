@@ -44,11 +44,22 @@ function reactStub(): unknown {
   return { createElement, useState: (initial: unknown) => [initial, () => {}], useEffect: () => {}, useMemo: (fn: () => unknown) => fn() }
 }
 
+/** The one react-dom entry point the client half uses (the portaled hover card). */
+function reactDomStub(): unknown {
+  return { createPortal: (element: unknown) => element }
+}
+
 test('client half: the shell handoff yields the cordis plugin face', () => {
   const entry = loadClientBundle()
   assert.equal(entry.id, 'billion-context-dsh', 'registered under the package name')
   const plugin = entry.factory((specifier) => {
-    assert.equal(specifier, 'react', `the bundle may only require platform modules (asked for ${specifier})`)
+    // react-dom for the portaled hover card, react/jsx-runtime for the JSX in it.
+    assert.ok(
+      ['react', 'react-dom', 'react/jsx-runtime'].includes(specifier),
+      `the bundle may only require platform modules (asked for ${specifier})`,
+    )
+    if (specifier === 'react-dom') return reactDomStub()
+    if (specifier === 'react/jsx-runtime') return { jsx: reactStub(), jsxs: reactStub(), Fragment: 'Fragment' }
     return reactStub()
   })
   assert.equal(plugin.name, 'billion-context-dsh-ui')

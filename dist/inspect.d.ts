@@ -56,6 +56,12 @@ export interface InspectRouteHost {
     readonly ctx: {
         get(name: string): unknown;
     };
+    /**
+     * Make sure a table snapshot exists for this session (the engine builds one on
+     * demand when the remembered one is missing or old). Optional: a host that
+     * cannot build one simply serves whatever it remembers.
+     */
+    readonly ensureFresh?: (sessionId: string, session: Session) => Promise<void>;
     readonly settings: {
         readonly modelContextLimit?: number;
         readonly nudgeMinContextLimitPct?: number;

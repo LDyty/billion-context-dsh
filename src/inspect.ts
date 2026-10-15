@@ -100,6 +100,12 @@ export interface InspectSessionsFace {
 /** What the route needs from its host: the context, the live settings, the preset name. */
 export interface InspectRouteHost {
   readonly ctx: { get(name: string): unknown }
+  /**
+   * Make sure a table snapshot exists for this session (the engine builds one on
+   * demand when the remembered one is missing or old). Optional: a host that
+   * cannot build one simply serves whatever it remembers.
+   */
+  readonly ensureFresh?: (sessionId: string, session: Session) => Promise<void>
   readonly settings: {
     readonly modelContextLimit?: number
     readonly nudgeMinContextLimitPct?: number
@@ -138,6 +144,10 @@ export async function handleInspectRequest(host: InspectRouteHost, request: Requ
     const sessions = host.ctx.get('sessions') as InspectSessionsFace | undefined
     const session = typeof sessions?.get === 'function' ? sessions.get(sessionId) as Session | undefined : undefined
     if (session === undefined || session === null) return reply({ ok: true, value: null })
+    // The panel must never report "0 tokens" just because the engine has not run
+    // a pre-step since the last restart: build the table now (on a CLONED kernel
+    // state — see the engine's ensureInspectView) when nothing fresh is on record.
+    if (host.ensureFresh !== undefined) await host.ensureFresh(sessionId, session)
     const { settings } = host
     return reply({
       ok: true,

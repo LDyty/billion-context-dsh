@@ -13,6 +13,7 @@
 import { createElement as h, useEffect, useMemo, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { AcpInspectNode, AcpInspectSnapshot } from '../inspect-types.ts'
+import { useHoverTip } from './hoverTip.tsx'
 
 /** Where the host route lives (src/index.ts registers the same path). */
 const INSPECT_ROUTE = '/api/billion-context/inspect'
@@ -34,11 +35,22 @@ function compact(value: number): string {
   return String(Math.round(value))
 }
 
-function clockOf(ms: number): string {
+/**
+ * A timestamp that never lies about the day: the panel is read across sessions
+ * that live for days (this one folded blocks on the 15th and the 16th), so a
+ * bare `HH:MM:SS` cannot say when a block landed. Today keeps the short form
+ * (with seconds — that is recency), anything else gets its date.
+ */
+function stampOf(ms: number): string {
   if (ms <= 0) return '—'
   const date = new Date(ms)
   const pad = (value: number): string => String(value).padStart(2, '0')
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  const now = new Date()
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  return sameDay ? clock : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`
 }
 
 /** One ready-to-paste compress call for a set of spans. */
@@ -65,15 +77,27 @@ function CopyButton(props: { text: string }): ReactElement {
 }
 
 function ContextMap(props: { map: readonly AcpInspectNode[] }): ReactElement {
+  const tip = useHoverTip()
   const total = props.map.reduce((sum, node) => sum + Math.max(node.tokens, 0), 0)
   if (props.map.length === 0 || total <= 0) return h('div', { className: 'acp-empty' }, '无可绘制节点')
+  // The card carries what the map cannot: which seq, how big a share of the
+  // surface it is, what it is, and — for a barrier — why it cannot be folded.
+  const labelOf = (node: AcpInspectNode): string => [
+    `seq ${node.seq}`,
+    `${KIND_LABEL[node.kind]}`,
+    `~${compact(node.tokens)} tokens · ${((node.tokens / total) * 100).toFixed(1)}% 表面`,
+    ...(node.barrier === undefined ? [] : [node.barrier]),
+  ].join('\n')
   return h('div', null,
-    h('div', { className: 'acp-map' }, props.map.map((node) => h('i', {
+    h('div', { className: 'acp-map', ...tip.zoneProps }, props.map.map((node) => h('i', {
       key: node.seq,
       className: `acp-swatch acp-k-${node.kind}`,
       style: { flexGrow: Math.max(node.tokens, 1) },
-      title: `seq ${node.seq} · ~${compact(node.tokens)} tokens · ${KIND_LABEL[node.kind]}${node.barrier === undefined ? '' : ` — ${node.barrier}`}`,
+      // Keyboard focus shows the same card (the slice is a real focus stop).
+      tabIndex: 0,
+      'data-acp-tip': labelOf(node),
     }))),
+    tip.bubble,
     h('div', { className: 'acp-legend' }, Object.entries(KIND_LABEL).map(([kind, label]) =>
       h('span', { key: kind }, h('i', { className: `acp-swatch acp-k-${kind}` }), label))),
   )
@@ -121,7 +145,7 @@ function Blocks(props: { blocks: AcpInspectSnapshot['blocks'] }): ReactElement {
         h('span', null, `${block.start}..${block.end}`),
         h('span', null, `${block.messages} 条`),
         h('span', null, `~${compact(block.tokens)}`),
-        h('span', { className: 'acp-muted' }, `T${block.tier} · ${clockOf(block.createdAt)}`),
+        h('span', { className: 'acp-muted' }, `T${block.tier} · ${stampOf(block.createdAt)}`),
         block.why === undefined ? null : h('span', { className: 'acp-muted' }, '有思考记录'),
       ),
       block.why === undefined ? null : h('pre', { className: 'acp-why' }, block.why),
@@ -192,7 +216,7 @@ export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
         h('b', null, `${String(usage.pct)}% 上下文`),
         h('span', null, `${compact(usage.tokens)} / ${compact(usage.window)}`),
         h('span', { className: 'acp-muted' }, `表面 ${String(surface.nodes)} 节点 · ${String(surface.firstSeq)}..${String(surface.lastSeq)}`),
-        h('span', { className: 'acp-muted' }, `表快照 ${clockOf(snapshot.capturedAt)}`),
+        h('span', { className: 'acp-muted' }, `表快照 ${stampOf(snapshot.capturedAt)}`),
       ),
       h('div', { className: 'acp-bar' }, h('span', { style: { width: `${String(Math.min(100, usage.pct))}%` } })),
       h('div', { className: 'acp-muted' },
