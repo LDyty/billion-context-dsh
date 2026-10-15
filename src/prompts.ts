@@ -48,6 +48,10 @@ export interface RangeTablePrompts {
   title: string
   /** 每行。占位符:{start} {end} {count} {tokens} */
   line: string
+  /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
+  cost: string
+  /** 基点行的"扩展批量"提议。占位符:{entries} {count} {reclaimed} {invalidated} {breakEven} */
+  batch: string
   /** 表尾调用语法。无占位符 */
   footer: string
 }
@@ -91,6 +95,8 @@ const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string>
   header: new Set(['surface']),
   title: new Set(['count']),
   line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'media']),
+  cost: new Set(['reclaimed', 'invalidated', 'breakEven', 'flag']),
+  batch: new Set(['entries', 'count', 'reclaimed', 'invalidated', 'breakEven']),
   footer: new Set(),
 }
 const TOOLS_ALLOWED: { [K in keyof ToolPrompts]: ReadonlySet<string> } = {
@@ -202,8 +208,10 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
   },
   rangeTable: {
     header: 'Surface: {surface}',
-    title: 'Compressible ranges ({count}, oldest first; exact surface seqs — usable as-is):',
+    title: 'Compressible ranges ({count}, largest first; exact surface seqs — usable as-is):',
     line: '  - seq {start}..{end} — {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}',
+    cost: '      fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
+    batch: '      cheaper together — batch {count} entries in ONE call: {entries} · reclaims ~{reclaimed} · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'
       + 'Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\n'
       + 'Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.',

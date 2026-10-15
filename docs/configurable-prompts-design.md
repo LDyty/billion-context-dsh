@@ -75,7 +75,7 @@ billion-context-dsh 目前所有"模型可见"的提示词文本都是硬编码�
 | P8 | nudge 上下文分解 | `src/prompts.ts`(DEFAULT_PROMPTS.nudge.breakdown) | "Context breakdown: 0K system \| 134K tool \| 0K summaries \| 10K code \| 7K text"(对齐 kernel `formatBreakdown`) | `{system} {tool} {summaries} {code} {text}` |
 | P9 | nudge 增长行 | `src/prompts.ts`(DEFAULT_PROMPTS.nudge.growth) | "+26K since last nudge" | `{growth}` |
 | P10 | nudge 批量提示 | `src/prompts.ts`(DEFAULT_PROMPTS.nudge.tip) | "💡 Compress all ranges in one call (pass multiple content entries: `content: [{...}, {...}]`)." | 无 |
-| P5 | nudge 范围表 | `src/nudge.ts`(rangeTable) | 表头 "Surface: …" + 标题 + 每行 + 表尾调用语法 | 表头 `{surface}`;标题 `{count}`;行 `{start} {end} {count} {tokens}`;表尾无 |
+| P5 | nudge 范围表 | `src/nudge.ts`(rangeTable) | 表头 "Surface: …" + 标题 + 每行 + 每行折叠成本 + 基点行的扩展批量提议 + 表尾调用语法 | 表头 `{surface}`;标题 `{count}`;行 `{start} {end} {count} {tokens}`;成本行 `{reclaimed} {invalidated} {breakEven} {flag}`;批量行 `{entries} {count} {reclaimed} {invalidated} {breakEven}`;表尾无 |
 | P6 | system prompt(一次性) | `src/system-prompt.ts` | 整段 ACP 指导:效率通知框架 + philosophy + WHEN TO/WHEN NOT + HOW_TO_COMPRESS_RULES + 工具描述 + tier 蒸馏/浓缩规则 | `{philosophy}` `{howToCompressRules}` `{tier2DistillRules}` `{tier3CondenseRules}` |
 | P7 | 工具描述 | `src/tools.ts:500-535` | compress / decompress / search_context / acp_status 的 description | 无 |
 
@@ -162,6 +162,10 @@ export interface RangeTablePrompts {
   title: string
   /** P5 每行。占位符:{start} {end} {count} {tokens} */
   line: string
+  /** P5 每行折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
+  cost: string
+  /** P5 基点行的扩展批量提议。占位符:{entries}(每段形如 `1..3(~3.1K tool)`) {count} {reclaimed} {invalidated} {breakEven} */
+  batch: string
   /** P5 表尾调用语法。无占位符 */
   footer: string
 }
@@ -307,13 +311,15 @@ rangeTable: {
   header: 'Surface: {surface}',
   title:  'Compressible ranges (suggestions only — compress any consumed span; refs are surface seqs):',
   line:   '  - seq {start}..{end} — {count} messages, ~{tokens} tokens',
+  cost:   '      fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
+  batch:  '      cheaper together — batch {count} entries in ONE call: {entries} · reclaims ~{reclaimed} · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
   footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'
     + 'Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\n'
     + 'Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.',
 }
 ```
 
-渲染映射:`surface` = `surfaceSummary(session)`;行级 `start/end/count/tokens` 来自 `buildCompressibleSeqRanges(session, kernelView).slice(0, 6)` 的每一项;`title` 的 `{count}` = 显示行数(截断后)。
+渲染映射:`surface` = `surfaceSummary(session)`;行级 `start/end/count/tokens` 来自 `buildCompressibleSeqRanges(session, kernelView)` 经 `selectRangeTableRanges` 选出的行;成本行的 `reclaimed` = 该行 token 数,`invalidated`/`breakEven` 来自 `foldCostsOfRanges`(surface 后缀 token 和 ÷ 该行 token),`flag` 在 `breakEven ≥ RANGE_TABLE_COST_WARN_BREAK_EVEN` 时给出"贵"标记;批量行由 `bestBatchProposal` 选出——基点 + 最近的不重叠邻行(普通行新 3/旧 3,`⚠` 行只向前最多 6,因为向前不改变起点、向后会加深代价),取回本最小且比基点改善 ≥ `RANGE_TABLE_BATCH_MIN_IMPROVEMENT` 的一条;整表最多 `RANGE_TABLE_BATCH_MAX_PROPOSALS` 条,按"代价最差的行优先认领 + 同一 entry 集合只印一次"分配;`title` 的 `{count}` = 显示行数(截断后)。
 
 **装配规则(I1,字节恒等的细节):**
 

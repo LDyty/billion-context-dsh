@@ -26,6 +26,8 @@ import { allLogMessages, eventsToCoreMessages, isCheckpointNode, surfaceEventsOf
 import {
   buildCompressibleSeqRanges,
   findOpenTurn,
+  bestBatchProposal,
+  foldCostsOfRanges,
   summarySeqOfKernelBlock,
   surfaceSummary,
   type KernelRangeView,
@@ -174,31 +176,74 @@ export function meterMediaPriceResolver(
 export const RANGE_TABLE_LIMIT = 6
 
 /**
- * How many of the LARGEST ranges the table considers before ordering by age.
- * See {@link selectRangeTableRanges}.
+ * Break-even request count at which a row is flagged as expensive to fold.
+ * Above this the one-time prefix rewrite costs more requests than the reclaim
+ * pays back quickly, so the model is told rather than left to guess.
  */
-export const RANGE_TABLE_LARGE_WINDOW = 8
+export const RANGE_TABLE_COST_WARN_BREAK_EVEN = 6
+
+/** Marker appended to a row whose fold pays back slower than the warning line. */
+const RANGE_TABLE_COST_WARN_FLAG = ' — ⚠ expensive: this span starts early, so most of the context is re-sent'
+
+/** How many older / newer neighbours a normal base row may absorb into its batch. */
+export const RANGE_TABLE_BATCH_MAX_OLD = 3
+export const RANGE_TABLE_BATCH_MAX_NEW = 3
 
 /**
- * Pick the rows the nudge range table prints: **the oldest among the large**.
+ * A flagged row's rewrite is fixed by where it starts, so only NEWER neighbours
+ * can divide that rewrite over more reclaimed tokens — extending it backwards
+ * would deepen the very cost the flag warns about.
+ */
+export const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6
+
+/** Only print a batch when it beats its base row's break-even by this fraction. */
+export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
+
+/**
+ * How many batch proposals one table may carry. Left unbounded, a table whose
+ * rows all have neighbours prints one proposal per base row — measured 123 of
+ * 123 rows on a randomized matrix — which roughly doubles the nudge text that
+ * every ~20K of growth re-sends. The escape hatch exists for the rows that need
+ * it (claiming runs worst-cost-first), so two are enough to show the way out
+ * without paying for it on every row.
+ */
+export const RANGE_TABLE_BATCH_MAX_PROPOSALS = 2
+
+/** Compact token count for a cost row: one decimal above 10K, whole numbers below. */
+function compactTokens(tokens: number): string {
+  return tokens >= 10_000 ? `${(tokens / 1000).toFixed(1)}K` : String(Math.round(tokens))
+}
+
+/**
+ * One batch entry, carrying the two facts the model needs to write its summary:
+ * how big the segment is and what it is mostly made of. The table prints only six
+ * rows, but a batch reaches into the whole offerable list, so without this the
+ * model would be asked to summarise seqs it never saw a size or flavour for.
+ */
+function batchEntryLabel(entry: SeqCompressibleRange): string {
+  const kind = entry.toolPct >= 100 ? 'tool' : entry.toolPct <= 0 ? 'text' : `tool ${entry.toolPct}%`
+  return `${entry.start}..${entry.end}(~${compactTokens(entry.tokens)} ${kind})`
+}
+
+/**
+ * Pick the rows the nudge range table prints: **largest first, oldest among
+ * equals**.
  *
- * Ordering policy, live-tuned 2026-10-14 on a 914-node / 128-range surface:
- * plain oldest-first spent the six rows on whatever happened to be oldest —
- * including 195-token slivers that cost a model turn for nothing — while the
- * 124,877-token span sat below the fold. Pure size-first would instead push the
- * model to compress fresh work it may still need. The compromise: consider the
- * few largest spans (they are the ones worth a turn), then print the OLDEST of
- * those (consumed history first, matching the kernel's front-to-back rhythm and
- * the stable-ordering property the table has always had).
+ * Ordering policy (2026-10-15). It replaces the earlier "oldest among the
+ * large" compromise, which sorted the largest eight spans back into position
+ * order — putting the OLDEST span of the offerable set in row 1 on 36/36 live
+ * compressions of one measured day. Folding a span invalidates every cached
+ * token after its start, so an old first row is the most expensive default the
+ * table can hand the model: predicting the invalidation of each strategy's
+ * first row over that day's real offerable tables gives 47.8% for
+ * oldest-of-the-largest against 8.5% for size-first. Size-first also matches
+ * the upstream table (PR #217), so the two implementations stay identical.
  */
 export function selectRangeTableRanges<T extends { start: number; end: number; tokens: number }>(
   all: readonly T[],
 ): T[] {
-  if (all.length <= RANGE_TABLE_LIMIT) return [...all]
   return [...all]
-    .sort((a, b) => b.tokens - a.tokens)
-    .slice(0, RANGE_TABLE_LARGE_WINDOW)
-    .sort((a, b) => a.start - b.start)
+    .sort((a, b) => b.tokens - a.tokens || a.start - b.start)
     .slice(0, RANGE_TABLE_LIMIT)
 }
 
@@ -225,17 +270,67 @@ export function rangeTable(
   const shown = selectRangeTableRanges(ranges)
   // 零范围:整块省略(保留现状的提前返回与 nudge 尾部 '\n')。
   if (shown.length === 0) return ''
-  const lines = shown.map((range) =>
-    renderTemplate(prompts.rangeTable.line, {
-      start: range.start,
-      end: range.end,
-      count: range.count,
-      tokens: range.tokens,
-      toolPct: range.toolPct,
-      textPct: 100 - range.toolPct,
-      media: mediaSuffixOf(range),
-    }),
-  )
+  // Each row carries its own fold cost: reclaiming a span makes every node at
+  // and after its start re-send uncached once, so the model needs that number to
+  // weigh a cheap-but-tiny span against an expensive-but-satisfying one. The
+  // cost is informational only — ordering stays size-first, because ranking by
+  // cost would systematically promote the newest large spans (the ones the task
+  // is most likely still using).
+  const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
+  // Costs cover every offerable range, so a base row can reach its neighbours
+  // even when they did not fit the printed six.
+  const baseRows = shown.map((range) => {
+    const at = ranges.indexOf(range)
+    const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
+    return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
+  })
+  // Proposals are claimed worst-cost-first: the row that most needs an escape
+  // hatch gets it, and an entry set that several base rows converge on is
+  // printed once instead of repeating under each of them.
+  const claimed = new Set<string>()
+  const proposalOfStart = new Map<number, string>()
+  for (const row of [...baseRows].sort((a, b) => b.cost.breakEvenRequests - a.cost.breakEvenRequests)) {
+    if (row.at < 0) continue
+    if (proposalOfStart.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break
+    const proposal = bestBatchProposal(ranges, costs, row.at, {
+      maxOld: row.expensive ? 0 : RANGE_TABLE_BATCH_MAX_OLD,
+      maxNew: row.expensive ? RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE : RANGE_TABLE_BATCH_MAX_NEW,
+      minImprovement: RANGE_TABLE_BATCH_MIN_IMPROVEMENT,
+    })
+    if (proposal === undefined) continue
+    const entries = proposal.entries.map(batchEntryLabel).join(', ')
+    if (claimed.has(entries)) continue
+    claimed.add(entries)
+    proposalOfStart.set(row.range.start, renderTemplate(prompts.rangeTable.batch, {
+      entries,
+      count: proposal.entries.length,
+      reclaimed: compactTokens(proposal.reclaimedTokens),
+      invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
+      breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
+    }))
+  }
+  const lines = baseRows.flatMap(({ range, cost, expensive }) => {
+    const rows = [
+      renderTemplate(prompts.rangeTable.line, {
+        start: range.start,
+        end: range.end,
+        count: range.count,
+        tokens: range.tokens,
+        toolPct: range.toolPct,
+        textPct: 100 - range.toolPct,
+        media: mediaSuffixOf(range),
+      }),
+      renderTemplate(prompts.rangeTable.cost, {
+        reclaimed: compactTokens(range.tokens),
+        invalidated: `${compactTokens(cost.invalidatedTokens)} tok`,
+        breakEven: Number.isFinite(cost.breakEvenRequests) ? cost.breakEvenRequests.toFixed(1) : '∞',
+        flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : '',
+      }),
+    ]
+    const batch = proposalOfStart.get(range.start)
+    if (batch !== undefined) rows.push(batch)
+    return rows
+  })
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     '',

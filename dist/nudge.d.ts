@@ -63,21 +63,44 @@ export declare function meterMediaPriceResolver(agent: Agent, session: import('@
 /** Rows the nudge range table prints. */
 export declare const RANGE_TABLE_LIMIT = 6;
 /**
- * How many of the LARGEST ranges the table considers before ordering by age.
- * See {@link selectRangeTableRanges}.
+ * Break-even request count at which a row is flagged as expensive to fold.
+ * Above this the one-time prefix rewrite costs more requests than the reclaim
+ * pays back quickly, so the model is told rather than left to guess.
  */
-export declare const RANGE_TABLE_LARGE_WINDOW = 8;
+export declare const RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
+/** How many older / newer neighbours a normal base row may absorb into its batch. */
+export declare const RANGE_TABLE_BATCH_MAX_OLD = 3;
+export declare const RANGE_TABLE_BATCH_MAX_NEW = 3;
 /**
- * Pick the rows the nudge range table prints: **the oldest among the large**.
+ * A flagged row's rewrite is fixed by where it starts, so only NEWER neighbours
+ * can divide that rewrite over more reclaimed tokens — extending it backwards
+ * would deepen the very cost the flag warns about.
+ */
+export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
+/** Only print a batch when it beats its base row's break-even by this fraction. */
+export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
+/**
+ * How many batch proposals one table may carry. Left unbounded, a table whose
+ * rows all have neighbours prints one proposal per base row — measured 123 of
+ * 123 rows on a randomized matrix — which roughly doubles the nudge text that
+ * every ~20K of growth re-sends. The escape hatch exists for the rows that need
+ * it (claiming runs worst-cost-first), so two are enough to show the way out
+ * without paying for it on every row.
+ */
+export declare const RANGE_TABLE_BATCH_MAX_PROPOSALS = 2;
+/**
+ * Pick the rows the nudge range table prints: **largest first, oldest among
+ * equals**.
  *
- * Ordering policy, live-tuned 2026-10-14 on a 914-node / 128-range surface:
- * plain oldest-first spent the six rows on whatever happened to be oldest —
- * including 195-token slivers that cost a model turn for nothing — while the
- * 124,877-token span sat below the fold. Pure size-first would instead push the
- * model to compress fresh work it may still need. The compromise: consider the
- * few largest spans (they are the ones worth a turn), then print the OLDEST of
- * those (consumed history first, matching the kernel's front-to-back rhythm and
- * the stable-ordering property the table has always had).
+ * Ordering policy (2026-10-15). It replaces the earlier "oldest among the
+ * large" compromise, which sorted the largest eight spans back into position
+ * order — putting the OLDEST span of the offerable set in row 1 on 36/36 live
+ * compressions of one measured day. Folding a span invalidates every cached
+ * token after its start, so an old first row is the most expensive default the
+ * table can hand the model: predicting the invalidation of each strategy's
+ * first row over that day's real offerable tables gives 47.8% for
+ * oldest-of-the-largest against 8.5% for size-first. Size-first also matches
+ * the upstream table (PR #217), so the two implementations stay identical.
  */
 export declare function selectRangeTableRanges<T extends {
     start: number;

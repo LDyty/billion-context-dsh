@@ -127,7 +127,7 @@ test('M4/prompts 2b: default nudge renders through the kernel renderNudgeText pa
   assert.ok(!text.includes('HOW TO COMPRESS'), 'B6：规则段不在 nudge')
   assert.ok(text.endsWith('💡 If you compress, fold the ranges you keep in ONE call — pass multiple content entries (`content: [{...}, {...}]`) or ONE plain string holding every range, each block starting with its \'mNNNNN–mNNNNN topic\' header line (most robust through lossy gateways). Ranges the task still needs can wait — they reappear in later nudges.'), 'kernel batch tip at end')
   // Ref-ID rangesStr replaced by the surface-seq table. The title KEEPS the
-  // kernel header format ("N, oldest first") with the seq dialect appended —
+  // kernel header format ("N, largest first") with the seq dialect appended —
   // the kernel mN range rows are what must be gone.
   assert.ok(!text.includes('m00150'), 'kernel ref range sample gone')
   assert.ok(text.includes('exact surface seqs — usable as-is'), 'seq-dialect title injected')
@@ -185,8 +185,9 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
   assert.equal(
     rangeTable(paged, wholeSurfaceRangeView(paged)),
     `\nSurface: 12 nodes, seqs 1..12
-Compressible ranges (1, oldest first; exact surface seqs — usable as-is):
+Compressible ranges (1, largest first; exact surface seqs — usable as-is):
   - seq 1..7 — 7 messages, ~7227 tokens [tool 0% | text 100%]
+      fold cost: reclaims ~7227 · rewrites ~12.4K tok of the cached prefix (pays back in ~1.7 request(s))
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
 Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`,

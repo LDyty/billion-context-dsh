@@ -419,6 +419,66 @@ export declare function buildCompressibleSeqRanges(session: Session, kernelView:
     preserveRecent?: number;
     mediaPriceOf?: MediaPriceOf;
 }): SeqCompressibleRange[];
+/** One batch the table can offer as an alternative to folding a single row. */
+export interface RangeBatchProposal {
+    /** The batch's disjoint ranges, in surface order — each becomes its own block. */
+    readonly entries: readonly SeqCompressibleRange[];
+    /** Sum of the entries' tokens. */
+    readonly reclaimedTokens: number;
+    /** Tokens re-sent uncached once: everything at and after the batch's FIRST entry. */
+    readonly invalidatedTokens: number;
+    /** `invalidatedTokens ÷ reclaimedTokens`. */
+    readonly breakEvenRequests: number;
+}
+/**
+ * The single batch worth offering under one base row: the cheapest-to-fold
+ * combination reachable by extending up to `maxOld` older and `maxNew` newer
+ * rows, and only when it beats the base row's own break-even by `minImprovement`.
+ *
+ * A row that already folds cheaply needs no proposal — the base row is the
+ * answer. A row flagged expensive is the one that benefits: its rewrite is fixed
+ * by where it starts, so pulling in NEWER neighbours that the model has also
+ * consumed divides the same rewrite over more reclaimed tokens.
+ *
+ * @param ranges - every offerable range, in surface position order.
+ * @param costs - fold costs aligned with `ranges`.
+ * @param baseIndex - position of the base range in `ranges`.
+ * @param opts - extension limits and the improvement floor.
+ * @returns the chosen batch, or `undefined` when no extension is worth printing.
+ */
+export declare function bestBatchProposal(ranges: readonly SeqCompressibleRange[], costs: readonly RangeFoldCost[], baseIndex: number, opts: {
+    maxOld: number;
+    maxNew: number;
+    minImprovement: number;
+}): RangeBatchProposal | undefined;
+/** What folding one offered range costs the prompt cache. */
+export interface RangeFoldCost {
+    /**
+     * Tokens the next request must re-send uncached because the fold moves every
+     * node at and after the span's start. Depends only on where the span STARTS.
+     */
+    readonly invalidatedTokens: number;
+    /** `invalidatedTokens ÷ the range's own tokens` — requests to pay the rewrite back. */
+    readonly breakEvenRequests: number;
+}
+/**
+ * Price what each offered range would invalidate if the model folded it.
+ *
+ * The provider caches a request prefix; folding a span replaces it in place, so
+ * every token at and after the span's start is re-sent once as a fresh miss.
+ * That cost is therefore a function of the span's START POSITION only — not of
+ * its size — which is why an early span is expensive even when it is small.
+ * Live-measured 2026-10-15 on one long session: the same shape of fold cost ~3K
+ * cold tokens on a 76K-token surface and ~208K on a 267K-token surface, and the
+ * day's three worst compressions were exactly the ones whose first row was the
+ * oldest span offered.
+ *
+ * @param session - session whose surface order is the prompt order.
+ * @param ranges - offered ranges, aligned with the returned array.
+ * @param mediaPriceOf - routed media price lookup, when the host has one.
+ * @returns one cost entry per range, in the same order.
+ */
+export declare function foldCostsOfRanges(session: Session, ranges: readonly SeqCompressibleRange[], mediaPriceOf?: MediaPriceOf): RangeFoldCost[];
 /**
  * A compact human-readable description of the current surface for the model:
  * node count plus the first/last message seqs. Surface seqs are sparse (the

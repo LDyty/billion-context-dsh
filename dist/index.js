@@ -7500,6 +7500,10 @@ function protectedSurfaceSeqs(session, preserve) {
   if (newestCatalog !== null) protectedSeqs.add(newestCatalog);
   return protectedSeqs;
 }
+function surfaceNodeTokens(event, seq, attachments, mediaPriceOf) {
+  const mediaPrice = attachments.images + attachments.files > 0 ? (mediaPriceOf?.(seq) ?? 0) + hostMediaStructuralPrice(mediaBlocksOfEvent(event)) : 0;
+  return defaultCountTokens(extractEventText(event)) + mediaPrice;
+}
 function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, mediaPriceOf, staleFoldableSeqs = /* @__PURE__ */ new Set()) {
   const nodes = session.surface.nodes;
   const segments = [];
@@ -7517,8 +7521,7 @@ function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, medi
       continue;
     }
     const attachments = attachmentsOfEvent(event);
-    const mediaPrice = attachments.images + attachments.files > 0 ? (mediaPriceOf?.(seq) ?? 0) + hostMediaStructuralPrice(mediaBlocksOfEvent(event)) : 0;
-    const tokens = defaultCountTokens(extractEventText(event)) + mediaPrice;
+    const tokens = surfaceNodeTokens(event, seq, attachments, mediaPriceOf);
     const isTool = isToolEvent(event);
     if (current === null) {
       current = {
@@ -7590,6 +7593,70 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
     return true;
   });
   return usable.sort((a, b) => a.start - b.start);
+}
+function disjointBatchOf(ranges, costs, baseIndex, maxOld, maxNew) {
+  const entries = [ranges[baseIndex]];
+  let first = baseIndex;
+  let last = baseIndex;
+  let added = 0;
+  for (let at = baseIndex + 1; at < ranges.length && added < maxNew; at += 1) {
+    const candidate = ranges[at];
+    if (candidate.start <= ranges[last].end) continue;
+    entries.push(candidate);
+    last = at;
+    added += 1;
+  }
+  added = 0;
+  for (let at = baseIndex - 1; at >= 0 && added < maxOld; at -= 1) {
+    const candidate = ranges[at];
+    if (candidate.end >= ranges[first].start) continue;
+    entries.unshift(candidate);
+    first = at;
+    added += 1;
+  }
+  const reclaimedTokens = entries.reduce((sum, entry) => sum + entry.tokens, 0);
+  const invalidatedTokens = costs[first].invalidatedTokens;
+  return {
+    entries,
+    reclaimedTokens,
+    invalidatedTokens,
+    breakEvenRequests: reclaimedTokens > 0 ? invalidatedTokens / reclaimedTokens : Number.POSITIVE_INFINITY
+  };
+}
+function bestBatchProposal(ranges, costs, baseIndex, opts) {
+  const base = costs[baseIndex];
+  if (base === void 0) return void 0;
+  let best;
+  for (let old = 0; old <= opts.maxOld; old += 1) {
+    for (let newer = 0; newer <= opts.maxNew; newer += 1) {
+      if (old === 0 && newer === 0) continue;
+      const candidate = disjointBatchOf(ranges, costs, baseIndex, old, newer);
+      if (candidate.breakEvenRequests >= (best?.breakEvenRequests ?? Number.POSITIVE_INFINITY)) continue;
+      best = candidate;
+    }
+  }
+  if (best === void 0) return void 0;
+  return best.breakEvenRequests <= base.breakEvenRequests * (1 - opts.minImprovement) ? best : void 0;
+}
+function foldCostsOfRanges(session, ranges, mediaPriceOf) {
+  const nodes = session.surface.nodes;
+  const suffix = new Float64Array(nodes.length + 1);
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const seq = nodes[index];
+    const event = eventAtOf(session, seq);
+    const price = event === void 0 ? 0 : surfaceNodeTokens(event, seq, attachmentsOfEvent(event), mediaPriceOf);
+    suffix[index] = suffix[index + 1] + price;
+  }
+  const indexOfSeq = /* @__PURE__ */ new Map();
+  for (let index = 0; index < nodes.length; index += 1) indexOfSeq.set(nodes[index], index);
+  return ranges.map((range) => {
+    const at = indexOfSeq.get(range.start);
+    const invalidatedTokens = suffix[at ?? 0];
+    return {
+      invalidatedTokens,
+      breakEvenRequests: range.tokens > 0 ? invalidatedTokens / range.tokens : Number.POSITIVE_INFINITY
+    };
+  });
 }
 function surfaceSummary(session) {
   const nodes = session.surface.nodes;
@@ -7879,6 +7946,8 @@ var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
   title: /* @__PURE__ */ new Set(["count"]),
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "media"]),
+  cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
+  batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven"]),
   footer: /* @__PURE__ */ new Set()
 };
 var TOOLS_ALLOWED = {
@@ -7954,8 +8023,10 @@ var DEFAULT_PROMPTS = {
   },
   rangeTable: {
     header: "Surface: {surface}",
-    title: "Compressible ranges ({count}, oldest first; exact surface seqs \u2014 usable as-is):",
+    title: "Compressible ranges ({count}, largest first; exact surface seqs \u2014 usable as-is):",
     line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}",
+    cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
+    batch: "      cheaper together \u2014 batch {count} entries in ONE call: {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
   },
   tools: {
@@ -8041,10 +8112,22 @@ function meterMediaPriceResolver(agent, session) {
   };
 }
 var RANGE_TABLE_LIMIT = 6;
-var RANGE_TABLE_LARGE_WINDOW = 8;
+var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
+var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
+var RANGE_TABLE_BATCH_MAX_OLD = 3;
+var RANGE_TABLE_BATCH_MAX_NEW = 3;
+var RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
+var RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
+var RANGE_TABLE_BATCH_MAX_PROPOSALS = 2;
+function compactTokens(tokens) {
+  return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
+}
+function batchEntryLabel(entry) {
+  const kind = entry.toolPct >= 100 ? "tool" : entry.toolPct <= 0 ? "text" : `tool ${entry.toolPct}%`;
+  return `${entry.start}..${entry.end}(~${compactTokens(entry.tokens)} ${kind})`;
+}
 function selectRangeTableRanges(all) {
-  if (all.length <= RANGE_TABLE_LIMIT) return [...all];
-  return [...all].sort((a, b) => b.tokens - a.tokens).slice(0, RANGE_TABLE_LARGE_WINDOW).sort((a, b) => a.start - b.start).slice(0, RANGE_TABLE_LIMIT);
+  return [...all].sort((a, b) => b.tokens - a.tokens || a.start - b.start).slice(0, RANGE_TABLE_LIMIT);
 }
 function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
   const ranges = buildCompressibleSeqRanges(
@@ -8054,17 +8137,56 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   );
   const shown = selectRangeTableRanges(ranges);
   if (shown.length === 0) return "";
-  const lines = shown.map(
-    (range) => renderTemplate(prompts.rangeTable.line, {
-      start: range.start,
-      end: range.end,
-      count: range.count,
-      tokens: range.tokens,
-      toolPct: range.toolPct,
-      textPct: 100 - range.toolPct,
-      media: mediaSuffixOf(range)
-    })
-  );
+  const costs = foldCostsOfRanges(session, ranges, mediaPriceOf);
+  const baseRows = shown.map((range) => {
+    const at = ranges.indexOf(range);
+    const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
+    return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
+  });
+  const claimed = /* @__PURE__ */ new Set();
+  const proposalOfStart = /* @__PURE__ */ new Map();
+  for (const row of [...baseRows].sort((a, b) => b.cost.breakEvenRequests - a.cost.breakEvenRequests)) {
+    if (row.at < 0) continue;
+    if (proposalOfStart.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break;
+    const proposal = bestBatchProposal(ranges, costs, row.at, {
+      maxOld: row.expensive ? 0 : RANGE_TABLE_BATCH_MAX_OLD,
+      maxNew: row.expensive ? RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE : RANGE_TABLE_BATCH_MAX_NEW,
+      minImprovement: RANGE_TABLE_BATCH_MIN_IMPROVEMENT
+    });
+    if (proposal === void 0) continue;
+    const entries = proposal.entries.map(batchEntryLabel).join(", ");
+    if (claimed.has(entries)) continue;
+    claimed.add(entries);
+    proposalOfStart.set(row.range.start, renderTemplate(prompts.rangeTable.batch, {
+      entries,
+      count: proposal.entries.length,
+      reclaimed: compactTokens(proposal.reclaimedTokens),
+      invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
+      breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E"
+    }));
+  }
+  const lines = baseRows.flatMap(({ range, cost, expensive }) => {
+    const rows = [
+      renderTemplate(prompts.rangeTable.line, {
+        start: range.start,
+        end: range.end,
+        count: range.count,
+        tokens: range.tokens,
+        toolPct: range.toolPct,
+        textPct: 100 - range.toolPct,
+        media: mediaSuffixOf(range)
+      }),
+      renderTemplate(prompts.rangeTable.cost, {
+        reclaimed: compactTokens(range.tokens),
+        invalidated: `${compactTokens(cost.invalidatedTokens)} tok`,
+        breakEven: Number.isFinite(cost.breakEvenRequests) ? cost.breakEvenRequests.toFixed(1) : "\u221E",
+        flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : ""
+      })
+    ];
+    const batch = proposalOfStart.get(range.start);
+    if (batch !== void 0) rows.push(batch);
+    return rows;
+  });
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     "",

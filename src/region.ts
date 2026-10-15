@@ -1328,6 +1328,36 @@ interface CompressibleSegment {
  * surface is locally unordered after a replacement (a checkpoint node lands
  * with a much higher seq than its neighbours).
  */
+/**
+ * Price one surface node the way the range builder prices it: the kernel's
+ * CJK-aware text counter plus any media surcharge.
+ *
+ * Text is priced with the kernel counter; image/file blocks add a media price on
+ * top, because no text estimator can see them and a span that looked free was
+ * ranked last by the model (issue #117). The routed surcharge (meter) and the
+ * fixed structural estimate (host heuristic) are ADDED: the meter reports no
+ * surcharge at all on every adapter that declares no visual price, and an absent
+ * surcharge must never make a picture look free. The callback is only consulted
+ * for a seq that really carries an attachment.
+ *
+ * @param event - the surface node's event.
+ * @param seq - the node's surface seq (the media callback is keyed by seq).
+ * @param attachments - the node's attachment counts.
+ * @param mediaPriceOf - routed media price lookup, when the host has one.
+ * @returns the node's token price.
+ */
+function surfaceNodeTokens(
+  event: SessionEvent,
+  seq: number,
+  attachments: { images: number; files: number },
+  mediaPriceOf?: MediaPriceOf,
+): number {
+  const mediaPrice = attachments.images + attachments.files > 0
+    ? (mediaPriceOf?.(seq) ?? 0) + hostMediaStructuralPrice(mediaBlocksOfEvent(event))
+    : 0
+  return defaultCountTokens(extractEventText(event)) + mediaPrice
+}
+
 function compressibleSegmentsOf(
   session: Session,
   fromIndex: number,
@@ -1368,19 +1398,8 @@ function compressibleSegmentsOf(
       flush()
       continue
     }
-    // Text is priced with the kernel's CJK-aware counter; image/file blocks add
-    // a media price on top, because no text estimator can see them and a span
-    // that looked free was ranked last by the model (issue #117). The routed
-    // surcharge (meter) and the fixed structural estimate (host heuristic) are
-    // ADDED: the meter reports no surcharge at all on every adapter that
-    // declares no visual price, and an absent surcharge must never make a
-    // picture look free. The callback is only consulted for a seq that really
-    // carries an attachment.
     const attachments = attachmentsOfEvent(event)
-    const mediaPrice = attachments.images + attachments.files > 0
-      ? (mediaPriceOf?.(seq) ?? 0) + hostMediaStructuralPrice(mediaBlocksOfEvent(event))
-      : 0
-    const tokens = defaultCountTokens(extractEventText(event)) + mediaPrice
+    const tokens = surfaceNodeTokens(event, seq, attachments, mediaPriceOf)
     const isTool = isToolEvent(event)
     if (current === null) {
       current = {
@@ -1506,6 +1525,169 @@ export function buildCompressibleSeqRanges(
   // without re-ranking each nudge — matching the kernel's `oldest first` list
   // and the host's own front-to-back compression rhythm.
   return usable.sort((a, b) => a.start - b.start)
+}
+
+/** One batch the table can offer as an alternative to folding a single row. */
+export interface RangeBatchProposal {
+  /** The batch's disjoint ranges, in surface order — each becomes its own block. */
+  readonly entries: readonly SeqCompressibleRange[]
+  /** Sum of the entries' tokens. */
+  readonly reclaimedTokens: number
+  /** Tokens re-sent uncached once: everything at and after the batch's FIRST entry. */
+  readonly invalidatedTokens: number
+  /** `invalidatedTokens ÷ reclaimedTokens`. */
+  readonly breakEvenRequests: number
+}
+
+/**
+ * Assemble one disjoint batch around a base range: the base plus its nearest
+ * NON-OVERLAPPING neighbours, `maxOld` before it and `maxNew` after it.
+ *
+ * Two adjacent rows are never contiguous — they are separate ranges because a
+ * barrier or protected row sits between them — so a batch is always a set of
+ * separate `content` entries, never one merged span (the compress guards reject
+ * a span that crosses those rows). Candidates that overlap an entry already
+ * taken are skipped: the tool ignores overlapping entries in one call, so
+ * offering one would be a dead end.
+ *
+ * @param ranges - every offerable range, in surface position order.
+ * @param costs - fold costs aligned with `ranges`.
+ * @param baseIndex - position of the base range in `ranges`.
+ * @param maxOld - how many older neighbours to add at most.
+ * @param maxNew - how many newer neighbours to add at most.
+ * @returns the assembled batch (at minimum the base row itself).
+ */
+function disjointBatchOf(
+  ranges: readonly SeqCompressibleRange[],
+  costs: readonly RangeFoldCost[],
+  baseIndex: number,
+  maxOld: number,
+  maxNew: number,
+): RangeBatchProposal {
+  const entries: SeqCompressibleRange[] = [ranges[baseIndex]!]
+  let first = baseIndex
+  let last = baseIndex
+  let added = 0
+  for (let at = baseIndex + 1; at < ranges.length && added < maxNew; at += 1) {
+    const candidate = ranges[at]!
+    if (candidate.start <= ranges[last]!.end) continue
+    entries.push(candidate)
+    last = at
+    added += 1
+  }
+  added = 0
+  for (let at = baseIndex - 1; at >= 0 && added < maxOld; at -= 1) {
+    const candidate = ranges[at]!
+    if (candidate.end >= ranges[first]!.start) continue
+    entries.unshift(candidate)
+    first = at
+    added += 1
+  }
+  const reclaimedTokens = entries.reduce((sum, entry) => sum + entry.tokens, 0)
+  // Extending FORWARD never moves the batch's start, so it never grows the
+  // rewrite; extending BACKWARD does, which is why the two directions are not
+  // symmetric.
+  const invalidatedTokens = costs[first]!.invalidatedTokens
+  return {
+    entries,
+    reclaimedTokens,
+    invalidatedTokens,
+    breakEvenRequests: reclaimedTokens > 0 ? invalidatedTokens / reclaimedTokens : Number.POSITIVE_INFINITY,
+  }
+}
+
+/**
+ * The single batch worth offering under one base row: the cheapest-to-fold
+ * combination reachable by extending up to `maxOld` older and `maxNew` newer
+ * rows, and only when it beats the base row's own break-even by `minImprovement`.
+ *
+ * A row that already folds cheaply needs no proposal — the base row is the
+ * answer. A row flagged expensive is the one that benefits: its rewrite is fixed
+ * by where it starts, so pulling in NEWER neighbours that the model has also
+ * consumed divides the same rewrite over more reclaimed tokens.
+ *
+ * @param ranges - every offerable range, in surface position order.
+ * @param costs - fold costs aligned with `ranges`.
+ * @param baseIndex - position of the base range in `ranges`.
+ * @param opts - extension limits and the improvement floor.
+ * @returns the chosen batch, or `undefined` when no extension is worth printing.
+ */
+export function bestBatchProposal(
+  ranges: readonly SeqCompressibleRange[],
+  costs: readonly RangeFoldCost[],
+  baseIndex: number,
+  opts: { maxOld: number; maxNew: number; minImprovement: number },
+): RangeBatchProposal | undefined {
+  const base = costs[baseIndex]
+  if (base === undefined) return undefined
+  let best: RangeBatchProposal | undefined
+  for (let old = 0; old <= opts.maxOld; old += 1) {
+    for (let newer = 0; newer <= opts.maxNew; newer += 1) {
+      if (old === 0 && newer === 0) continue
+      const candidate = disjointBatchOf(ranges, costs, baseIndex, old, newer)
+      if (candidate.breakEvenRequests >= (best?.breakEvenRequests ?? Number.POSITIVE_INFINITY)) continue
+      best = candidate
+    }
+  }
+  if (best === undefined) return undefined
+  return best.breakEvenRequests <= base.breakEvenRequests * (1 - opts.minImprovement) ? best : undefined
+}
+
+/** What folding one offered range costs the prompt cache. */
+export interface RangeFoldCost {
+  /**
+   * Tokens the next request must re-send uncached because the fold moves every
+   * node at and after the span's start. Depends only on where the span STARTS.
+   */
+  readonly invalidatedTokens: number
+  /** `invalidatedTokens ÷ the range's own tokens` — requests to pay the rewrite back. */
+  readonly breakEvenRequests: number
+}
+
+/**
+ * Price what each offered range would invalidate if the model folded it.
+ *
+ * The provider caches a request prefix; folding a span replaces it in place, so
+ * every token at and after the span's start is re-sent once as a fresh miss.
+ * That cost is therefore a function of the span's START POSITION only — not of
+ * its size — which is why an early span is expensive even when it is small.
+ * Live-measured 2026-10-15 on one long session: the same shape of fold cost ~3K
+ * cold tokens on a 76K-token surface and ~208K on a 267K-token surface, and the
+ * day's three worst compressions were exactly the ones whose first row was the
+ * oldest span offered.
+ *
+ * @param session - session whose surface order is the prompt order.
+ * @param ranges - offered ranges, aligned with the returned array.
+ * @param mediaPriceOf - routed media price lookup, when the host has one.
+ * @returns one cost entry per range, in the same order.
+ */
+export function foldCostsOfRanges(
+  session: Session,
+  ranges: readonly SeqCompressibleRange[],
+  mediaPriceOf?: MediaPriceOf,
+): RangeFoldCost[] {
+  const nodes = session.surface.nodes
+  // Suffix sums over the surface, in prompt order: suffix[i] prices every node
+  // from position i to the end, which is exactly the prefix a fold at i rewrites.
+  const suffix = new Float64Array(nodes.length + 1)
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const seq = nodes[index]!
+    const event = eventAtOf(session, seq)
+    const price = event === undefined
+      ? 0
+      : surfaceNodeTokens(event, seq, attachmentsOfEvent(event), mediaPriceOf)
+    suffix[index] = suffix[index + 1]! + price
+  }
+  const indexOfSeq = new Map<number, number>()
+  for (let index = 0; index < nodes.length; index += 1) indexOfSeq.set(nodes[index]!, index)
+  return ranges.map((range) => {
+    const at = indexOfSeq.get(range.start)
+    const invalidatedTokens = suffix[at ?? 0]!
+    return {
+      invalidatedTokens,
+      breakEvenRequests: range.tokens > 0 ? invalidatedTokens / range.tokens : Number.POSITIVE_INFINITY,
+    }
+  })
 }
 
 /**
