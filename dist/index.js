@@ -8208,10 +8208,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
   const claimed = /* @__PURE__ */ new Set();
-  const proposalOfStart = /* @__PURE__ */ new Map();
+  const proposalOfAt = /* @__PURE__ */ new Map();
   for (const row of baseRows) {
     if (row.at < 0) continue;
-    if (proposalOfStart.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break;
+    if (proposalOfAt.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break;
     const proposal = bestBatchProposal(ranges, costs, row.at, {
       maxOld: row.expensive ? 0 : RANGE_TABLE_BATCH_MAX_OLD,
       maxNew: row.expensive ? RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE : RANGE_TABLE_BATCH_MAX_NEW,
@@ -8222,7 +8222,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     const entries = proposal.entries.map(batchEntryLabel).join(", ");
     if (claimed.has(entries)) continue;
     claimed.add(entries);
-    proposalOfStart.set(row.range.start, renderTemplate(prompts.rangeTable.batch, {
+    proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
@@ -8230,7 +8230,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E"
     }));
   }
-  const lines = baseRows.flatMap(({ range, cost, expensive }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
     const rows = [
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
@@ -8248,7 +8248,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : ""
       })
     ];
-    const batch = proposalOfStart.get(range.start);
+    const batch = proposalOfAt.get(at);
     if (batch !== void 0) rows.push(batch);
     return rows;
   });

@@ -218,6 +218,26 @@ test('batch proposal: the rendered table stays bounded and keeps its claims', ()
 })
 
 /**
+ * Two offered rows may share a START seq (the live table of 2026-10-15 23:04
+ * offered both `36622..36662` and `36622..36659`). The proposal bookkeeping used
+ * to be keyed by that start, so one batch was printed under BOTH rows — spending
+ * one of the table's three slots on a duplicate and reading as if two different
+ * batches were on offer. Keyed by the range's position now, it prints once.
+ */
+test('batch proposal: rows sharing a start seq never print the same proposal twice', () => {
+  const session = buildTextSession(24)
+  // Nested pair (both start at position 0) plus neighbours to batch with.
+  const text = rangeTable(session, viewOfPositions(session, [[0, 4], [0, 2], [6, 8], [10, 12], [14, 16]]) as never)
+  const rows = text.split('\n').filter((line) => /^\s+- seq /.test(line))
+  const starts = rows.map((line) => Number(/seq (\d+)/.exec(line)![1]))
+  assert.ok(new Set(starts).size < starts.length, `the fixture really offers rows sharing a start (${starts.join(',')})`)
+  const batches = text.split('\n').filter((line) => line.includes('cheaper together'))
+  const distinct = new Set(batches)
+  assert.equal(distinct.size, batches.length, `no proposal is printed twice (${batches.length} lines)`)
+  assert.ok(batches.length <= RANGE_TABLE_BATCH_MAX_PROPOSALS, `and the cap still holds (${batches.length})`)
+})
+
+/**
  * Real geometry from a live nudge (2026-10-15 17:44, session-a41fb964): the six
  * rows the model actually saw, including a nested pair (32774..32804 contains
  * 32789..32804). The batch search has to stay legal on that shape, not only on

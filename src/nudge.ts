@@ -311,10 +311,16 @@ export function rangeTable(
   // batch it composed itself (payback 1.9) never appeared in the table at all.
   // An entry set that two base rows converge on is still printed once.
   const claimed = new Set<string>()
-  const proposalOfStart = new Map<number, string>()
+  // Keyed by the offered range's POSITION in the offerable list, not by its
+  // start seq: two nested rows can share a start (`36622..36662` inside
+  // `36622..36659` on the live surface, 2026-10-15), and a start-keyed map then
+  // printed the SAME proposal under both rows — one of the table's few slots
+  // spent on a duplicate. Keying by position prints it exactly once, under the
+  // row that claimed it.
+  const proposalOfAt = new Map<number, string>()
   for (const row of baseRows) {
     if (row.at < 0) continue
-    if (proposalOfStart.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break
+    if (proposalOfAt.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break
     const proposal = bestBatchProposal(ranges, costs, row.at, {
       maxOld: row.expensive ? 0 : RANGE_TABLE_BATCH_MAX_OLD,
       maxNew: row.expensive ? RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE : RANGE_TABLE_BATCH_MAX_NEW,
@@ -327,7 +333,7 @@ export function rangeTable(
     const entries = proposal.entries.map(batchEntryLabel).join(', ')
     if (claimed.has(entries)) continue
     claimed.add(entries)
-    proposalOfStart.set(row.range.start, renderTemplate(prompts.rangeTable.batch, {
+    proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
@@ -335,7 +341,7 @@ export function rangeTable(
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
     }))
   }
-  const lines = baseRows.flatMap(({ range, cost, expensive }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
     const rows = [
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
@@ -353,7 +359,7 @@ export function rangeTable(
         flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : '',
       }),
     ]
-    const batch = proposalOfStart.get(range.start)
+    const batch = proposalOfAt.get(at)
     if (batch !== undefined) rows.push(batch)
     return rows
   })
