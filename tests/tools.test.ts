@@ -8,7 +8,7 @@ import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { AcpStateStore } from '../src/state.ts'
 import { edgeRefForSeq, makeTools, mnRefIndex, type ToolEnvironment } from '../src/tools.ts'
-import { blockRegistry, rebuildBlockLedger, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
+import { blockRegistry, rebuildBlockLedger, reasonOf, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
 import { rangeTable } from '../src/nudge.ts'
 import { SUMMARY_FRAME_PREFIX } from '../src/messages.ts'
 import { appendTurn, appendToolResult, appendEmptyToolResult, appendToolCall, appendMultiToolCall, appendUser, appendAssistant, buildTextSession, buildShortTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
@@ -118,6 +118,59 @@ test('M3: compress lands a durable block, shrinks the surface, and uses the effe
   assert.deepEqual(ledger[0]!.shadowedSeqs, [1, 2, 3, 4, 5])
   assert.ok(ledger[0]!.shadowedTokenCount > 0, 'the ledger records real reclaimed tokens, not 0')
   assert.deepEqual(modelContextLimits, [1000000], 'compress gives the kernel the auto-detected window, not the 128K fallback')
+})
+
+/**
+ * The model's own reason for picking a span: written in the same call that picks
+ * it (before hindsight rewrites the story), echoed in the result so a reader sees
+ * decision + rationale together, and stored on the block so it survives a
+ * restart. Blank input must never become a durable key.
+ */
+test('M3: compress records and echoes the model\'s reason for a range', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(12)
+  const compress = toolOf(env, 'compress')
+  const summary = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute per IP address, bcrypt hashing at cost factor 12.'
+
+  const result = await compress.execute({
+    content: [{
+      startSeq: 1,
+      endSeq: 5,
+      summary,
+      reason: '  biggest span offered and its results were already consumed; folding it also starts near the tail, so the prefix rewrite stays small  ',
+    }],
+  } as never, fakeExec(session))
+
+  const text = (result as { text: string }).text
+  assert.match(
+    text,
+    /, why: biggest span offered and its results were already consumed; folding it also starts near the tail, so the prefix rewrite stays small$/m,
+    'the reason is echoed with the block it explains, normalised',
+  )
+  const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary')
+  assert.ok(summaryEvent, 'the compression landed')
+  assert.equal(
+    reasonOf(summaryEvent!),
+    'biggest span offered and its results were already consumed; folding it also starts near the tail, so the prefix rewrite stays small',
+    'and the same text is readable from the durable block after a restart',
+  )
+  assert.equal(rebuildBlockLedger(session.snapshotEvents())[0]!.reason, reasonOf(summaryEvent!), 'the ledger entries carry it too')
+})
+
+test('M3: a blank or absent reason writes no durable key', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(12)
+  const compress = toolOf(env, 'compress')
+  const summary = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute per IP address, bcrypt hashing at cost factor 12.'
+
+  const result = await compress.execute({
+    content: [{ startSeq: 1, endSeq: 5, summary, reason: '   ' }],
+  } as never, fakeExec(session))
+
+  assert.ok(!(result as { text: string }).text.includes(', why:'), 'nothing is echoed for a blank reason')
+  const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary')!
+  assert.equal(reasonOf(summaryEvent), undefined, 'and nothing is stored')
+  assert.equal(rebuildBlockLedger(session.snapshotEvents())[0]!.reason, undefined)
 })
 
 test('M3: compress stamps the summary with the LIVE route, not stale agent.options', async () => {

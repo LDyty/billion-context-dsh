@@ -200,14 +200,32 @@ export const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6
 export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
 
 /**
- * How many batch proposals one table may carry. Left unbounded, a table whose
- * rows all have neighbours prints one proposal per base row — measured 123 of
- * 123 rows on a randomized matrix — which roughly doubles the nudge text that
- * every ~20K of growth re-sends. The escape hatch exists for the rows that need
- * it (claiming runs worst-cost-first), so two are enough to show the way out
- * without paying for it on every row.
+ * A batch is only recommended when folding it pays back within this many
+ * requests. This is the policy knob, not a formatting one: a proposal is an
+ * instruction to go compress, so it is only issued where the arithmetic really
+ * is cheap. Recommended batches start later than a lone base row, so their
+ * payback falls to roughly `base ÷ (1 + pulled-in tokens)`.
+ *
+ * Live-calibrated 2026-10-15 against the model's own behaviour on this
+ * session's tables: every batch it composed itself landed at 1.9-1.93 requests,
+ * while the best batch reachable from a ⚠ row stayed at 5.0-5.6 — and it took
+ * ⚠ rows 0 times out of 6 in the three most recent compressions. Recommending
+ * the 5.6-request escape hatch therefore bought nothing; recommending the
+ * 3-request-and-under batches on the rows it actually picks does.
  */
-export const RANGE_TABLE_BATCH_MAX_PROPOSALS = 2
+export const RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN = 3
+
+/**
+ * Hard cap on how many batch proposals one table may carry. The count is
+ * otherwise dynamic: a table prints a proposal for every printed row whose best
+ * batch clears {@link RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN} (and beats the row
+ * itself by {@link RANGE_TABLE_BATCH_MIN_IMPROVEMENT}), so a cheap table may
+ * carry three and an expensive one none. The cap exists because the nudge body
+ * is re-sent with every request: unbounded, a table whose rows all have
+ * neighbours prints one proposal per row (measured 123 of 123 rows on a
+ * randomized matrix), roughly doubling the text for no extra guidance.
+ */
+export const RANGE_TABLE_BATCH_MAX_PROPOSALS = 3
 
 /** Compact token count for a cost row: one decimal above 10K, whole numbers below. */
 function compactTokens(tokens: number): string {
@@ -284,12 +302,17 @@ export function rangeTable(
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
   })
-  // Proposals are claimed worst-cost-first: the row that most needs an escape
-  // hatch gets it, and an entry set that several base rows converge on is
-  // printed once instead of repeating under each of them.
+  // Proposals are DYNAMIC (2026-10-15, second revision): a row carries one when
+  // its best batch folds within RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN requests,
+  // scanned in PRINTED order (largest first) so the rows the model is actually
+  // weighing are the ones that get the hint. The earlier policy claimed two
+  // slots worst-cost-first, which handed both to the ⚠ rows (payback 14.8 /
+  // 20.4) — the exact rows the model declined in every measured call — while the
+  // batch it composed itself (payback 1.9) never appeared in the table at all.
+  // An entry set that two base rows converge on is still printed once.
   const claimed = new Set<string>()
   const proposalOfStart = new Map<number, string>()
-  for (const row of [...baseRows].sort((a, b) => b.cost.breakEvenRequests - a.cost.breakEvenRequests)) {
+  for (const row of baseRows) {
     if (row.at < 0) continue
     if (proposalOfStart.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break
     const proposal = bestBatchProposal(ranges, costs, row.at, {
@@ -298,6 +321,9 @@ export function rangeTable(
       minImprovement: RANGE_TABLE_BATCH_MIN_IMPROVEMENT,
     })
     if (proposal === undefined) continue
+    // Cheap only: a proposal asks the model to go compress, so it is issued
+    // where the arithmetic really pays — see the constant.
+    if (proposal.breakEvenRequests > RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN) continue
     const entries = proposal.entries.map(batchEntryLabel).join(', ')
     if (claimed.has(entries)) continue
     claimed.add(entries)

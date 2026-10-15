@@ -46,6 +46,20 @@ export interface AcpBlockLedgerPayload {
     readonly effectiveMessageIds?: readonly string[];
     /** B3: acceptance readings already green before compression (e.g. "t0-fastpath 8/8"). */
     readonly verifiedReadings?: readonly string[];
+    /**
+     * Why the model picked this span (one short line, in its own words — what it
+     * weighed: size, fold cost, freshness, how finished the work was). Written by
+     * the `compress` tool's optional `reason` field and stored here so the choice
+     * stays auditable after the transcript has moved on: the tool result echoes it
+     * immediately, this copy survives a restart.
+     *
+     * Additive optional field, so ACP_BLOCK_LEDGER_VERSION stays 1 on purpose:
+     * decode in this repo is per-field lenient (an unknown member is ignored), but
+     * it is strict on the VERSION — an older engine reading a bumped payload would
+     * fall back to "no ledger data" and lose tier/lineage for every block. Adding a
+     * member that old readers ignore keeps both directions working.
+     */
+    readonly reason?: string;
 }
 /**
  * Encode the block-ledger fields as a single text content block whose text is a

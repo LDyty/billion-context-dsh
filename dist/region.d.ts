@@ -38,6 +38,8 @@ export interface AcpBlockLedgerEntry {
     readonly effectiveMessageIds?: readonly string[];
     /** B3: acceptance readings that were already green before compression (absent when the compress call carried none). */
     readonly verifiedReadings?: readonly string[];
+    /** Why the model picked this span, in its own words (absent when the call carried none). */
+    readonly reason?: string;
     /** Unix epoch ms of the compaction/summary event. */
     readonly createdAt: number;
 }
@@ -135,6 +137,8 @@ export interface CompactionTransactionInput {
     readonly effectiveMessageIds?: readonly string[];
     /** B3：压缩前已绿的验收读数（结构化，压缩后仍可读）。 */
     readonly verifiedReadings?: readonly string[];
+    /** 模型为什么挑这一段（一句话，它自己的措辞）——随块落盘，事后可查。 */
+    readonly reason?: string;
 }
 type CompactionSummaryData = SessionEventMap['compaction/summary'];
 /**
@@ -154,6 +158,12 @@ export declare function readCompactionSummary(event: SessionEvent): CompactionSu
  * top-level. Absent in either shape → empty array; never throws.
  */
 export declare function verifiedReadingsOf(event: SessionEvent): string[];
+/**
+ * 模型为这个块写下的选择理由（`compress` 的可选 `reason`），读不出来时返回
+ * undefined。新写入方把它放在承认的 `rawOutput` 成员里
+ * （{@link decodeAcpBlockLedger}），所以老日志、外来日志都不会因为缺这个键而出错。
+ */
+export declare function reasonOf(event: SessionEvent): string | undefined;
 /**
  * B1：给摘要块数组的第一个文本块加标源前缀（幂等——已带前缀不重复加）。
  * 只动文本块，工具/图片块原样保留。

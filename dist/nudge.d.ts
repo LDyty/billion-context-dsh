@@ -80,14 +80,31 @@ export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
 /** Only print a batch when it beats its base row's break-even by this fraction. */
 export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
- * How many batch proposals one table may carry. Left unbounded, a table whose
- * rows all have neighbours prints one proposal per base row — measured 123 of
- * 123 rows on a randomized matrix — which roughly doubles the nudge text that
- * every ~20K of growth re-sends. The escape hatch exists for the rows that need
- * it (claiming runs worst-cost-first), so two are enough to show the way out
- * without paying for it on every row.
+ * A batch is only recommended when folding it pays back within this many
+ * requests. This is the policy knob, not a formatting one: a proposal is an
+ * instruction to go compress, so it is only issued where the arithmetic really
+ * is cheap. Recommended batches start later than a lone base row, so their
+ * payback falls to roughly `base ÷ (1 + pulled-in tokens)`.
+ *
+ * Live-calibrated 2026-10-15 against the model's own behaviour on this
+ * session's tables: every batch it composed itself landed at 1.9-1.93 requests,
+ * while the best batch reachable from a ⚠ row stayed at 5.0-5.6 — and it took
+ * ⚠ rows 0 times out of 6 in the three most recent compressions. Recommending
+ * the 5.6-request escape hatch therefore bought nothing; recommending the
+ * 3-request-and-under batches on the rows it actually picks does.
  */
-export declare const RANGE_TABLE_BATCH_MAX_PROPOSALS = 2;
+export declare const RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN = 3;
+/**
+ * Hard cap on how many batch proposals one table may carry. The count is
+ * otherwise dynamic: a table prints a proposal for every printed row whose best
+ * batch clears {@link RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN} (and beats the row
+ * itself by {@link RANGE_TABLE_BATCH_MIN_IMPROVEMENT}), so a cheap table may
+ * carry three and an expensive one none. The cap exists because the nudge body
+ * is re-sent with every request: unbounded, a table whose rows all have
+ * neighbours prints one proposal per row (measured 123 of 123 rows on a
+ * randomized matrix), roughly doubling the text for no extra guidance.
+ */
+export declare const RANGE_TABLE_BATCH_MAX_PROPOSALS = 3;
 /**
  * Pick the rows the nudge range table prints: **largest first, oldest among
  * equals**.

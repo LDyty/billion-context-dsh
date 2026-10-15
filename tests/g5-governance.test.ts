@@ -138,3 +138,22 @@ test('B3-4 工具面可达：compress 参数 schema 必须声明 verifiedReading
   assert.ok(prop.description.length > 0, '声明面需带说明，模型才知道该字段存在')
   assert.ok(DEFAULT_PROMPTS.tools.compress.includes('verifiedReadings'), '工具描述同样要提到该字段')
 })
+
+/**
+ * 同一个陷阱的第二次出现（2026-10-15）：`reason` 是"模型为什么挑这一段"的
+ * 一句话记录，走的是 verifiedReadings 同一条路——handler + 落盘 + 回显都实现了，
+ * 但 content.items 声明了 `additionalProperties: false` 却没列出它的话，实调用会
+ * 被 schema 闸拒收（`invalid arguments: "content[0].reason" is not a declared
+ * property`），字段在模型工具面上等于不存在。这里锁住声明面，并锁住未知字段
+ * 仍然被拒（修法只能靠声明，不能靠放宽 additionalProperties）。
+ */
+test('工具面可达：compress 参数 schema 必须声明 reason（模型的选择理由）', () => {
+  const items = compressParameters.content.items
+  assert.equal(items.additionalProperties, false, '未知字段仍应被拒（不靠放宽 additionalProperties 修）')
+  const prop = items.properties.reason
+  assert.ok(prop, 'content[].reason 必须在声明里，否则 schema 闸会拒收合法调用')
+  assert.equal(prop.type, 'string')
+  assert.ok(prop.description.length > 0, '声明面需带说明，模型才知道该字段存在')
+  assert.ok(prop.description.includes('WHY'), '说明必须点明它是"为什么"而不是又一个摘要字段')
+  assert.ok(DEFAULT_PROMPTS.tools.compress.includes('reason'), '工具描述同样要提到该字段')
+})

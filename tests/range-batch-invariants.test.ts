@@ -22,6 +22,7 @@ import {
   RANGE_TABLE_BATCH_MAX_OLD,
   RANGE_TABLE_BATCH_MAX_PROPOSALS,
   RANGE_TABLE_BATCH_MIN_IMPROVEMENT,
+  RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
   RANGE_TABLE_COST_WARN_BREAK_EVEN,
   rangeTable,
 } from '../src/nudge.ts'
@@ -178,18 +179,18 @@ test('batch proposal: the rendered table stays bounded and keeps its claims', ()
       batchLines.length <= RANGE_TABLE_BATCH_MAX_PROPOSALS,
       `proposals stay capped (${batchLines.length} for ${nodeCount} nodes)`,
     )
-    // Claiming runs worst-cost-first, so every row that carries a proposal must
-    // be at least as expensive as every row that does not.
-    const annotated = rows.flatMap((line, index) => {
-      if (!line.includes('- seq ')) return []
-      const breakEven = Number(/pays back in ~([\d.]+) request/.exec(rows[index + 1] ?? '')?.[1])
-      if (!Number.isFinite(breakEven)) return []
-      return [{ breakEven, carries: (rows[index + 2] ?? '').includes('cheaper together') }]
-    })
-    const cheapestWith = Math.min(...annotated.filter((row) => row.carries).map((row) => row.breakEven))
-    const dearestWithout = Math.max(...annotated.filter((row) => !row.carries).map((row) => row.breakEven))
-    if (Number.isFinite(cheapestWith) && Number.isFinite(dearestWithout)) {
-      assert.ok(cheapestWith >= dearestWithout, 'a proposal never goes to a cheaper row while a worse one gets none')
+    // The policy is DYNAMIC since 2026-10-15: a proposal is printed only where
+    // the batch folds within RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN requests, so
+    // the invariant is about the batch's OWN payback, not about which row is
+    // worst. (The old worst-cost-first rule handed every slot to the ⚠ rows — the
+    // ones the model never picked.)
+    for (const line of rows) {
+      if (!line.includes('cheaper together')) continue
+      const payback = Number(/pays back in ~([\d.]+) request/.exec(line)?.[1])
+      assert.ok(
+        Number.isFinite(payback) && payback <= RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
+        `every printed batch clears the recommend line (got ~${payback} requests)`,
+      )
     }
     // Compare parsed entry lists, never substrings: a 3-entry batch's text is a
     // substring of a 4-entry batch's line whenever it is its tail.
@@ -267,9 +268,13 @@ test('batch proposal: live table geometry with nested rows keeps the contract', 
 test('batch proposal: entry labels report each segment flavour, not just the row above', () => {
   const session = buildTextSession(40)
   appendToolCall(session, 'tool run', 'c1', 1, 1)
-  appendToolResult(session, longText('toolout', 1), 'c1', 1, 1)
-  // Six more text messages keep the tool rows out of the protected tail.
-  for (let index = 0; index < 6; index += 1) {
+  // The tool span must be BIG relative to the tail behind it: since the policy
+  // went dynamic a proposal is printed only when the batch folds within
+  // RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN requests, and ~1K tool tokens against
+  // a ~4.5K tail (the shape this fixture used to carry) never gets there.
+  appendToolResult(session, longText('toolout', 1).repeat(24), 'c1', 1, 1)
+  // Four more text messages keep the tool rows out of the protected tail.
+  for (let index = 0; index < 4; index += 1) {
     appendUser(session, longText('tail', index))
     appendAssistant(session, longText('tail-reply', index))
   }

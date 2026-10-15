@@ -13,7 +13,11 @@ import test from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
 import { buildCompressibleSeqRanges, foldCostsOfRanges, shadowedSeqsOf } from '../src/region.ts'
 import { bestBatchProposal } from '../src/region.ts'
-import { RANGE_TABLE_COST_WARN_BREAK_EVEN, rangeTable } from '../src/nudge.ts'
+import {
+  RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
+  RANGE_TABLE_COST_WARN_BREAK_EVEN,
+  rangeTable,
+} from '../src/nudge.ts'
 import { hostPriceEvent, shadowedTokensViaMeter } from '../src/host-tokens.ts'
 import {
   appendAssistant,
@@ -138,22 +142,52 @@ test('batch proposal: no extension, no proposal — and the improvement floor ga
   )
 })
 
-test('batch proposal: a flagged row extends only toward newer neighbours', () => {
+test('batch proposal: a flagged row may only extend toward newer neighbours', () => {
   const session = buildTextSession(24)
-  const text = rangeTable(session, fiveSpanView(session) as never)
-  assert.match(text, /cheaper together — batch \d+ entries in ONE call: /, 'the base row carries its batch')
+  const spans: [number, number][] = [[0, 2], [4, 6], [8, 10], [12, 14], [16, 18]]
+  const nodes = [...session.surface.nodes]
+  const view = {
+    ranges: spans.map(([,], index) => ({ startRef: `s${index}`, endRef: `e${index}` })),
+    refs: {
+      byRef: Object.fromEntries(spans.flatMap(([from, to], index) => [
+        [`s${index}`, String(nodes[from]!)],
+        [`e${index}`, String(nodes[to]!)],
+      ])),
+    },
+  }
+  const ranges = buildCompressibleSeqRanges(session, view as never)
+  const costs = foldCostsOfRanges(session, ranges)
+  // The flagged row's own search must never reach backwards: its rewrite is
+  // fixed by where it starts, so pulling in older neighbours can only deepen the
+  // cost the flag warns about (production passes maxOld 0 for a flagged row).
+  const flaggedAt = costs.findIndex((cost) => cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN)
+  assert.ok(flaggedAt >= 0, 'the fixture still has an expensive row')
+  const backwards = bestBatchProposal(ranges, costs, flaggedAt, {
+    maxOld: 0,
+    maxNew: 6,
+    minImprovement: 0,
+  })
+  for (const entry of backwards?.entries ?? []) {
+    assert.ok(entry.start >= ranges[flaggedAt]!.start, 'a flagged row only absorbs newer neighbours')
+  }
+  // The rendered side of the same contract: whatever a printed batch hangs
+  // under, it must be affordable (a proposal is an instruction to go compress).
+  // Deliberately NOT "never reaches back": a CHEAP carrier row is allowed to
+  // absorb older neighbours (maxOld 3) because its rewrite stays inside the
+  // recommend line anyway — only a flagged row is forward-only.
+  const text = rangeTable(session, view as never)
   const rows = text.split('\n')
-  // Proposals are claimed worst-cost-first, so the row that carries one is the
-  // flagged one — and its batch must not reach backwards.
-  const at = rows.findIndex((line, index) =>
-    line.includes('- seq ')
-    && rows[index + 1]?.includes('⚠')
-    && rows[index + 2]?.includes('cheaper together'))
-  assert.ok(at >= 0, 'the flagged row carries the escape hatch')
-  const baseStart = Number(/seq (\d+)/.exec(rows[at]!)![1])
-  const batchLine = rows[at + 2]!
-  const entryStarts = [...batchLine.matchAll(/(\d+)\.\.\d+/g)].map((match) => Number(match[1]))
-  assert.ok(entryStarts.every((start) => start >= baseStart), 'no entry starts before the flagged base row')
+  let checked = 0
+  for (let index = 0; index < rows.length; index += 1) {
+    if (!rows[index + 2]?.includes('cheaper together')) continue
+    const payback = Number(/pays back in ~([\d.]+) request/.exec(rows[index + 2]!)?.[1])
+    assert.ok(
+      payback <= RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
+      `printed batch pays back within the recommend line (~${payback} requests)`,
+    )
+    checked += 1
+  }
+  assert.ok(checked >= 1, 'the fixture still prints at least one proposal')
 })
 
 /**
