@@ -9669,6 +9669,15 @@ function acpCommand(env) {
   return {
     name: "acp-prune",
     description: "Active Context Pruning \u2014 model-driven context compression. Usage: /acp-prune status | /acp-prune compress <startSeq> <endSeq> <summary> | /acp-prune decompress <blockId> [offset] [limit] | /acp-prune why [blockId] | /acp-prune config [list|set <key> <value>|reset <key>|all]",
+    // 声明输入是必须的，不是装饰：宿主的斜杠决策表按 `desc.input` 分流——
+    // 声明了才允许"带参数的斜杠行"（菜单点选后继续打字 → claim；整行回车 →
+    // claim 并提交，参数原样传给 handler）；没声明时只认裸命令，带尾巴的行会
+    // 落到默认消息通道。实测（2026-10-15，用户报）：不声明时点菜单等于裸执行
+    // status，而 `/acp-prune why` 会被当成消息发给模型，decompress/config 同理
+    // 都不可达。hint 是用户看到输入框里的占位说明。
+    input: {
+      hint: "status | compress <startSeq> <endSeq> <summary> | decompress <blockId> [offset] [limit] | why [blockId] | config [list|set <key> <value>|reset <key>|all]"
+    },
     handler: async (invocation) => {
       const raw = invocation.rawInput.trim();
       if (raw === "" || raw === "status") {

@@ -272,6 +272,25 @@ test('M4: /acp-prune compress stamps the summary with the LIVE route, not stale 
   assert.equal((summaryEvent.data as { model?: string }).model, 'live-model', 'the summary carries the LIVE model')
 })
 
+/**
+ * 带参数的命令必须在定义里声明 `input`（2026-10-15 用户实测报障）。
+ *
+ * 宿主的斜杠决策表按 `desc.input` 分流：声明了才走 claim 路径（菜单点选后
+ * token 留在输入框里继续打参数；整行回车 claim 并提交，参数原样进 handler）；
+ * 没声明时只认裸命令——点菜单=立刻裸执行，带尾巴的行落进默认消息通道变成发给
+ * 模型的聊天消息。我们的子命令（compress/decompress/why/config）全靠参数，所以
+ * 少这一行等于它们从界面上不可达。
+ */
+test('M4: /acp-prune declares input so its subcommands are reachable from the composer', () => {
+  const definition = acpCommand(makeEnv(128000))
+  assert.ok(definition.input, 'no input declaration → the host treats the command as bare-only')
+  const hint = definition.input!.hint
+  for (const sub of ['status', 'compress', 'decompress', 'why', 'config']) {
+    assert.ok(hint.includes(sub), `the hint advertises "${sub}" (got: ${hint})`)
+  }
+  assert.ok(definition.description.includes('why'), 'and the description lists it too')
+})
+
 test('M4: /acp-prune why prints the thinking that produced a fold', async () => {
   const env = makeEnv(128000)
   const session = buildSession(12)
