@@ -80,50 +80,45 @@ export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
 /** Only print a batch when it beats its base row's break-even by this fraction. */
 export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
- * A batch is only recommended when folding it pays back within this many
- * requests. This is the policy knob, not a formatting one: a proposal is an
- * instruction to go compress, so it is only issued where the arithmetic really
- * is cheap. Recommended batches start later than a lone base row, so their
- * payback falls to roughly `base ÷ (1 + pulled-in tokens)`.
- *
- * Live-calibrated 2026-10-15 against the model's own behaviour on this
- * session's tables: every batch it composed itself landed at 1.9-1.93 requests,
- * while the best batch reachable from a ⚠ row stayed at 5.0-5.6 — and it took
- * ⚠ rows 0 times out of 6 in the three most recent compressions. Recommending
- * the 5.6-request escape hatch therefore bought nothing; recommending the
- * 3-request-and-under batches on the rows it actually picks does.
+ * How many sweep entries a proposal LINE lists before it summarises the rest as
+ * `… +N more spans`. Display only — the sweep itself has no entry cap (see
+ * {@link bestSweepProposal}); a live row swept 42 spans, and printing all 42
+ * labels would push the nudge body past 4KB on its own, re-sent with every
+ * request. The full list is one `acp_status` call away, and the line still
+ * carries the sweep's true totals and its message/summary counts.
  */
-export declare const RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN = 3;
+export declare const RANGE_TABLE_BATCH_LABEL_LIMIT = 8;
 /**
- * Hard cap on how many batch proposals one table may carry. The count is
- * otherwise dynamic: a table prints a proposal for every printed row whose best
- * batch clears {@link RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN} (and beats the row
- * itself by {@link RANGE_TABLE_BATCH_MIN_IMPROVEMENT}), so a cheap table may
- * carry three and an expensive one none. The cap exists because the nudge body
- * is re-sent with every request: unbounded, a table whose rows all have
- * neighbours prints one proposal per row (measured 123 of 123 rows on a
- * randomized matrix), roughly doubling the text for no extra guidance.
- */
-export declare const RANGE_TABLE_BATCH_MAX_PROPOSALS = 3;
-/**
- * Pick the rows the nudge range table prints: **largest first, oldest among
- * equals**.
+ * Pick the rows the nudge range table prints: **one per age band**.
  *
- * Ordering policy (2026-10-15). It replaces the earlier "oldest among the
- * large" compromise, which sorted the largest eight spans back into position
- * order — putting the OLDEST span of the offerable set in row 1 on 36/36 live
- * compressions of one measured day. Folding a span invalidates every cached
- * token after its start, so an old first row is the most expensive default the
- * table can hand the model: predicting the invalidation of each strategy's
- * first row over that day's real offerable tables gives 47.8% for
- * oldest-of-the-largest against 8.5% for size-first. Size-first also matches
- * the upstream table (PR #217), so the two implementations stay identical.
+ * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
+ * spot: on a big surface the shortlist is filled from whatever region happens to
+ * hold the largest spans, so the older scattered content is never offered —
+ * measured on the live surface, the oldest band held 26 offerable spans (median
+ * 1.3K tokens) and not one of them could ever reach a six-row size-first table.
+ *
+ * The bands are equal WEIGHT, not equal count: splitting the offerable list into
+ * six equal-count groups gives the oldest group three times the spans of the
+ * newest (26 vs 7 live) and lets it monopolise rows. Walking the surface in
+ * order and closing a band once it holds `total ÷ bands` tokens gives every row
+ * the same share of the reclaimable context, so a row IS an age band: row 1 is
+ * the oldest sixth of the reclaimable content, row 6 the newest. Each band
+ * offers its largest span as the base — the row the model reads — and carries
+ * its own sweep (see {@link bestSweepProposal}), which is what makes an old
+ * band actionable at all.
+ *
+ * Rows come back in band order (oldest → newest), which is also surface order,
+ * so the table reads as the timeline it is.
+ *
+ * @param all - every offerable range, in surface position order.
+ * @param bands - how many bands to cut (defaults to the row cap).
+ * @returns one base range per band, oldest first.
  */
 export declare function selectRangeTableRanges<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(all: readonly T[]): T[];
+}>(all: readonly T[], bands?: number): T[];
 /**
  * Render the compressible-range table as seq refs for the model.
  *

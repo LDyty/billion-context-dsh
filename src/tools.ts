@@ -165,7 +165,11 @@ export const compressParameters = {
             { type: 'string' as const, description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3).' },
           ],
         },
-        summary: { type: 'string' as const, required: true, description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters.' },
+        summary: {
+          type: 'string' as const,
+          required: true,
+          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, so a discard line must still be a full sentence. For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
+        },
         topic: { type: 'string' as const, description: 'Short label (3-5 words) for this range.' },
         // B3 (2026-09-08 governance plan): the handler and region.ts have
         // accepted verifiedReadings since the plan landed, but the declared

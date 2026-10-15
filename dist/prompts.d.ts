@@ -46,7 +46,7 @@ export interface RangeTablePrompts {
     line: string;
     /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
     cost: string;
-    /** 基点行的"扩展批量"提议。占位符:{entries} {count} {reclaimed} {invalidated} {breakEven} */
+    /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {invalidated} {breakEven} {coverage} */
     batch: string;
     /** 表尾调用语法。无占位符 */
     footer: string;

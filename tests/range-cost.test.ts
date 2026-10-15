@@ -12,9 +12,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
 import { buildCompressibleSeqRanges, foldCostsOfRanges, shadowedSeqsOf } from '../src/region.ts'
-import { bestBatchProposal } from '../src/region.ts'
+import { bestBatchProposal, bestSweepProposal } from '../src/region.ts'
 import {
-  RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
   RANGE_TABLE_COST_WARN_BREAK_EVEN,
   rangeTable,
 } from '../src/nudge.ts'
@@ -142,7 +141,7 @@ test('batch proposal: no extension, no proposal — and the improvement floor ga
   )
 })
 
-test('batch proposal: a flagged row may only extend toward newer neighbours', () => {
+test('sweep proposal: it reaches wherever it must, and it always beats the row alone', () => {
   const session = buildTextSession(24)
   const spans: [number, number][] = [[0, 2], [4, 6], [8, 10], [12, 14], [16, 18]]
   const nodes = [...session.surface.nodes]
@@ -157,37 +156,43 @@ test('batch proposal: a flagged row may only extend toward newer neighbours', ()
   }
   const ranges = buildCompressibleSeqRanges(session, view as never)
   const costs = foldCostsOfRanges(session, ranges)
-  // The flagged row's own search must never reach backwards: its rewrite is
-  // fixed by where it starts, so pulling in older neighbours can only deepen the
-  // cost the flag warns about (production passes maxOld 0 for a flagged row).
-  const flaggedAt = costs.findIndex((cost) => cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN)
-  assert.ok(flaggedAt >= 0, 'the fixture still has an expensive row')
-  const backwards = bestBatchProposal(ranges, costs, flaggedAt, {
-    maxOld: 0,
-    maxNew: 6,
-    minImprovement: 0,
-  })
-  for (const entry of backwards?.entries ?? []) {
-    assert.ok(entry.start >= ranges[flaggedAt]!.start, 'a flagged row only absorbs newer neighbours')
+  // The sweep has NO direction limit and NO entry cap (2026-10-16): a fold's
+  // rewrite is pinned by its earliest entry, so reaching further back is allowed
+  // whenever it lowers payback. What must hold is the arithmetic.
+  let swept = 0
+  for (let at = 0; at < ranges.length; at += 1) {
+    const sweep = bestSweepProposal(ranges, costs, at)
+    if (sweep === undefined) continue
+    swept += 1
+    const earliest = sweep.entries.reduce((best, entry) => (entry.start < best.start ? entry : best))
+    assert.equal(
+      sweep.invalidatedTokens,
+      costs[ranges.findIndex((range) => range.start === earliest.start)]!.invalidatedTokens,
+      'the rewrite is the one pinned by the sweep’s EARLIEST entry',
+    )
+    assert.ok(sweep.reclaimedTokens > ranges[at]!.tokens, 'a sweep reclaims more than its base row')
+    assert.ok(sweep.breakEvenRequests < costs[at]!.breakEvenRequests, 'and pays back sooner')
+    assert.ok(sweep.entries.some((entry) => entry.start === ranges[at]!.start), 'the base row is in its own sweep')
+    for (let index = 1; index < sweep.entries.length; index += 1) {
+      assert.ok(sweep.entries[index]!.start > sweep.entries[index - 1]!.end, 'sweep entries are disjoint')
+    }
   }
-  // The rendered side of the same contract: whatever a printed batch hangs
-  // under, it must be affordable (a proposal is an instruction to go compress).
-  // Deliberately NOT "never reaches back": a CHEAP carrier row is allowed to
-  // absorb older neighbours (maxOld 3) because its rewrite stays inside the
-  // recommend line anyway — only a flagged row is forward-only.
+  assert.ok(swept >= 2, `the fixture exercises sweeps (${String(swept)})`)
+
+  // Rendered side: every row that carries a sweep prints a payback lower than
+  // its own row, and says how much work the sweep is (messages / summaries).
   const text = rangeTable(session, view as never)
   const rows = text.split('\n')
   let checked = 0
   for (let index = 0; index < rows.length; index += 1) {
-    if (!rows[index + 2]?.includes('cheaper together')) continue
-    const payback = Number(/pays back in ~([\d.]+) request/.exec(rows[index + 2]!)?.[1])
-    assert.ok(
-      payback <= RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
-      `printed batch pays back within the recommend line (~${payback} requests)`,
-    )
+    if (!rows[index + 2]?.includes('sweep from here')) continue
+    const rowPayback = Number(/pays back in ~([\d.]+) request/.exec(rows[index + 1] ?? '')?.[1])
+    const sweepPayback = Number(/pays back in ~([\d.]+) request/.exec(rows[index + 2]!)?.[1])
+    assert.ok(sweepPayback < rowPayback, `sweep beats its row (${String(sweepPayback)} < ${String(rowPayback)})`)
+    assert.match(rows[index + 2]!, /\(\d+ messages \/ \d+ summaries to write\)/, 'the sweep names its work')
     checked += 1
   }
-  assert.ok(checked >= 1, 'the fixture still prints at least one proposal')
+  assert.ok(checked >= 1, 'the fixture still prints at least one sweep')
 })
 
 /**

@@ -13,7 +13,7 @@ import { createCore, type CompressionCore, type NudgeDecision } from 'acp-kernel
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AcpStateStore } from '../src/state.ts'
 import { buildNudge, buildNudgeText, rangeTable, type NudgeEnvironment } from '../src/nudge.ts'
-import { makeTools, type ToolEnvironment } from '../src/tools.ts'
+import { compressParameters, makeTools, type ToolEnvironment } from '../src/tools.ts'
 import {
   DEFAULT_PROMPTS,
   renderSystemPrompt,
@@ -185,7 +185,7 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
   assert.equal(
     rangeTable(paged, wholeSurfaceRangeView(paged)),
     `\nSurface: 12 nodes, seqs 1..12
-Compressible ranges (1, largest first; exact surface seqs — usable as-is):
+Compressible ranges (1, one per age band — oldest first; exact surface seqs — usable as-is):
   - seq 1..7 — 7 messages, ~7283 tokens [tool 0% | text 100%]
       fold cost: reclaims ~7283 · rewrites ~12.5K tok of the cached prefix (pays back in ~1.7 request(s))
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
@@ -198,11 +198,40 @@ test('M4/prompts 5: tool descriptions render the defaults byte-identical', () =>
   const descriptions = Object.fromEntries(makeTools(makeEnv(128000)).map((t) => [t.name, t.description]))
   assert.equal(
     descriptions['compress'],
-    'Replace older conversation ranges with dense summaries you write. Each message seq is a surface reference. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated ranges in one call (each content entry becomes its own block); keep ranges disjoint. Never compress content the current step is actively using. Compress boundaries are SURFACE SEQS (acp_status Surface: row, latest nudge table) — NOT the block refs (bN, e.g. b1) that acp_status COMPRESSED BLOCKS shows, which are for decompress only. Drilldown mN refs (e.g. m00306) are ALSO accepted as startSeq/endSeq — they are auto-mapped to the live surface seq; an unknown mN (never assigned on the current surface) fails with guidance. Seq refs must come from the CURRENT surface (acp_status or the latest nudge): a span whose edges were shadowed by an earlier compress is auto-remapped to its still-live content, a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. Good compression moments: stage or subtask completion whose details you have fully consumed and will not re-check, strategy switches, intermediate milestones, and wrapping up failed exploration — when the details are consumed and no longer critical for the task ahead. Before compressing, ask: will I need to re-verify any detail from this range in this task? If yes, keep it live. When you write a summary, turn dead-end exploration into a conclusion (what was tried, why it failed, the next step) — not a blow-by-blow; and keep the summary the ONLY record: self-contained, so a later reader (or you, after decompress) can continue without the original. Optional verifiedReadings: string[] per content entry records acceptance readings that are already green (e.g. "t0-fastpath 8/8") — stored structurally on the compaction event so later steps need not re-run them.',
+    'Replace older conversation ranges with dense summaries you write. Each message seq is a surface reference. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated ranges in one call (each content entry becomes its own block); keep ranges disjoint. Never compress content the current step is actively using. Compress boundaries are SURFACE SEQS (acp_status Surface: row, latest nudge table) — NOT the block refs (bN, e.g. b1) that acp_status COMPRESSED BLOCKS shows, which are for decompress only. Drilldown mN refs (e.g. m00306) are ALSO accepted as startSeq/endSeq — they are auto-mapped to the live surface seq; an unknown mN (never assigned on the current surface) fails with guidance. Seq refs must come from the CURRENT surface (acp_status or the latest nudge): a span whose edges were shadowed by an earlier compress is auto-remapped to its still-live content, a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. Good compression moments: stage or subtask completion whose details you have fully consumed and will not re-check, strategy switches, intermediate milestones, and wrapping up failed exploration — when the details are consumed and no longer critical for the task ahead. Before compressing, ask: will I need to re-verify any detail from this range in this task? If yes, keep it live. When you write a summary, turn dead-end exploration into a conclusion (what was tried, why it failed, the next step) — not a blow-by-blow; and keep the summary the ONLY record: self-contained, so a later reader (or you, after decompress) can continue without the original. NOT every range deserves that treatment: a span that held only noise, duplicated tool output, retries, or output already superseded by a later result gets the DISCARD form instead — summary: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." (write it as a full sentence: the kernel rejects anything under 50 characters). Never pad a junk range into a fake summary, and never silently skip it — the entry is what frees the tokens. Optional verifiedReadings: string[] per content entry records acceptance readings that are already green (e.g. "t0-fastpath 8/8") — stored structurally on the compaction event so later steps need not re-run them.',
   )
   assert.equal(descriptions['decompress'], 'Recover the original content of a compressed block by its blockId — the kernel block ref `bN` shown by acp_status (e.g. b1), or a compaction id from search_context (read-only; does not unshadow the range). Large blocks are paged so each page stays under the host tool-result trim budget (up to 100 messages per call): pass offset/limit to walk them and follow the continue hint in the result.')
   assert.equal(descriptions['search_context'], 'Search inside compressed blocks (summaries and original content) for information the model no longer sees in context. When a summary lacks a detail you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST — never guess or reconstruct from memory: search_context(query) locates the right block, then decompress only that block to recover the original.')
   assert.equal(descriptions['acp_status'], 'Context status: overview of the current context — CONTEXT BREAKDOWN (tool/text/summaries token shares of the visible total), COMPRESSED BLOCKS ledger, and the nudge decision. No args = overview. Percentages are shares of the visible content, not the context window. Note: the block refs in COMPRESSED BLOCKS (bN, e.g. b1) are for decompress; compress uses the Surface: seq range, not bN. Drilldown: pass scope:"compressed" for a per-block list, or scope:"uncompressed" with view:"messages" (every visible message) / view:"ranges" (merged ranges); tool filters to one tool name, sort reorders (size/time/tool; age for compressed), limit caps rows (default 30). Drilldown row refs are kernel ids (mN) — feed them straight to compress as startSeq/endSeq (auto-mapped to the live surface seq); bN is for decompress, Surface: seqs also work in compress.')
+})
+
+test('M4/prompts 5f: the discard form is sanctioned in BOTH the tool description and the system prompt', () => {
+  // A sweep can carry dozens of spans, most of them dead weight, and the kernel
+  // rejects any summary under 50 characters (`minSummaryLength`). Without a
+  // sanctioned cheap form the model has three bad options: pad junk into a fake
+  // high-fidelity summary, skip the span (the sweep reclaims nothing), or refuse.
+  // The rule therefore has to be stated where the model reads it — the tool
+  // description and the system prompt's compress section — not only in the
+  // schema field, which is what the tool-call form shows only after the choice.
+  const descriptions = Object.fromEntries(makeTools(makeEnv(128000)).map((t) => [t.name, t.description]))
+  const compress = descriptions['compress']
+  assert.ok(
+    compress.includes('gets the DISCARD form instead'),
+    'the tool description names the discard form',
+  )
+  assert.ok(
+    compress.includes('decompress this block only if the raw output is needed'),
+    'and spells out the exact shape to write',
+  )
+  assert.ok(compress.includes('never silently skip it'), 'and forbids dropping the entry instead')
+  assert.ok(
+    compressParameters.content.items.properties.summary.description.includes('(discarded)'),
+    'the summary field itself shows the form (that is what the model sees while writing it)',
+  )
+  assert.ok(
+    DEFAULT_PROMPTS.systemPromptTemplate.includes('gets the DISCARD form rather than an invented summary'),
+    'the system prompt carries the same rule (it is the standing guidance the nudge no longer repeats)',
+  )
 })
 
 test('M4/prompts 5b: default compress description ships the #43 semantic-timing and actionable-summary guidance', () => {

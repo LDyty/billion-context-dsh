@@ -98,7 +98,7 @@ export declare const compressParameters: {
                 readonly summary: {
                     readonly type: 'string';
                     readonly required: true;
-                    readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters.';
+                    readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, so a discard line must still be a full sentence. For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.';
                 };
                 readonly topic: {
                     readonly type: 'string';

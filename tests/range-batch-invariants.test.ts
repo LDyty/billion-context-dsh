@@ -20,9 +20,8 @@ import {
   RANGE_TABLE_BATCH_MAX_NEW,
   RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE,
   RANGE_TABLE_BATCH_MAX_OLD,
-  RANGE_TABLE_BATCH_MAX_PROPOSALS,
+  RANGE_TABLE_BATCH_LABEL_LIMIT,
   RANGE_TABLE_BATCH_MIN_IMPROVEMENT,
-  RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
   RANGE_TABLE_COST_WARN_BREAK_EVEN,
   rangeTable,
 } from '../src/nudge.ts'
@@ -164,7 +163,7 @@ test('batch proposal: every shape of the random matrix keeps the contract', () =
   assert.ok(proposals > 5, `matrix actually exercises proposals (got ${proposals})`)
 })
 
-test('batch proposal: the rendered table stays bounded and keeps its claims', () => {
+test('sweep: the rendered table carries one sweep per row, and keeps its claims', () => {
   for (const nodeCount of [16, 24, 40]) {
     const session = buildTextSession(nodeCount)
     const spans: Array<[number, number]> = []
@@ -173,68 +172,48 @@ test('batch proposal: the rendered table stays bounded and keeps its claims', ()
     const text = rangeTable(session, view as never)
     const rows = text.split('\n')
     const baseLines = rows.filter((line) => /^\s+- seq /.test(line))
-    const batchLines = rows.filter((line) => line.includes('cheaper together'))
-    assert.ok(batchLines.length <= baseLines.length, 'never more proposals than base rows')
-    assert.ok(
-      batchLines.length <= RANGE_TABLE_BATCH_MAX_PROPOSALS,
-      `proposals stay capped (${batchLines.length} for ${nodeCount} nodes)`,
-    )
-    // The policy is DYNAMIC since 2026-10-15: a proposal is printed only where
-    // the batch folds within RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN requests, so
-    // the invariant is about the batch's OWN payback, not about which row is
-    // worst. (The old worst-cost-first rule handed every slot to the ⚠ rows — the
-    // ones the model never picked.)
-    for (const line of rows) {
-      if (!line.includes('cheaper together')) continue
-      const payback = Number(/pays back in ~([\d.]+) request/.exec(line)?.[1])
-      assert.ok(
-        Number.isFinite(payback) && payback <= RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN,
-        `every printed batch clears the recommend line (got ~${payback} requests)`,
-      )
-    }
-    // Compare parsed entry lists, never substrings: a 3-entry batch's text is a
-    // substring of a 4-entry batch's line whenever it is its tail.
-    const printed = new Map<string, number>()
-    for (const line of batchLines) {
+    const sweepLines = rows.filter((line) => line.includes('sweep from here'))
+    // One sweep per row at most: the row count is the cap (2026-10-16 policy —
+    // every row may carry its own sweep, because the choice is the sweep's SCOPE
+    // and two neighbouring rows legitimately print overlapping sweeps).
+    assert.ok(sweepLines.length <= baseLines.length, 'never more sweeps than rows')
+    for (const line of sweepLines) {
       const entries = [...line.matchAll(/(\d+)\.\.(\d+)/g)].map((match) => ({ start: Number(match[1]), end: Number(match[2]) }))
-      assert.ok(entries.length > 1, 'a printed batch lists more than the base row')
-      // Every entry carries its size and flavour: the batch reaches into the
-      // offerable list, not just the six rows the table printed.
+      assert.ok(entries.length > 1, 'a printed sweep lists more than the base row')
+      // Every entry carries its size and flavour, and the sweep names its work.
       const labels = [...line.matchAll(/(\d+)\.\.(\d+)\(~([\d.]+K?|\d+) (tool|text|tool \d+%)\)/g)]
-      assert.equal(labels.length, entries.length, 'every printed entry carries "~size kind"')
+      assert.ok(labels.length >= 1 && labels.length <= entries.length, 'entries carry "~size kind" labels')
       for (const label of labels) {
         assert.equal(label[4], 'text', 'a text-only fixture reports text segments')
       }
       for (let at = 1; at < entries.length; at += 1) {
         assert.ok(entries[at]!.start > entries[at - 1]!.end, 'printed entries are disjoint')
       }
-      const key = entries.map((entry) => `${entry.start}..${entry.end}`).join('|')
-      printed.set(key, (printed.get(key) ?? 0) + 1)
-    }
-    for (const [key, count] of printed) {
-      assert.equal(count, 1, `the same batch is printed once (${key})`)
+      assert.match(line, /\(\d+ messages \/ \d+ summaries to write\)/, 'the sweep states its coverage')
+      assert.ok(
+        entries.length <= RANGE_TABLE_BATCH_LABEL_LIMIT || line.includes('more spans of this sweep'),
+        `a sweep longer than ${String(RANGE_TABLE_BATCH_LABEL_LIMIT)} labels summarises the rest`,
+      )
     }
   }
 })
 
 /**
- * Two offered rows may share a START seq (the live table of 2026-10-15 23:04
- * offered both `36622..36662` and `36622..36659`). The proposal bookkeeping used
- * to be keyed by that start, so one batch was printed under BOTH rows — spending
- * one of the table's three slots on a duplicate and reading as if two different
- * batches were on offer. Keyed by the range's position now, it prints once.
+ * Rows come from disjoint age bands, so two printed rows can no longer share a
+ * start seq — but neighbouring rows still print OVERLAPPING sweeps on purpose:
+ * they differ in how far back the fold starts, and that scope choice is what the
+ * model is picking between. This used to be deduped (one shared line); it is not
+ * any more, so the invariant is "one sweep per row, in printed order" rather
+ * than uniqueness.
  */
-test('batch proposal: rows sharing a start seq never print the same proposal twice', () => {
+test('sweep: rows come from disjoint bands, and each row prints at most one sweep', () => {
   const session = buildTextSession(24)
-  // Nested pair (both start at position 0) plus neighbours to batch with.
   const text = rangeTable(session, viewOfPositions(session, [[0, 4], [0, 2], [6, 8], [10, 12], [14, 16]]) as never)
   const rows = text.split('\n').filter((line) => /^\s+- seq /.test(line))
   const starts = rows.map((line) => Number(/seq (\d+)/.exec(line)![1]))
-  assert.ok(new Set(starts).size < starts.length, `the fixture really offers rows sharing a start (${starts.join(',')})`)
-  const batches = text.split('\n').filter((line) => line.includes('cheaper together'))
-  const distinct = new Set(batches)
-  assert.equal(distinct.size, batches.length, `no proposal is printed twice (${batches.length} lines)`)
-  assert.ok(batches.length <= RANGE_TABLE_BATCH_MAX_PROPOSALS, `and the cap still holds (${batches.length})`)
+  assert.deepEqual(starts, [...starts].sort((a, b) => a - b), `rows run oldest → newest (${starts.join(',')})`)
+  const sweeps = text.split('\n').filter((line) => line.includes('sweep from here'))
+  assert.ok(sweeps.length <= rows.length, `at most one sweep per row (${String(sweeps.length)})`)
 })
 
 /**
@@ -285,13 +264,11 @@ test('batch proposal: live table geometry with nested rows keeps the contract', 
   }
 })
 
-test('batch proposal: entry labels report each segment flavour, not just the row above', () => {
+test('sweep: entry labels report each segment flavour, not just the row above', () => {
   const session = buildTextSession(40)
   appendToolCall(session, 'tool run', 'c1', 1, 1)
-  // The tool span must be BIG relative to the tail behind it: since the policy
-  // went dynamic a proposal is printed only when the batch folds within
-  // RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN requests, and ~1K tool tokens against
-  // a ~4.5K tail (the shape this fixture used to carry) never gets there.
+  // A sweep pulls in whatever lowers payback, including the tool span sitting
+  // between the text rows; the labels must say which is which.
   appendToolResult(session, longText('toolout', 1).repeat(24), 'c1', 1, 1)
   // Four more text messages keep the tool rows out of the protected tail.
   for (let index = 0; index < 4; index += 1) {
@@ -300,8 +277,8 @@ test('batch proposal: entry labels report each segment flavour, not just the row
   }
   // The tool pair lands right after the 40 text nodes, above the protected tail.
   const text = rangeTable(session, viewOfPositions(session, [[0, 1], [40, 41]]) as never)
-  const batchLine = text.split('\n').find((line) => line.includes('cheaper together'))
-  assert.ok(batchLine, 'the text span and the tool span batch together')
+  const batchLine = text.split('\n').find((line) => line.includes('sweep from here'))
+  assert.ok(batchLine, 'the text span and the tool span sweep together')
   const kinds = [...batchLine.matchAll(/\(~[\d.]+K? (tool|text|tool \d+%)\)/g)].map((match) => match[1])
   assert.ok(kinds.includes('text'), `text segments are labelled text (${batchLine})`)
   assert.ok(

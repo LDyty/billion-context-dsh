@@ -26,7 +26,7 @@ import { allLogMessages, eventsToCoreMessages, isCheckpointNode, surfaceEventsOf
 import {
   buildCompressibleSeqRanges,
   findOpenTurn,
-  bestBatchProposal,
+  bestSweepProposal,
   foldCostsOfRanges,
   summarySeqOfKernelBlock,
   surfaceSummary,
@@ -200,32 +200,14 @@ export const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6
 export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
 
 /**
- * A batch is only recommended when folding it pays back within this many
- * requests. This is the policy knob, not a formatting one: a proposal is an
- * instruction to go compress, so it is only issued where the arithmetic really
- * is cheap. Recommended batches start later than a lone base row, so their
- * payback falls to roughly `base ÷ (1 + pulled-in tokens)`.
- *
- * Live-calibrated 2026-10-15 against the model's own behaviour on this
- * session's tables: every batch it composed itself landed at 1.9-1.93 requests,
- * while the best batch reachable from a ⚠ row stayed at 5.0-5.6 — and it took
- * ⚠ rows 0 times out of 6 in the three most recent compressions. Recommending
- * the 5.6-request escape hatch therefore bought nothing; recommending the
- * 3-request-and-under batches on the rows it actually picks does.
+ * How many sweep entries a proposal LINE lists before it summarises the rest as
+ * `… +N more spans`. Display only — the sweep itself has no entry cap (see
+ * {@link bestSweepProposal}); a live row swept 42 spans, and printing all 42
+ * labels would push the nudge body past 4KB on its own, re-sent with every
+ * request. The full list is one `acp_status` call away, and the line still
+ * carries the sweep's true totals and its message/summary counts.
  */
-export const RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN = 3
-
-/**
- * Hard cap on how many batch proposals one table may carry. The count is
- * otherwise dynamic: a table prints a proposal for every printed row whose best
- * batch clears {@link RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN} (and beats the row
- * itself by {@link RANGE_TABLE_BATCH_MIN_IMPROVEMENT}), so a cheap table may
- * carry three and an expensive one none. The cap exists because the nudge body
- * is re-sent with every request: unbounded, a table whose rows all have
- * neighbours prints one proposal per row (measured 123 of 123 rows on a
- * randomized matrix), roughly doubling the text for no extra guidance.
- */
-export const RANGE_TABLE_BATCH_MAX_PROPOSALS = 3
+export const RANGE_TABLE_BATCH_LABEL_LIMIT = 8
 
 /** Compact token count for a cost row: one decimal above 10K, whole numbers below. */
 function compactTokens(tokens: number): string {
@@ -244,25 +226,65 @@ function batchEntryLabel(entry: SeqCompressibleRange): string {
 }
 
 /**
- * Pick the rows the nudge range table prints: **largest first, oldest among
- * equals**.
+ * Pick the rows the nudge range table prints: **one per age band**.
  *
- * Ordering policy (2026-10-15). It replaces the earlier "oldest among the
- * large" compromise, which sorted the largest eight spans back into position
- * order — putting the OLDEST span of the offerable set in row 1 on 36/36 live
- * compressions of one measured day. Folding a span invalidates every cached
- * token after its start, so an old first row is the most expensive default the
- * table can hand the model: predicting the invalidation of each strategy's
- * first row over that day's real offerable tables gives 47.8% for
- * oldest-of-the-largest against 8.5% for size-first. Size-first also matches
- * the upstream table (PR #217), so the two implementations stay identical.
+ * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
+ * spot: on a big surface the shortlist is filled from whatever region happens to
+ * hold the largest spans, so the older scattered content is never offered —
+ * measured on the live surface, the oldest band held 26 offerable spans (median
+ * 1.3K tokens) and not one of them could ever reach a six-row size-first table.
+ *
+ * The bands are equal WEIGHT, not equal count: splitting the offerable list into
+ * six equal-count groups gives the oldest group three times the spans of the
+ * newest (26 vs 7 live) and lets it monopolise rows. Walking the surface in
+ * order and closing a band once it holds `total ÷ bands` tokens gives every row
+ * the same share of the reclaimable context, so a row IS an age band: row 1 is
+ * the oldest sixth of the reclaimable content, row 6 the newest. Each band
+ * offers its largest span as the base — the row the model reads — and carries
+ * its own sweep (see {@link bestSweepProposal}), which is what makes an old
+ * band actionable at all.
+ *
+ * Rows come back in band order (oldest → newest), which is also surface order,
+ * so the table reads as the timeline it is.
+ *
+ * @param all - every offerable range, in surface position order.
+ * @param bands - how many bands to cut (defaults to the row cap).
+ * @returns one base range per band, oldest first.
  */
 export function selectRangeTableRanges<T extends { start: number; end: number; tokens: number }>(
   all: readonly T[],
+  bands: number = RANGE_TABLE_LIMIT,
 ): T[] {
-  return [...all]
-    .sort((a, b) => b.tokens - a.tokens || a.start - b.start)
-    .slice(0, RANGE_TABLE_LIMIT)
+  const ordered = [...all].sort((a, b) => a.start - b.start)
+  if (ordered.length === 0) return []
+  const count = Math.max(1, Math.min(bands, ordered.length))
+  const total = ordered.reduce((sum, range) => sum + Math.max(0, range.tokens), 0)
+  const target = total / count
+  const picks: T[] = []
+  let bucket: T[] = []
+  let running = 0
+  const close = (): void => {
+    if (bucket.length === 0) return
+    // Largest span of the band: it is the row the model reads, and every
+    // neighbour the sweep pulls in is priced against it.
+    picks.push(bucket.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
+    bucket = []
+    running = 0
+  }
+  for (const [index, range] of ordered.entries()) {
+    bucket.push(range)
+    running += Math.max(0, range.tokens)
+    if (picks.length >= count - 1) continue
+    // Close when the band is full, or when the spans left are exactly the bands
+    // left — otherwise one heavy span swallows the whole tail into the last band
+    // and the table collapses to fewer rows than asked for (measured on a
+    // fixture with one 40K span ahead of five slivers: 6 bands → 4 rows).
+    const spansLeft = ordered.length - index - 1
+    const bandsLeft = count - picks.length
+    if (running >= target || spansLeft <= bandsLeft - 1) close()
+  }
+  close()
+  return picks
 }
 
 /**
@@ -290,55 +312,39 @@ export function rangeTable(
   if (shown.length === 0) return ''
   // Each row carries its own fold cost: reclaiming a span makes every node at
   // and after its start re-send uncached once, so the model needs that number to
-  // weigh a cheap-but-tiny span against an expensive-but-satisfying one. The
-  // cost is informational only — ordering stays size-first, because ranking by
-  // cost would systematically promote the newest large spans (the ones the task
-  // is most likely still using).
+  // weigh a cheap-but-tiny span against an expensive-but-satisfying one.
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
-  // Costs cover every offerable range, so a base row can reach its neighbours
-  // even when they did not fit the printed six.
+  // Costs cover every offerable range, so a row's sweep can reach spans that did
+  // not fit the printed rows.
   const baseRows = shown.map((range) => {
     const at = ranges.indexOf(range)
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
   })
-  // Proposals are DYNAMIC (2026-10-15, second revision): a row carries one when
-  // its best batch folds within RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN requests,
-  // scanned in PRINTED order (largest first) so the rows the model is actually
-  // weighing are the ones that get the hint. The earlier policy claimed two
-  // slots worst-cost-first, which handed both to the ⚠ rows (payback 14.8 /
-  // 20.4) — the exact rows the model declined in every measured call — while the
-  // batch it composed itself (payback 1.9) never appeared in the table at all.
-  // An entry set that two base rows converge on is still printed once.
-  const claimed = new Set<string>()
-  // Keyed by the offered range's POSITION in the offerable list, not by its
-  // start seq: two nested rows can share a start (`36622..36662` inside
-  // `36622..36659` on the live surface, 2026-10-15), and a start-keyed map then
-  // printed the SAME proposal under both rows — one of the table's few slots
-  // spent on a duplicate. Keying by position prints it exactly once, under the
-  // row that claimed it.
+  // EVERY row carries its own sweep (2026-10-16). The sweeps deliberately
+  // overlap — two neighbouring rows pull in nearly the same spans and differ in
+  // how far back they start — so they are NOT merged or deduped: the choice the
+  // model is making is the SCOPE of the fold, and one shared line would hide it.
+  // Keyed by the row's position in the offerable list (two nested rows can share
+  // a start seq, and a start-keyed map printed one proposal under both rows).
   const proposalOfAt = new Map<number, string>()
   for (const row of baseRows) {
     if (row.at < 0) continue
-    if (proposalOfAt.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break
-    const proposal = bestBatchProposal(ranges, costs, row.at, {
-      maxOld: row.expensive ? 0 : RANGE_TABLE_BATCH_MAX_OLD,
-      maxNew: row.expensive ? RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE : RANGE_TABLE_BATCH_MAX_NEW,
-      minImprovement: RANGE_TABLE_BATCH_MIN_IMPROVEMENT,
-    })
+    if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break
+    const proposal = bestSweepProposal(ranges, costs, row.at)
     if (proposal === undefined) continue
-    // Cheap only: a proposal asks the model to go compress, so it is issued
-    // where the arithmetic really pays — see the constant.
-    if (proposal.breakEvenRequests > RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN) continue
-    const entries = proposal.entries.map(batchEntryLabel).join(', ')
-    if (claimed.has(entries)) continue
-    claimed.add(entries)
+    const labels = proposal.entries.map(batchEntryLabel)
+    const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT
+      ? labels.join(', ')
+      : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(', ')} … +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep`
+    const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0)
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
+      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
     }))
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {

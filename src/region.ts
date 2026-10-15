@@ -1713,6 +1713,92 @@ export function bestBatchProposal(
   return best.breakEvenRequests <= base.breakEvenRequests * (1 - opts.minImprovement) ? best : undefined
 }
 
+/**
+ * The whole SWEEP from one base range: keep pulling in every other offerable
+ * span that lowers the batch's payback, with NO cap on how many end up inside.
+ *
+ * Why no cap (the 2026-10-16 policy). A fold's rewrite is fixed by its EARLIEST
+ * entry — everything at and after that point is re-sent once, no matter how many
+ * entries ride along. So every extra entry is pure amortisation: on the live
+ * surface, sweeping 42 spans from the oldest band reclaimed ~135K at payback
+ * 1.27, while the same base's band-bounded batch (21 spans) reached only ~35K at
+ * 6.76 and the base span alone sat at 58.3. Capping the sweep therefore does not
+ * protect the cache; it only throws away the cheap half of the fold.
+ *
+ * Two consequences are folded into the policy rather than hidden by a cap:
+ *  - the sweeps of neighbouring base rows OVERLAP (they differ only in how far
+ *    back they start), which is why every printed row carries its own proposal
+ *    instead of one shared line — the model picks the SCOPE;
+ *  - tiny spans are deliberately included. They are the content most likely to
+ *    be dead weight, and adding one always lowers payback, so filtering them out
+ *    would only make the sweep less accurate.
+ *
+ * Disjointness is still enforced (the tool ignores an entry overlapping one it
+ * already applied). Every added entry lowers payback by at least `stepMargin`
+ * relative — 0 means "any gain at all", the shipped default.
+ *
+ * @param ranges - every offerable range, in surface position order.
+ * @param costs - fold costs aligned with `ranges`.
+ * @param baseIndex - position of the base range in `ranges`.
+ * @param opts - `stepMargin` (decimal, default 0).
+ * @returns the sweep, or undefined when nothing can improve on the base row.
+ */
+export function bestSweepProposal(
+  ranges: readonly SeqCompressibleRange[],
+  costs: readonly RangeFoldCost[],
+  baseIndex: number,
+  opts: { stepMargin?: number } = {},
+): RangeBatchProposal | undefined {
+  const stepMargin = opts.stepMargin ?? 0
+  const base = costs[baseIndex]
+  if (base === undefined) return undefined
+  const first = ranges[baseIndex]
+  if (first === undefined) return undefined
+  const taken = new Set<number>([baseIndex])
+  let entriesFirst = baseIndex
+  let reclaimed = first.tokens
+  let payback = base.breakEvenRequests
+  for (;;) {
+    let best: { at: number; firstAt: number; reclaimed: number; payback: number } | undefined
+    for (let at = 0; at < ranges.length; at += 1) {
+      if (taken.has(at)) continue
+      const candidate = ranges[at]!
+      let overlaps = false
+      for (const index of taken) {
+        const other = ranges[index]!
+        if (!(candidate.start > other.end || candidate.end < other.start)) {
+          overlaps = true
+          break
+        }
+      }
+      if (overlaps) continue
+      // The sweep's rewrite is pinned by its EARLIEST entry: pulling in an older
+      // span can make the whole batch worse even though it reclaims a lot.
+      const nextFirst = Math.min(entriesFirst, at)
+      const nextReclaimed = reclaimed + candidate.tokens
+      const nextPayback = costs[nextFirst]!.invalidatedTokens / nextReclaimed
+      if (nextPayback >= payback * (1 - stepMargin)) continue
+      if (best === undefined || nextPayback < best.payback) {
+        best = { at, firstAt: nextFirst, reclaimed: nextReclaimed, payback: nextPayback }
+      }
+    }
+    if (best === undefined) break
+    taken.add(best.at)
+    entriesFirst = best.firstAt
+    reclaimed = best.reclaimed
+    payback = best.payback
+  }
+  if (taken.size === 1) return undefined
+  return {
+    // Surface order: the line the model reads lists the spans in the order it
+    // will fold them, and the disjointness invariant is checkable left to right.
+    entries: [...taken].map((index) => ranges[index]!).sort((a, b) => a.start - b.start),
+    reclaimedTokens: reclaimed,
+    invalidatedTokens: costs[entriesFirst]!.invalidatedTokens,
+    breakEvenRequests: payback,
+  }
+}
+
 /** What folding one offered range costs the prompt cache. */
 export interface RangeFoldCost {
   /**

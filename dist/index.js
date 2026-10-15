@@ -7657,49 +7657,53 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
   });
   return usable.sort((a, b) => a.start - b.start);
 }
-function disjointBatchOf(ranges, costs, baseIndex, maxOld, maxNew) {
-  const entries = [ranges[baseIndex]];
-  let first = baseIndex;
-  let last = baseIndex;
-  let added = 0;
-  for (let at = baseIndex + 1; at < ranges.length && added < maxNew; at += 1) {
-    const candidate = ranges[at];
-    if (candidate.start <= ranges[last].end) continue;
-    entries.push(candidate);
-    last = at;
-    added += 1;
-  }
-  added = 0;
-  for (let at = baseIndex - 1; at >= 0 && added < maxOld; at -= 1) {
-    const candidate = ranges[at];
-    if (candidate.end >= ranges[first].start) continue;
-    entries.unshift(candidate);
-    first = at;
-    added += 1;
-  }
-  const reclaimedTokens = entries.reduce((sum, entry) => sum + entry.tokens, 0);
-  const invalidatedTokens = costs[first].invalidatedTokens;
-  return {
-    entries,
-    reclaimedTokens,
-    invalidatedTokens,
-    breakEvenRequests: reclaimedTokens > 0 ? invalidatedTokens / reclaimedTokens : Number.POSITIVE_INFINITY
-  };
-}
-function bestBatchProposal(ranges, costs, baseIndex, opts) {
+function bestSweepProposal(ranges, costs, baseIndex, opts = {}) {
+  const stepMargin = opts.stepMargin ?? 0;
   const base = costs[baseIndex];
   if (base === void 0) return void 0;
-  let best;
-  for (let old = 0; old <= opts.maxOld; old += 1) {
-    for (let newer = 0; newer <= opts.maxNew; newer += 1) {
-      if (old === 0 && newer === 0) continue;
-      const candidate = disjointBatchOf(ranges, costs, baseIndex, old, newer);
-      if (candidate.breakEvenRequests >= (best?.breakEvenRequests ?? Number.POSITIVE_INFINITY)) continue;
-      best = candidate;
+  const first = ranges[baseIndex];
+  if (first === void 0) return void 0;
+  const taken = /* @__PURE__ */ new Set([baseIndex]);
+  let entriesFirst = baseIndex;
+  let reclaimed = first.tokens;
+  let payback = base.breakEvenRequests;
+  for (; ; ) {
+    let best;
+    for (let at = 0; at < ranges.length; at += 1) {
+      if (taken.has(at)) continue;
+      const candidate = ranges[at];
+      let overlaps = false;
+      for (const index of taken) {
+        const other = ranges[index];
+        if (!(candidate.start > other.end || candidate.end < other.start)) {
+          overlaps = true;
+          break;
+        }
+      }
+      if (overlaps) continue;
+      const nextFirst = Math.min(entriesFirst, at);
+      const nextReclaimed = reclaimed + candidate.tokens;
+      const nextPayback = costs[nextFirst].invalidatedTokens / nextReclaimed;
+      if (nextPayback >= payback * (1 - stepMargin)) continue;
+      if (best === void 0 || nextPayback < best.payback) {
+        best = { at, firstAt: nextFirst, reclaimed: nextReclaimed, payback: nextPayback };
+      }
     }
+    if (best === void 0) break;
+    taken.add(best.at);
+    entriesFirst = best.firstAt;
+    reclaimed = best.reclaimed;
+    payback = best.payback;
   }
-  if (best === void 0) return void 0;
-  return best.breakEvenRequests <= base.breakEvenRequests * (1 - opts.minImprovement) ? best : void 0;
+  if (taken.size === 1) return void 0;
+  return {
+    // Surface order: the line the model reads lists the spans in the order it
+    // will fold them, and the disjointness invariant is checkable left to right.
+    entries: [...taken].map((index) => ranges[index]).sort((a, b) => a.start - b.start),
+    reclaimedTokens: reclaimed,
+    invalidatedTokens: costs[entriesFirst].invalidatedTokens,
+    breakEvenRequests: payback
+  };
 }
 function foldCostsOfRanges(session, ranges, mediaPriceOf) {
   const nodes = session.surface.nodes;
@@ -8010,7 +8014,7 @@ var RANGE_TABLE_ALLOWED = {
   title: /* @__PURE__ */ new Set(["count"]),
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "media"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
-  batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven"]),
+  batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
   footer: /* @__PURE__ */ new Set()
 };
 var TOOLS_ALLOWED = {
@@ -8086,14 +8090,14 @@ var DEFAULT_PROMPTS = {
   },
   rangeTable: {
     header: "Surface: {surface}",
-    title: "Compressible ranges ({count}, largest first; exact surface seqs \u2014 usable as-is):",
+    title: "Compressible ranges ({count}, one per age band \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
     line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
-    batch: "      cheaper together \u2014 batch {count} entries in ONE call: {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
+    batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
   },
   tools: {
-    compress: 'Replace older conversation ranges with dense summaries you write. Each message seq is a surface reference. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated ranges in one call (each content entry becomes its own block); keep ranges disjoint. Never compress content the current step is actively using. Compress boundaries are SURFACE SEQS (acp_status Surface: row, latest nudge table) \u2014 NOT the block refs (bN, e.g. b1) that acp_status COMPRESSED BLOCKS shows, which are for decompress only. Drilldown mN refs (e.g. m00306) are ALSO accepted as startSeq/endSeq \u2014 they are auto-mapped to the live surface seq; an unknown mN (never assigned on the current surface) fails with guidance. Seq refs must come from the CURRENT surface (acp_status or the latest nudge): a span whose edges were shadowed by an earlier compress is auto-remapped to its still-live content, a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. Good compression moments: stage or subtask completion whose details you have fully consumed and will not re-check, strategy switches, intermediate milestones, and wrapping up failed exploration \u2014 when the details are consumed and no longer critical for the task ahead. Before compressing, ask: will I need to re-verify any detail from this range in this task? If yes, keep it live. When you write a summary, turn dead-end exploration into a conclusion (what was tried, why it failed, the next step) \u2014 not a blow-by-blow; and keep the summary the ONLY record: self-contained, so a later reader (or you, after decompress) can continue without the original. Optional verifiedReadings: string[] per content entry records acceptance readings that are already green (e.g. "t0-fastpath 8/8") \u2014 stored structurally on the compaction event so later steps need not re-run them.',
+    compress: 'Replace older conversation ranges with dense summaries you write. Each message seq is a surface reference. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated ranges in one call (each content entry becomes its own block); keep ranges disjoint. Never compress content the current step is actively using. Compress boundaries are SURFACE SEQS (acp_status Surface: row, latest nudge table) \u2014 NOT the block refs (bN, e.g. b1) that acp_status COMPRESSED BLOCKS shows, which are for decompress only. Drilldown mN refs (e.g. m00306) are ALSO accepted as startSeq/endSeq \u2014 they are auto-mapped to the live surface seq; an unknown mN (never assigned on the current surface) fails with guidance. Seq refs must come from the CURRENT surface (acp_status or the latest nudge): a span whose edges were shadowed by an earlier compress is auto-remapped to its still-live content, a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. Good compression moments: stage or subtask completion whose details you have fully consumed and will not re-check, strategy switches, intermediate milestones, and wrapping up failed exploration \u2014 when the details are consumed and no longer critical for the task ahead. Before compressing, ask: will I need to re-verify any detail from this range in this task? If yes, keep it live. When you write a summary, turn dead-end exploration into a conclusion (what was tried, why it failed, the next step) \u2014 not a blow-by-blow; and keep the summary the ONLY record: self-contained, so a later reader (or you, after decompress) can continue without the original. NOT every range deserves that treatment: a span that held only noise, duplicated tool output, retries, or output already superseded by a later result gets the DISCARD form instead \u2014 summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." (write it as a full sentence: the kernel rejects anything under 50 characters). Never pad a junk range into a fake summary, and never silently skip it \u2014 the entry is what frees the tokens. Optional verifiedReadings: string[] per content entry records acceptance readings that are already green (e.g. "t0-fastpath 8/8") \u2014 stored structurally on the compaction event so later steps need not re-run them.',
     decompress: "Recover the original content of a compressed block by its blockId \u2014 the kernel block ref `bN` shown by acp_status (e.g. b1), or a compaction id from search_context (read-only; does not unshadow the range). Large blocks are paged so each page stays under the host tool-result trim budget (up to 100 messages per call): pass offset/limit to walk them and follow the continue hint in the result.",
     searchContext: "Search inside compressed blocks (summaries and original content) for information the model no longer sees in context. When a summary lacks a detail you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST \u2014 never guess or reconstruct from memory: search_context(query) locates the right block, then decompress only that block to recover the original.",
     acpStatus: 'Context status: overview of the current context \u2014 CONTEXT BREAKDOWN (tool/text/summaries token shares of the visible total), COMPRESSED BLOCKS ledger, and the nudge decision. No args = overview. Percentages are shares of the visible content, not the context window. Note: the block refs in COMPRESSED BLOCKS (bN, e.g. b1) are for decompress; compress uses the Surface: seq range, not bN. Drilldown: pass scope:"compressed" for a per-block list, or scope:"uncompressed" with view:"messages" (every visible message) / view:"ranges" (merged ranges); tool filters to one tool name, sort reorders (size/time/tool; age for compressed), limit caps rows (default 30). Drilldown row refs are kernel ids (mN) \u2014 feed them straight to compress as startSeq/endSeq (auto-mapped to the live surface seq); bN is for decompress, Surface: seqs also work in compress.'
@@ -8133,7 +8137,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." (at least 50 characters \u2014 the kernel rejects shorter). Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -8177,12 +8181,7 @@ function meterMediaPriceResolver(agent, session) {
 var RANGE_TABLE_LIMIT = 6;
 var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
-var RANGE_TABLE_BATCH_MAX_OLD = 3;
-var RANGE_TABLE_BATCH_MAX_NEW = 3;
-var RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
-var RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
-var RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN = 3;
-var RANGE_TABLE_BATCH_MAX_PROPOSALS = 3;
+var RANGE_TABLE_BATCH_LABEL_LIMIT = 8;
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
@@ -8190,8 +8189,31 @@ function batchEntryLabel(entry) {
   const kind = entry.toolPct >= 100 ? "tool" : entry.toolPct <= 0 ? "text" : `tool ${entry.toolPct}%`;
   return `${entry.start}..${entry.end}(~${compactTokens(entry.tokens)} ${kind})`;
 }
-function selectRangeTableRanges(all) {
-  return [...all].sort((a, b) => b.tokens - a.tokens || a.start - b.start).slice(0, RANGE_TABLE_LIMIT);
+function selectRangeTableRanges(all, bands = RANGE_TABLE_LIMIT) {
+  const ordered = [...all].sort((a, b) => a.start - b.start);
+  if (ordered.length === 0) return [];
+  const count = Math.max(1, Math.min(bands, ordered.length));
+  const total = ordered.reduce((sum, range) => sum + Math.max(0, range.tokens), 0);
+  const target = total / count;
+  const picks = [];
+  let bucket = [];
+  let running = 0;
+  const close = () => {
+    if (bucket.length === 0) return;
+    picks.push(bucket.reduce((best, range) => range.tokens > best.tokens ? range : best));
+    bucket = [];
+    running = 0;
+  };
+  for (const [index, range] of ordered.entries()) {
+    bucket.push(range);
+    running += Math.max(0, range.tokens);
+    if (picks.length >= count - 1) continue;
+    const spansLeft = ordered.length - index - 1;
+    const bandsLeft = count - picks.length;
+    if (running >= target || spansLeft <= bandsLeft - 1) close();
+  }
+  close();
+  return picks;
 }
 function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
   const ranges = buildCompressibleSeqRanges(
@@ -8207,27 +8229,22 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
-  const claimed = /* @__PURE__ */ new Set();
   const proposalOfAt = /* @__PURE__ */ new Map();
   for (const row of baseRows) {
     if (row.at < 0) continue;
-    if (proposalOfAt.size >= RANGE_TABLE_BATCH_MAX_PROPOSALS) break;
-    const proposal = bestBatchProposal(ranges, costs, row.at, {
-      maxOld: row.expensive ? 0 : RANGE_TABLE_BATCH_MAX_OLD,
-      maxNew: row.expensive ? RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE : RANGE_TABLE_BATCH_MAX_NEW,
-      minImprovement: RANGE_TABLE_BATCH_MIN_IMPROVEMENT
-    });
+    if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break;
+    const proposal = bestSweepProposal(ranges, costs, row.at);
     if (proposal === void 0) continue;
-    if (proposal.breakEvenRequests > RANGE_TABLE_BATCH_RECOMMEND_BREAK_EVEN) continue;
-    const entries = proposal.entries.map(batchEntryLabel).join(", ");
-    if (claimed.has(entries)) continue;
-    claimed.add(entries);
+    const labels = proposal.entries.map(batchEntryLabel);
+    const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT ? labels.join(", ") : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(", ")} \u2026 +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep`;
+    const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0);
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
-      breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E"
+      breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E",
+      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`
     }));
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
@@ -8585,7 +8602,11 @@ var compressParameters = {
             { type: "string", description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") \u2014 for a multi-block condense name the LAST block id (tier 3).' }
           ]
         },
-        summary: { type: "string", required: true, description: "Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters." },
+        summary: {
+          type: "string",
+          required: true,
+          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters \u2014 the kernel rejects shorter, so a discard line must still be a full sentence. For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.'
+        },
         topic: { type: "string", description: "Short label (3-5 words) for this range." },
         // B3 (2026-09-08 governance plan): the handler and region.ts have
         // accepted verifiedReadings since the plan landed, but the declared

@@ -464,6 +464,39 @@ export declare function bestBatchProposal(ranges: readonly SeqCompressibleRange[
     maxNew: number;
     minImprovement: number;
 }): RangeBatchProposal | undefined;
+/**
+ * The whole SWEEP from one base range: keep pulling in every other offerable
+ * span that lowers the batch's payback, with NO cap on how many end up inside.
+ *
+ * Why no cap (the 2026-10-16 policy). A fold's rewrite is fixed by its EARLIEST
+ * entry — everything at and after that point is re-sent once, no matter how many
+ * entries ride along. So every extra entry is pure amortisation: on the live
+ * surface, sweeping 42 spans from the oldest band reclaimed ~135K at payback
+ * 1.27, while the same base's band-bounded batch (21 spans) reached only ~35K at
+ * 6.76 and the base span alone sat at 58.3. Capping the sweep therefore does not
+ * protect the cache; it only throws away the cheap half of the fold.
+ *
+ * Two consequences are folded into the policy rather than hidden by a cap:
+ *  - the sweeps of neighbouring base rows OVERLAP (they differ only in how far
+ *    back they start), which is why every printed row carries its own proposal
+ *    instead of one shared line — the model picks the SCOPE;
+ *  - tiny spans are deliberately included. They are the content most likely to
+ *    be dead weight, and adding one always lowers payback, so filtering them out
+ *    would only make the sweep less accurate.
+ *
+ * Disjointness is still enforced (the tool ignores an entry overlapping one it
+ * already applied). Every added entry lowers payback by at least `stepMargin`
+ * relative — 0 means "any gain at all", the shipped default.
+ *
+ * @param ranges - every offerable range, in surface position order.
+ * @param costs - fold costs aligned with `ranges`.
+ * @param baseIndex - position of the base range in `ranges`.
+ * @param opts - `stepMargin` (decimal, default 0).
+ * @returns the sweep, or undefined when nothing can improve on the base row.
+ */
+export declare function bestSweepProposal(ranges: readonly SeqCompressibleRange[], costs: readonly RangeFoldCost[], baseIndex: number, opts?: {
+    stepMargin?: number;
+}): RangeBatchProposal | undefined;
 /** What folding one offered range costs the prompt cache. */
 export interface RangeFoldCost {
     /**
