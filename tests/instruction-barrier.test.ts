@@ -148,36 +148,38 @@ test('PR1: the range table splits at instruction rows — no offered range conta
   assert.ok(covers(4), 'the post-barrier segment is still offered')
 })
 
-test('PR1: the barrier (not the newest-row pin) excludes NON-newest instruction rows', () => {
+test('PR1: a superseded instruction row is FOLDABLE (2026-10-16) while the newest stays a barrier', () => {
   const session = Session.create('barrier-nonnewest')
   appendTurn(session, 1)
   appendUser(session, longText('q0', 0))            // seq 1
   appendAssistant(session, longText('a0', 1), 1, 1) // seq 2
-  // A copy that a later row supersedes: the newest-row pin does NOT cover it,
-  // so only the instruction BARRIER keeps it out of the range table. Without a
-  // row like this the barrier has no killer — the pin alone already splits the
-  // surface, so a broken barrier would go unnoticed.
+  // A copy a later row supersedes. The host's presence gate walks the surface
+  // newest-first for the baseline row, so an older copy can be folded without
+  // provoking a re-injection — and the session that motivated this held 11 such
+  // copies of one AGENTS.md (~30K tokens) that the table could never offer while
+  // every instruction row was a blanket barrier.
   const staleSeq = appendInstruction(session, '.\u0000AGENTS.md', 'v1')
   appendUser(session, longText('q1', 2))
   appendAssistant(session, longText('a1', 3), 1, 3)
-  // A policy row that is not an AGENTS.md row at all: never pinned either
-  // (`newestInstructionSeqsOf` only tracks agent-instructions rows).
+  // Superseded catalogs follow the same rule: the newest catalog row is the one
+  // the resend digest gate compares against, older ones are history.
   const catalogSeq = appendPluginRow(session, { kind: 'skill-catalog' })
   appendUser(session, longText('q2', 4))
   appendAssistant(session, longText('a2', 5), 1, 5)
   const newestSeq = appendInstruction(session, '.\u0000AGENTS.md', 'v2')
+  const newestCatalogSeq = appendPluginRow(session, { kind: 'skill-catalog' })
 
   const pinned = newestInstructionSeqsOf(session)
   assert.ok(pinned.has(newestSeq), 'the newest copy is pinned')
-  assert.ok(!pinned.has(staleSeq), 'the stale copy is NOT pinned — the barrier alone must exclude it')
-  assert.ok(!pinned.has(catalogSeq), 'a skill catalog is NOT pinned — the barrier alone must exclude it')
+  assert.ok(!pinned.has(staleSeq), 'the stale copy is NOT pinned — it is the stale-foldable override that frees it')
 
   const ranges = buildCompressibleSeqRanges(session, wholeSurfaceRangeView(session), { preserveRecent: 0 })
   const covers = (seq: number): boolean => ranges.some((range) => range.start <= seq && seq <= range.end)
-  assert.ok(!covers(staleSeq), `no offered range may contain the stale instruction row (seq ${staleSeq})`)
-  assert.ok(!covers(catalogSeq), `no offered range may contain the skill-catalog row (seq ${catalogSeq})`)
-  assert.ok(!covers(newestSeq), 'nor the newest copy (pinned as well as barred)')
-  assert.ok(ranges.length >= 2, `segments split at the instruction rows (got ${ranges.length})`)
+  assert.ok(covers(staleSeq), `a span may now cross the superseded instruction row (seq ${staleSeq})`)
+  assert.ok(covers(catalogSeq), `and the superseded catalog row (seq ${catalogSeq})`)
+  assert.ok(!covers(newestSeq), 'the newest copy stays a barrier')
+  assert.ok(!covers(newestCatalogSeq), 'and so does the newest catalog')
+  assert.ok(ranges.length >= 2, `segments still split at the CURRENT rows (got ${ranges.length})`)
   assert.ok(covers(1) && covers(2), 'the first real segment is still offered')
 })
 
@@ -298,9 +300,56 @@ test('PR1: current-instruction-row gate — pure helpers pin the rejection', () 
   assert.match(many, /never re-sent|catalog digest/, 'the catalog reason is named too — the two channels fail differently')
 })
 
-test('PR1: handleCompress REJECTS a manual range covering a current instruction row; stale copies still compress', async () => {
+test('PR1: handleCompress SPLITS around a current instruction row; stale copies still compress', async () => {
   const env = makeEnv()
-  const session = Session.create('wiring')
+  const session = buildInstructionFixture('wiring')
+  const compress = makeTools(env).find((definition) => definition.name === 'compress')
+  assert.ok(compress, 'compress tool registered')
+  const agent = {
+    id: session.id,
+    session,
+    options: { provider: 'test-provider', model: 'test-model' },
+    ctx: { tokenMeter: undefined },
+  } as never
+  const exec = { callId: 'call-acp', name: 'compress', arguments: {}, signal: new AbortController().signal, agent } as never
+  const summary = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute.'
+
+  // A span covering the CURRENT row (seq 6) is now cut around it instead of
+  // being bounced (2026-10-16): the row stays on the surface — so the host never
+  // re-injects — and the runs on either side fold under the model's own summary.
+  // Live evidence: `37194..37273` was rejected for one AGENTS.md row at seq
+  // 37241 and the model had to re-cut it by hand.
+  const result = await compress.execute({ content: [{ startSeq: 1, endSeq: 7, summary }] } as never, exec)
+  const text = (result as { text: string }).text
+  assert.match(text, /Compressed 1 block/)
+  assert.match(text, /split around current protected row\(s\) 6/, 'the cut names the row it kept')
+  const blocks = sessionEventsOf(session)
+    .filter((event) => event.type === 'compaction/summary' || event.type === 'compaction/prune')
+    .flatMap((event) => (event.data as { shadowedSeqs?: number[] }).shadowedSeqs ?? [])
+  assert.ok(!blocks.includes(6), 'the CURRENT row itself is never shadowed')
+  assert.ok(
+    blocks.length > 0,
+    'the foldable run around it landed',
+  )
+
+  // A span covering only the STALE copy of the same file (seq 5, superseded by
+  // v2 at seq 6) compresses normally — on its own session, since the split above
+  // already folded 1..5 here: removing the stale copy while the newest stays
+  // visible is the real cleanup and triggers no re-injection.
+  const staleSession = buildInstructionFixture('wiring-stale')
+  const staleExec = {
+    ...(exec as object),
+    agent: { ...(agent as object), session: staleSession, id: staleSession.id },
+  } as never
+  const staleOnly = await compress.execute({ content: [{ startSeq: 1, endSeq: 5, summary }] } as never, staleExec)
+  const staleText = (staleOnly as { text: string }).text
+  assert.match(staleText, /Compressed 1 block/)
+  assert.doesNotMatch(staleText, /current protected row|current instruction row/)
+})
+
+/** The PR1 fixture: a stale AGENTS.md copy at seq 5, the CURRENT one at seq 6. */
+function buildInstructionFixture(id: string): Session {
+  const session = Session.create(id)
   appendTurn(session, 1)
   appendUser(session, longText('q0', 0))            // seq 1
   appendAssistant(session, longText('a0', 1), 1, 1) // seq 2
@@ -313,39 +362,11 @@ test('PR1: handleCompress REJECTS a manual range covering a current instruction 
   appendAssistant(session, longText('a3', 8), 1, 8)
   appendUser(session, longText('q4', 9))
   appendAssistant(session, longText('a4', 10), 1, 10)
+  return session
+}
 
-  const compress = makeTools(env).find((definition) => definition.name === 'compress')
-  assert.ok(compress, 'compress tool registered')
-  const agent = {
-    id: session.id,
-    session,
-    options: { provider: 'test-provider', model: 'test-model' },
-    ctx: { tokenMeter: undefined },
-  } as never
-  const exec = { callId: 'call-acp', name: 'compress', arguments: {}, signal: new AbortController().signal, agent } as never
+test('PR1: a span with no instruction rows at all never trips the guard', async () => {
   const summary = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute.'
-
-  // A span covering the CURRENT row (seq 6) is rejected before the kernel
-  // sees it: nothing lands, the seq is named, and the stale-copy escape is
-  // offered so the model can re-cut instead of retrying the same call.
-  const result = await compress.execute({ content: [{ startSeq: 1, endSeq: 7, summary }] } as never, exec)
-  const text = (result as { text: string }).text
-  assert.match(text, /Compressed 0 block/)
-  assert.match(text, /seqs \d+\.\.\d+ rejected/)
-  assert.match(text, /seq 6/, 'the current row is named')
-  assert.ok(
-    !sessionEventsOf(session).some((event) => String((event as { type?: string }).type).startsWith('compaction')),
-    'nothing durable landed — the kernel never saw the rejected range',
-  )
-
-  // A span covering only the STALE copy of the same file (seq 5, superseded
-  // by v2 at seq 6) compresses normally: removing it while the newest stays
-  // visible is the real cleanup and triggers no re-injection.
-  const staleOnly = await compress.execute({ content: [{ startSeq: 1, endSeq: 5, summary }] } as never, exec)
-  const staleText = (staleOnly as { text: string }).text
-  assert.match(staleText, /Compressed 1 block/)
-  assert.doesNotMatch(staleText, /rejected|current instruction row/)
-
   // Negative: a plain session without any instruction rows — the gate never
   // fires (guards against false positives from the gate itself).
   const plain = Session.create('wiring-plain')
@@ -373,10 +394,10 @@ test('PR1: handleCompress REJECTS a manual range covering a current instruction 
       summary,
     }],
   } as never, exec2)
-  assert.doesNotMatch((result2 as { text: string }).text, /rejected|current instruction row/, 'no instruction rows in span — no rejection')
+  assert.doesNotMatch((result2 as { text: string }).text, /rejected|current instruction row|current protected row/, 'no instruction rows in span — no rejection')
 })
 
-test('PR1: /acp-prune compress rejects a current instruction row exactly like the tool; stale copies still compress', async () => {
+test('PR1: /acp-prune compress splits around a current instruction row exactly like the tool', async () => {
   const env = makeEnv()
   const session = Session.create('command-gate')
   appendTurn(session, 1)
@@ -405,19 +426,28 @@ test('PR1: /acp-prune compress rejects a current instruction row exactly like th
 
   const summary = 'login flow, JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, sliding-window rate limiting in src/auth/login.ts.'
 
-  // The human path is gated by the SAME arithmetic as the model tool: a span
-  // covering the CURRENT row (seq 6) is refused before anything durable lands.
-  const rejected = await run(`compress 1 7 ${summary}`)
-  assert.equal(rejected.kind, 'success')
-  assert.match(rejected.text, /rejected/)
-  assert.match(rejected.text, /seq 6/, 'the current row is named')
-  assert.ok(
-    !sessionEventsOf(session).some((event) => String((event as { type?: string }).type).startsWith('compaction')),
-    'nothing durable landed — the human command cannot bypass the gate',
-  )
+  // The human path cuts exactly like the model tool (2026-10-16): a span
+  // covering the CURRENT row (seq 6) folds the runs around it and keeps the row.
+  const split = await run(`compress 1 7 ${summary}`)
+  assert.equal(split.kind, 'success')
+  assert.match(split.text, /Compressed 1 block\(s\) around current protected row\(s\) 6/)
+  const shadowed = sessionEventsOf(session)
+    .filter((event) => event.type === 'compaction/summary' || event.type === 'compaction/prune')
+    .flatMap((event) => (event.data as { shadowedSeqs?: number[] }).shadowedSeqs ?? [])
+  assert.ok(!shadowed.includes(6), 'the current row stays visible on the human path too')
+  assert.ok(shadowed.length > 0, 'and the run before it landed')
 
-  // A span covering only the STALE copy compresses normally.
-  const staleOnly = await run(`compress 1 5 ${summary}`)
+  // A span covering only the STALE copy compresses normally — on a fresh session,
+  // since the cut above already folded 1..5 here.
+  const staleSession = buildInstructionFixture('command-gate-stale')
+  const staleAgent = { ...(agent as object), session: staleSession, id: staleSession.id } as never
+  const staleRun = (rawInput: string) => command.handler({
+    commandId: 'cmd-test-stale' as never,
+    agent: staleAgent,
+    rawInput,
+    signal: new AbortController().signal,
+  } as never) as Promise<{ kind: string; text: string }>
+  const staleOnly = await staleRun(`compress 1 5 ${summary}`)
   assert.equal(staleOnly.kind, 'success')
   assert.match(staleOnly.text, /Compressed seqs 1\.\.5/, 'a stale-copy span compresses normally')
 })
@@ -560,9 +590,9 @@ test('PR #196: the rejection note distinguishes user-turn hits from instruction-
   assert.match(legacy, /CURRENT injected instruction row\(s\)/, 'callers without a session keep the pre-#196 wording')
 })
 
-test('PR #196: handleCompress hard-rejects a span covering the newest real user turn; the re-cut lands', async () => {
-  const env = makeEnv()
-  const session = Session.create('user-turn-gate')
+/** The PR #196 fixture: a wide span whose interior holds the newest real user turn. */
+function buildUserTurnFixture(id: string): Session {
+  const session = Session.create(id)
   appendTurn(session, 1)
   appendUser(session, longText('q0', 0))                // seq 1
   appendAssistant(session, longText('a0', 1), 1, 1)     // seq 2
@@ -574,7 +604,12 @@ test('PR #196: handleCompress hard-rejects a span covering the newest real user 
   appendToolResult(session, longText('res1', 7), 'c1')  // seq 8
   appendUser(session, longText('q2', 8))                // seq 9 — newest real user turn
   appendAssistant(session, longText('a2', 9), 1, 9)     // seq 10
+  return session
+}
 
+test('PR #196: a span covering the newest real user turn is SPLIT around it — the turn stays live', async () => {
+  const env = makeEnv()
+  const session = buildUserTurnFixture('user-turn-gate')
   const compress = makeTools(env).find((definition) => definition.name === 'compress')
   assert.ok(compress, 'compress tool registered')
   const agent = {
@@ -586,36 +621,41 @@ test('PR #196: handleCompress hard-rejects a span covering the newest real user 
   const exec = { callId: 'call-user-gate', name: 'compress', arguments: {}, signal: new AbortController().signal, agent } as never
   const summary = 'Earlier exchange: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts.'
 
-  // A wide span that swallows the active question is refused before the kernel
-  // sees it: nothing durable lands, the user turn is named with its OWN reason
-  // (not the AGENTS.md story), and the re-cut is offered.
+  // A wide span whose interior swallows the active question is CUT around it
+  // (2026-10-16, same rule as a checkpoint carrier): the question stays live, the
+  // run before it folds, and the active-turn reason is never mixed up with the
+  // AGENTS.md story.
   const result = await compress.execute({ content: [{ startSeq: 1, endSeq: 9, summary }] } as never, exec)
   const text = (result as { text: string }).text
-  assert.match(text, /Compressed 0 block/)
-  assert.match(text, /seqs \d+\.\.\d+ rejected/)
-  assert.match(text, /seq 9/, 'the active user turn is named')
-  assert.match(text, /active user message must stay live/)
+  assert.match(text, /Compressed 1 block/)
+  assert.match(text, /split around current protected row\(s\) 9/, 'the cut names the live user turn')
   assert.doesNotMatch(text, /stale copies/, 'no AGENTS.md escape applies to a user message')
+  const shadowed = sessionEventsOf(session)
+    .filter((event) => event.type === 'compaction/summary' || event.type === 'compaction/prune')
+    .flatMap((event) => (event.data as { shadowedSeqs?: number[] }).shadowedSeqs ?? [])
+  assert.ok(!shadowed.includes(9), 'the active user turn is never shadowed')
+  assert.ok(session.surface.nodes.includes(9 as never), 'and it is still on the surface')
   assert.ok(
-    !sessionEventsOf(session).some((event) => String((event as { type?: string }).type).startsWith('compaction')),
-    'nothing durable landed — the kernel never saw the rejected range',
+    shadowed.length > 0,
+    'the run before the turn landed',
   )
 
-  // The re-cut the note offers succeeds: everything BEFORE the active turn compresses.
-  const recut = await compress.execute({ content: [{ startSeq: 1, endSeq: 8, summary }] } as never, exec)
-  assert.match((recut as { text: string }).text, /Compressed 1 block/, 'span 1..8 (before the user turn) compresses normally')
-
-  // The human path explains the same reason (src/commands.ts passes the session through).
+  // The human path cuts the same way (src/commands.ts passes the session through).
+  const humanSession = buildUserTurnFixture('user-turn-gate-human')
   const command = acpCommand(env)
   const run = (rawInput: string) => command.handler({
     commandId: 'cmd-test' as never,
-    agent,
+    agent: {
+      id: humanSession.id,
+      session: humanSession,
+      options: { provider: 'test-provider', model: 'test-model' },
+      ctx: { tokenMeter: undefined },
+    } as never,
     rawInput,
     signal: new AbortController().signal,
   } as never) as Promise<{ kind: string; text: string }>
-  const human = await run(`compress 1 10 ${summary}`)
+  const human = await run(`compress 1 9 ${summary}`)
   assert.equal(human.kind, 'success')
-  assert.match(human.text, /rejected/)
-  assert.match(human.text, /active user message must stay live/, '/acp-prune compress names the user-turn reason too')
+  assert.match(human.text, /around current protected row\(s\) 9/, '/acp-prune compress cuts around the turn too')
   assert.doesNotMatch(human.text, /injected instruction row/, 'a user-turn-only hit is not mislabelled as an instruction row')
 })

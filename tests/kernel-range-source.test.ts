@@ -229,11 +229,11 @@ test('kernel range source: a MIDDLE-span compression leaves no hole and later sp
 test('kernel range source: host guards still apply on top of the kernel geometry', () => {
   // Two AGENTS.md copies, v1 then v2, of the SAME scope. The STALE copy (v1)
   // sits mid-session while its group holds fewer than 3 messages, so the
-  // kernel's own split rule (which needs a group of 3+) groups ACROSS it. Stale
-  // copies are the hard case: the newest-copy pin does not cover them, so only
-  // the barrier keeps them out of the table — and folding one still buys
-  // nothing, because the host re-injects the current copy the moment a row
-  // disappears (issue #71).
+  // kernel's own split rule (which needs a group of 3+) groups ACROSS it. Since
+  // 2026-10-16 that is exactly what the table wants: superseded instruction rows
+  // are foldable (the host's presence gate reads the surface newest-first, so
+  // only the CURRENT copy must stay), while the current copy and the last real
+  // user turn remain barriers.
   const session = Session.create('kernel-range-guards')
   appendWorkTurn(session, 1)
   appendTurn(session, 2)
@@ -257,14 +257,18 @@ test('kernel range source: host guards still apply on top of the kernel geometry
   const ranges = buildCompressibleSeqRanges(session, probe.view, { preserveRecent: 0 })
   assert.ok(ranges.length > 0, 'other spans are still offered')
 
-  // Guards are BARRIERS, so no offered span can bracket a guarded seq — the
-  // check is exact, not merely "the edges happen to miss it".
+  // A CURRENT guard is a BARRIER, so no offered span can bracket it — the check
+  // is exact, not merely "the edges happen to miss it". The superseded copy is
+  // the opposite case: the table is allowed, and expected, to fold across it.
   for (const range of ranges) {
     const brackets = (seq: number): boolean => range.start <= seq && seq <= range.end
-    assert.ok(!brackets(staleSeq), `no offered span covers the STALE instruction row (${staleSeq})`)
     assert.ok(!brackets(currentSeq), `no offered span covers the CURRENT instruction row (${currentSeq})`)
     assert.ok(!brackets(lastRealUserSeq), `no offered span covers the last real user message (${lastRealUserSeq})`)
   }
+  assert.ok(
+    ranges.some((range) => range.start <= staleSeq && staleSeq <= range.end),
+    `an offered span now folds across the superseded instruction row (${staleSeq})`,
+  )
 })
 
 /** `appendWorkTurn`'s shape, but every message is CJK of a fixed char count. */

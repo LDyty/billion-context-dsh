@@ -369,14 +369,26 @@ export interface SurfaceKindCount {
  */
 export declare function surfaceKindCounts(session: Session): SurfaceKindCount[];
 /**
- * Surface seqs of SUPERSEDED host "state echo" rows — the ones the range table
- * may fold even though `classifySurfaceEvent` calls their kind a barrier.
+ * Surface seqs of SUPERSEDED host rows — the ones the range table may fold even
+ * though `classifySurfaceEvent` calls their kind a barrier.
  *
- * Reads the visible surface in order and keeps, per audited kind
- * ({@link STALE_FOLDABLE_HOST_KINDS}), only the newest row; every older row of
- * that kind is superseded history and no longer splits a compressible span. The
- * newest row stays a barrier, so the model always sees current goal/time/team
- * state. Live case: 2026-10-14, 241 such rows chopped a 906-node surface.
+ * Two families, both "only the newest copy carries live state":
+ *
+ *  - **state echoes** ({@link STALE_FOLDABLE_HOST_KINDS}: goal / tool-goal /
+ *    time-context / team-message / agent-message), newest per KIND. Live case:
+ *    2026-10-14, 241 such rows chopped a 906-node surface into 3-4 node runs.
+ *  - **superseded instruction rows and skill catalogs**, newest per SCOPE. The
+ *    host re-injects the newest AGENTS.md copy the moment the surface loses it
+ *    (`visibleBaselineSource` walks the surface newest-first and compares the
+ *    baseline identity), and the skill catalog's resend gate is the digest — so
+ *    the NEWEST copy of each scope must stay, while every older copy is history
+ *    the host will never look at again. Live case 2026-10-16: one session's
+ *    surface still carried 11 superseded copies of the same cjdb AGENTS.md,
+ *    ~30K host-vocabulary tokens (≈11% of a 283K surface) that the table could
+ *    never offer while every AGENTS.md row was a blanket barrier.
+ *
+ * Only rows the classifier would otherwise call a barrier need the override;
+ * anything already foldable is left untouched.
  */
 export declare function staleFoldableHostRowSeqs(session: Session): Set<number>;
 export declare function guardedSurfaceSeqsOf(session: Session): Set<number>;

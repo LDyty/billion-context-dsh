@@ -144,7 +144,7 @@ test('#185: the range table splits at a source-less catalog row and the REAL las
   assert.ok(covers(1), 'the pre-barrier segment is still offered')
 })
 
-test('#185: handleCompress rejects a span covering the current catalog; a superseded catalog still compresses', async () => {
+test('#185: handleCompress splits around the current catalog; a superseded catalog still compresses', async () => {
   const env = makeEnv()
   const session = Session.create('catalog-compress')
   appendTurn(session, 1)                          // seq 0
@@ -168,33 +168,47 @@ test('#185: handleCompress rejects a span covering the current catalog; a supers
   const exec = { callId: 'call-acp', name: 'compress', arguments: {}, signal: new AbortController().signal, agent } as never
   const summary = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute.'
 
-  // A span covering the CURRENT catalog (seq 6) is rejected before the kernel
-  // sees it: nothing durable lands, the seq is named, and the reason names the
-  // catalog channel specifically (it is never re-sent — unlike AGENTS.md).
-  const rejected = await compress.execute({ content: [{ startSeq: 1, endSeq: 7, summary }] } as never, exec)
-  const rejectedText = (rejected as { text: string }).text
-  assert.match(rejectedText, /Compressed 0 block/)
-  assert.match(rejectedText, /seqs \d+\.\.\d+ rejected/)
-  assert.match(rejectedText, /seq 6/, 'the current catalog row is named')
-  assert.match(rejectedText, /never re-sent|catalog digest/, 'the rejection explains WHY a catalog differs from AGENTS.md')
-  assert.match(rejectedText, /stale copies/, 'the model is pointed at the stale-copy escape')
-  assert.ok(
-    !sessionEventsOf(session).some((event) => String((event as { type?: string }).type).startsWith('compaction')),
-    'nothing durable landed — the kernel never saw the rejected span',
-  )
+  // A span covering the CURRENT catalog (seq 6) is CUT around it (2026-10-16,
+  // the same salvage rule as a checkpoint carrier): what matters is that the
+  // catalog stays visible — folding it would lose skill discovery permanently,
+  // because its resend gate is the digest and folding cannot change it — and the
+  // cut guarantees exactly that while the runs on either side fold.
+  const split = await compress.execute({ content: [{ startSeq: 1, endSeq: 7, summary }] } as never, exec)
+  const splitText = (split as { text: string }).text
+  assert.match(splitText, /Compressed 1 block/)
+  assert.match(splitText, /split around current protected row\(s\) 6/, 'the cut names the catalog row it kept')
+  const shadowed = sessionEventsOf(session)
+    .filter((event) => event.type === 'compaction/summary' || event.type === 'compaction/prune')
+    .flatMap((event) => (event.data as { shadowedSeqs?: number[] }).shadowedSeqs ?? [])
+  assert.ok(!shadowed.includes(6), 'the CURRENT catalog row is never shadowed')
 
   // The SUPERSEDED catalog (seq 3) is the legitimate cleanup: compressing it
-  // while the newest stays visible triggers no resend and must succeed.
-  const accepted = await compress.execute({ content: [{ startSeq: 1, endSeq: 5, summary }] } as never, exec)
+  // while the newest stays visible triggers no resend and must succeed. Fresh
+  // session: the split above already folded 1..5 here.
+  const staleSession = Session.create('catalog-compress-stale')
+  appendTurn(staleSession, 1)
+  appendUser(staleSession, longText('q0s', 0))
+  appendAssistant(staleSession, longText('a0s', 1), 1, 1)
+  appendCatalogRow(staleSession, { kind: 'skill-catalog' })
+  appendUser(staleSession, longText('q1s', 3))
+  appendAssistant(staleSession, longText('a1s', 4), 1, 4)
+  appendCatalogRow(staleSession)
+  appendUser(staleSession, longText('q2s', 7))
+  appendAssistant(staleSession, longText('a2s', 8), 1, 8)
+  const staleExec = {
+    ...(exec as object),
+    agent: { ...(agent as object), session: staleSession, id: staleSession.id },
+  } as never
+  const accepted = await compress.execute({ content: [{ startSeq: 1, endSeq: 5, summary }] } as never, staleExec)
   const acceptedText = (accepted as { text: string }).text
   assert.match(acceptedText, /Compressed 1 block/, 'a span covering only the stale catalog lands')
   assert.ok(
-    sessionEventsOf(session).some((event) => String((event as { type?: string }).type) === 'compaction/summary'),
+    sessionEventsOf(staleSession).some((event) => String((event as { type?: string }).type) === 'compaction/summary'),
     'the accepted compression wrote its durable summary event',
   )
 })
 
-test('#185: /acp-prune compress hard-rejects the same span on the human path', async () => {
+test('#185: /acp-prune compress cuts around the current catalog on the human path', async () => {
   const env = makeEnv()
   const session = Session.create('catalog-command')
   appendTurn(session, 1)                          // seq 0
@@ -221,19 +235,41 @@ test('#185: /acp-prune compress hard-rejects the same span on the human path', a
     signal: new AbortController().signal,
   } as never) as Promise<{ kind: string; text: string }>
 
-  // Explicit human intent does not override the arithmetic either.
-  const rejected = await run(`compress 1 ${currentCatalog} stale early work folded away`)
-  assert.equal(rejected.kind, 'success')
-  assert.match(rejected.text, /rejected/)
-  assert.match(rejected.text, new RegExp(`seq ${currentCatalog}`), 'the current catalog row is named')
-  assert.match(rejected.text, /never re-sent|catalog digest/, 'the human sees the same channel-specific reason')
-  assert.ok(
-    !sessionEventsOf(session).some((event) => String((event as { type?: string }).type).startsWith('compaction')),
-    'nothing durable landed — the human command cannot bypass the gate',
-  )
+  // Explicit human intent does not override the arithmetic either — but the
+  // arithmetic now says "keep the catalog, fold around it", so the command cuts.
+  const split = await run(`compress 1 ${currentCatalog} stale early work folded away`)
+  assert.equal(split.kind, 'success')
+  assert.match(split.text, new RegExp(`around current protected row\\(s\\) ${currentCatalog}`), 'the kept catalog row is named')
+  const shadowed = sessionEventsOf(session)
+    .filter((event) => event.type === 'compaction/summary' || event.type === 'compaction/prune')
+    .flatMap((event) => (event.data as { shadowedSeqs?: number[] }).shadowedSeqs ?? [])
+  assert.ok(!shadowed.includes(currentCatalog), 'the current catalog row survives the human path')
 
-  // The stale-copy cleanup path still works through the command too.
-  const accepted = await run('compress 1 5 stale early work folded away')
+  // The stale-copy cleanup path still works through the command too (fresh
+  // session: the cut above already folded the runs here).
+  const staleSession = Session.create('catalog-command-stale')
+  appendTurn(staleSession, 1)
+  appendUser(staleSession, longText('q0c', 0))
+  appendAssistant(staleSession, longText('a0c', 1), 1, 1)
+  appendCatalogRow(staleSession, { kind: 'skill-catalog' })
+  appendUser(staleSession, longText('q1c', 3))
+  appendAssistant(staleSession, longText('a1c', 4), 1, 4)
+  appendCatalogRow(staleSession)
+  appendUser(staleSession, longText('q2c', 7))
+  appendAssistant(staleSession, longText('a2c', 8), 1, 8)
+  const staleAgent = {
+    id: staleSession.id,
+    session: staleSession,
+    options: { provider: 'test-provider', model: 'test-model' },
+    ctx: { tokenMeter: undefined },
+  } as never
+  const staleRun = (rawInput: string) => command.handler({
+    commandId: 'cmd-test-2' as never,
+    agent: staleAgent,
+    rawInput,
+    signal: new AbortController().signal,
+  } as never) as Promise<{ kind: string; text: string }>
+  const accepted = await staleRun('compress 1 5 stale early work folded away')
   assert.equal(accepted.kind, 'success')
   assert.doesNotMatch(accepted.text, /rejected/)
   assert.ok(

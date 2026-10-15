@@ -690,22 +690,29 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
       }
       throw error
     }
-    // Hard reject BEFORE the kernel: a span covering a CURRENT injected policy
-    // row has no legitimate outcome — the host re-injects the newest AGENTS.md
-    // copy the moment it leaves the surface (compress → re-inject loop fuel,
-    // issue #71), and a folded skill catalog never comes back at all (resend
-    // keyed on the digest, issue #185). Stale copies pass: removing them while
-    // the newest stays visible is the real cleanup and triggers no re-injection.
+    // A span is not allowed to FOLD a CURRENT injected policy row: the host
+    // re-injects the newest AGENTS.md copy the moment it leaves the surface
+    // (compress → re-inject loop fuel, issue #71) and a folded skill catalog
+    // never comes back at all (resend keyed on the digest, issue #185), while
+    // the active user turn must stay live. Stale copies pass: removing them
+    // while the newest stays visible is the real cleanup.
+    //
+    // What changed on 2026-10-16 is only the RESPONSE to such a span. It used to
+    // be a hard reject, which bounced a plain request whose edges were fine and
+    // merely straddled a row — the model then had to work out the cut itself
+    // (live: `37194..37273` rejected for one AGENTS.md row at seq 37241, retried
+    // as `37194..37238`). Now a plain range is SPLIT around the row exactly like
+    // a checkpoint carrier: the row stays visible (so nothing re-injects), and
+    // the runs on either side fold under the model's own summary. A block-ref
+    // boundary (tier 2/3 distill) still refuses instead: that call is explicitly
+    // about folding the checkpoint itself.
+    //
     // Probe the set that will ACTUALLY be shadowed (`shadowedSeqsOf`, the
     // positional slice the transaction prices) rather than a numeric interval —
     // see guardedRowsInSpan for why the interval false-positives on a locally
     // non-monotonic surface.
     const shadowedSpan = shadowedSeqsOf(session, resolved.start, resolved.end)
     const instructionHits = guardedRowsInSpan(guardedSeqs, shadowedSpan)
-    if (instructionHits.length > 0) {
-      rejectedNotes.push(protectedRowRejectionNote(resolved.start, resolved.end, instructionHits, shadowedSpan, session))
-      continue
-    }
     // An edge on an ACTIVE block's checkpoint summary node resolves to the
     // kernel block ref (bN) — the boundary that makes applyCompression distill
     // (tier 2/3) instead of folding the summary as a plain message.
@@ -739,15 +746,24 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     // identical span retried.
     if (startBlockRef == null && endBlockRef == null) {
       const carriers = liveCheckpointCarriersInSpan(session, shadowedSpan)
-      if (carriers.length > 0) {
-        if (carrierSpans === 'reject') {
+      // Both kinds of "must stay visible" row become split points: a live block's
+      // checkpoint carrier and a CURRENT injected policy row / active user turn.
+      const barrierSeqs = [...new Set([...carriers.map((carrier) => carrier.seq), ...instructionHits])]
+        .sort((left, right) => left - right)
+      if (barrierSeqs.length > 0) {
+        if (carriers.length > 0 && carrierSpans === 'reject') {
           rejectedNotes.push(liveCarrierRejectionNote(resolved.start, resolved.end, carriers))
           continue
         }
         const carrierLabel = carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(', ')
+        const keptVisible: string[] = []
+        if (carriers.length > 0) keptVisible.push(`checkpoint ${carrierLabel}`)
+        if (instructionHits.length > 0) {
+          keptVisible.push(`current protected row(s) ${instructionHits.join(', ')}`)
+        }
         const keptRuns: typeof ranges = []
         const foldedRuns: string[] = []
-        for (const run of splitSpanAtSeqs(shadowedSpan, carriers.map((carrier) => carrier.seq))) {
+        for (const run of splitSpanAtSeqs(shadowedSpan, barrierSeqs)) {
           const first = run[0]
           const last = run[run.length - 1]
           if (first === undefined || last === undefined) continue
@@ -756,12 +772,14 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
             sub = resolveSurfaceRange(session, first, last)
           } catch {
             // A run whose edges cannot anchor (empty result / unbalanced pair)
-            // contributes nothing — the carriers are the subject here.
+            // contributes nothing — the row that was kept is the subject here.
             continue
           }
           const subShadowed = shadowedSeqsOf(session, sub.start, sub.end)
-          // A guarded row inside the run keeps its own hard reject: folding it
-          // would re-trigger the host injection (issues #71/#185).
+          // A guarded row still inside a run is not folded either — the run is
+          // skipped (folding it would re-trigger the host injection, issues
+          // #71/#185), and if every run is skipped the teaching refusal below
+          // says why.
           if (subShadowed.length === 0 || guardedRowsInSpan(guardedSeqs, subShadowed).length > 0) continue
           const subStartRef = blockRefForSummarySeq(session, sub.start)
             ?? edgeRefForSeq(session, byRaw, sub.start, 'start', sub.end)
@@ -783,20 +801,29 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
           })
           foldedRuns.push(`${sub.start}..${sub.end}`)
         }
-        // Nothing survived the carriers: fall back to the teaching refusal
+        // Nothing survived the barriers: fall back to the teaching refusal
         // rather than report a fold that cannot happen.
         if (keptRuns.length === 0) {
-          rejectedNotes.push(liveCarrierRejectionNote(resolved.start, resolved.end, carriers))
+          rejectedNotes.push(carriers.length > 0
+            ? liveCarrierRejectionNote(resolved.start, resolved.end, carriers)
+            : protectedRowRejectionNote(resolved.start, resolved.end, instructionHits, shadowedSpan, session))
           continue
         }
         for (const kept of keptRuns) seenRangeKeys.add(`${kept.startRef}::${kept.endRef}`)
         ranges.push(...keptRuns)
         splitNotes.push(
-          `  seqs ${resolved.start}..${resolved.end} split around checkpoint ${carrierLabel} — folded ${foldedRuns.join(', ')}; `
-          + 'the carrier(s) stay visible, so this summary covers ONLY the folded seqs',
+          `  seqs ${resolved.start}..${resolved.end} split around ${keptVisible.join(' and ')} — folded ${foldedRuns.join(', ')}; `
+          + 'the kept row(s) stay visible, so this summary covers ONLY the folded seqs',
         )
         continue
       }
+    }
+    // A block-ref boundary (tier 2/3 distill) is the one call that folds
+    // checkpoints on purpose, so it cannot be split; a CURRENT row inside it
+    // stays a refusal.
+    if (instructionHits.length > 0) {
+      rejectedNotes.push(protectedRowRejectionNote(resolved.start, resolved.end, instructionHits, shadowedSpan, session))
+      continue
     }
     const rangeKey = `${startRef}::${endRef}`
     if (seenRangeKeys.has(rangeKey)) {

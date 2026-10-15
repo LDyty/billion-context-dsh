@@ -7494,20 +7494,30 @@ function surfaceKindCounts(session) {
   return [...counts.entries()].map(([label, entry]) => ({ label, count: entry.count, barrier: entry.barrier })).sort((a, b) => b.count - a.count);
 }
 function staleFoldableHostRowSeqs(session) {
-  const newest = /* @__PURE__ */ new Map();
+  const newestByKind = /* @__PURE__ */ new Map();
   const candidates = [];
+  const stale = /* @__PURE__ */ new Set();
+  const newestInstructions = newestInstructionSeqsOf(session);
+  const newestCatalog = newestSkillCatalogSeqOf(session);
   for (const seq of session.surface.nodes) {
     const event = eventAtOf(session, seq);
     if (event === void 0 || event.type !== "user/message") continue;
+    if (isAgentInstructionsRow(event)) {
+      if (!newestInstructions.has(seq)) stale.add(seq);
+      continue;
+    }
+    if (isSkillCatalogRow(event)) {
+      if (newestCatalog !== null && seq !== newestCatalog) stale.add(seq);
+      continue;
+    }
     const kind = event.data?.source?.kind;
     if (kind === void 0 || !STALE_FOLDABLE_HOST_KINDS.has(kind)) continue;
     if (classifySurfaceEvent(event) !== "instruction") continue;
     candidates.push({ seq, kind });
-    newest.set(kind, seq);
+    newestByKind.set(kind, seq);
   }
-  const stale = /* @__PURE__ */ new Set();
   for (const candidate of candidates) {
-    if (newest.get(candidate.kind) !== candidate.seq) stale.add(candidate.seq);
+    if (newestByKind.get(candidate.kind) !== candidate.seq) stale.add(candidate.seq);
   }
   return stale;
 }
@@ -8847,10 +8857,6 @@ async function handleCompress(env, args, exec) {
     }
     const shadowedSpan = shadowedSeqsOf(session, resolved.start, resolved.end);
     const instructionHits = guardedRowsInSpan(guardedSeqs, shadowedSpan);
-    if (instructionHits.length > 0) {
-      rejectedNotes.push(protectedRowRejectionNote(resolved.start, resolved.end, instructionHits, shadowedSpan, session));
-      continue;
-    }
     const startBlockRef = blockRefForSummarySeq(session, resolved.start);
     const endBlockRef = blockRefForSummarySeq(session, resolved.end);
     const startRef = startBlockRef ?? edgeRefForSeq(session, byRaw, resolved.start, "start", resolved.end);
@@ -8862,15 +8868,21 @@ async function handleCompress(env, args, exec) {
     }
     if (startBlockRef == null && endBlockRef == null) {
       const carriers = liveCheckpointCarriersInSpan(session, shadowedSpan);
-      if (carriers.length > 0) {
-        if (carrierSpans === "reject") {
+      const barrierSeqs = [.../* @__PURE__ */ new Set([...carriers.map((carrier) => carrier.seq), ...instructionHits])].sort((left, right) => left - right);
+      if (barrierSeqs.length > 0) {
+        if (carriers.length > 0 && carrierSpans === "reject") {
           rejectedNotes.push(liveCarrierRejectionNote(resolved.start, resolved.end, carriers));
           continue;
         }
         const carrierLabel = carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(", ");
+        const keptVisible = [];
+        if (carriers.length > 0) keptVisible.push(`checkpoint ${carrierLabel}`);
+        if (instructionHits.length > 0) {
+          keptVisible.push(`current protected row(s) ${instructionHits.join(", ")}`);
+        }
         const keptRuns = [];
         const foldedRuns = [];
-        for (const run of splitSpanAtSeqs(shadowedSpan, carriers.map((carrier) => carrier.seq))) {
+        for (const run of splitSpanAtSeqs(shadowedSpan, barrierSeqs)) {
           const first = run[0];
           const last = run[run.length - 1];
           if (first === void 0 || last === void 0) continue;
@@ -8899,16 +8911,20 @@ async function handleCompress(env, args, exec) {
           foldedRuns.push(`${sub.start}..${sub.end}`);
         }
         if (keptRuns.length === 0) {
-          rejectedNotes.push(liveCarrierRejectionNote(resolved.start, resolved.end, carriers));
+          rejectedNotes.push(carriers.length > 0 ? liveCarrierRejectionNote(resolved.start, resolved.end, carriers) : protectedRowRejectionNote(resolved.start, resolved.end, instructionHits, shadowedSpan, session));
           continue;
         }
         for (const kept of keptRuns) seenRangeKeys.add(`${kept.startRef}::${kept.endRef}`);
         ranges.push(...keptRuns);
         splitNotes.push(
-          `  seqs ${resolved.start}..${resolved.end} split around checkpoint ${carrierLabel} \u2014 folded ${foldedRuns.join(", ")}; the carrier(s) stay visible, so this summary covers ONLY the folded seqs`
+          `  seqs ${resolved.start}..${resolved.end} split around ${keptVisible.join(" and ")} \u2014 folded ${foldedRuns.join(", ")}; the kept row(s) stay visible, so this summary covers ONLY the folded seqs`
         );
         continue;
       }
+    }
+    if (instructionHits.length > 0) {
+      rejectedNotes.push(protectedRowRejectionNote(resolved.start, resolved.end, instructionHits, shadowedSpan, session));
+      continue;
     }
     const rangeKey2 = `${startRef}::${endRef}`;
     if (seenRangeKeys.has(rangeKey2)) {
@@ -9576,19 +9592,22 @@ function compressText(env, agent, args) {
   if (blockRefForSummarySeq(session, start) !== null || blockRefForSummarySeq(session, end) !== null) {
     return "/acp-prune compress: the range touches a compressed block summary node \u2014 distill it with the compress tool (seq-based batch), not /acp-prune compress";
   }
+  const guarded = guardedSurfaceSeqsOf(session);
   const shadowed = shadowedSeqsOf(session, start, end);
-  const instructionHits = guardedRowsInSpan(guardedSurfaceSeqsOf(session), shadowed);
-  if (instructionHits.length > 0) {
-    return protectedRowRejectionNote(start, end, instructionHits, shadowed, session);
-  }
+  const instructionHits = guardedRowsInSpan(guarded, shadowed);
   const carriers = liveCheckpointCarriersInSpan(session, shadowed);
-  if (carriers.length > 0) {
-    if ((env.carrierSpans ?? "split") === "reject") {
+  const barrierSeqs = [.../* @__PURE__ */ new Set([...carriers.map((carrier) => carrier.seq), ...instructionHits])].sort((left, right) => left - right);
+  if (barrierSeqs.length > 0) {
+    if (carriers.length > 0 && (env.carrierSpans ?? "split") === "reject") {
       return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`;
     }
-    const carrierLabel = carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(", ");
+    const keptVisible = [];
+    if (carriers.length > 0) {
+      keptVisible.push(`checkpoint ${carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(", ")}`);
+    }
+    if (instructionHits.length > 0) keptVisible.push(`current protected row(s) ${instructionHits.join(", ")}`);
     const folded = [];
-    for (const run of splitSpanAtSeqs(shadowed, carriers.map((carrier) => carrier.seq))) {
+    for (const run of splitSpanAtSeqs(shadowed, barrierSeqs)) {
       const first = run[0];
       const last = run[run.length - 1];
       if (first === void 0 || last === void 0) continue;
@@ -9600,7 +9619,7 @@ function compressText(env, agent, args) {
       }
       const subShadowed = shadowedSeqsOf(session, sub.start, sub.end);
       if (subShadowed.length === 0) continue;
-      if (guardedRowsInSpan(guardedSurfaceSeqsOf(session), subShadowed).length > 0) continue;
+      if (guardedRowsInSpan(guarded, subShadowed).length > 0) continue;
       const { provider: provider2, model: model2 } = routeFor(agent);
       const { compactionId: compactionId2 } = runCompactionTransaction(session, {
         start: sub.start,
@@ -9614,9 +9633,9 @@ function compressText(env, agent, args) {
       folded.push(`${compactionId2.slice(0, 8)} (seqs ${sub.start}..${sub.end})`);
     }
     if (folded.length === 0) {
-      return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`;
+      return carriers.length > 0 ? `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}` : `/acp-prune compress:${protectedRowRejectionNote(start, end, instructionHits, shadowed, session)}`;
     }
-    return `Compressed ${folded.length} block(s) around checkpoint ${carrierLabel}: ${folded.join(", ")} \u2014 the carrier(s) stay visible`;
+    return `Compressed ${folded.length} block(s) around ${keptVisible.join(" and ")}: ${folded.join(", ")} \u2014 the kept row(s) stay visible`;
   }
   const shadowedTokens = shadowedTokensViaMeter(session, shadowed, agent.ctx);
   const { provider, model } = routeFor(agent);

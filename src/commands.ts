@@ -163,45 +163,43 @@ function compressText(env: ToolEnvironment, agent: Agent, args: string[]): strin
   if (blockRefForSummarySeq(session, start) !== null || blockRefForSummarySeq(session, end) !== null) {
     return '/acp-prune compress: the range touches a compressed block summary node — distill it with the compress tool (seq-based batch), not /acp-prune compress'
   }
-  // The same hard reject as the compress tool (src/tools.ts): a guarded row —
-  // the CURRENT injected instruction row of any scope, the newest visible skill
-  // catalog (issue #185), OR the newest real user turn (issue #196) — cannot be
-  // legitimately compressed by ANY caller, human or model. For instruction rows
-  // the host re-injects the newest AGENTS.md copy unconditionally, so the tokens
-  // come straight back and nothing is reclaimed; a folded skill catalog never
-  // comes back at all (resend keyed on the catalog digest, issue #185); for the
-  // active user turn the question itself would vanish from the surface.
-  // Explicit intent does not override that arithmetic; older copies of the same
-  // channel and superseded user turns stay compressible.
+  // A span must never FOLD a row that has to stay visible: the CURRENT injected
+  // instruction row of any scope / the newest visible skill catalog (issue #185)
+  // / the newest real user turn (issue #196), or the checkpoint carrier of a
+  // still-active block. For instruction rows the host re-injects the newest
+  // AGENTS.md copy unconditionally (the tokens come straight back); a folded
+  // catalog never comes back at all (resend keyed on the digest); the active user
+  // turn would vanish from the surface.
+  //
+  // 2026-10-16: that is now a SPLIT for plain ranges (both here and in the
+  // compress tool), not a refusal — the row stays visible and the runs on either
+  // side fold. Same rule for both barrier kinds; `carrierSpans: 'reject'` only
+  // still governs the checkpoint case.
+  //
   // Probe the span that will ACTUALLY be shadowed — the positional slice the
-  // transaction prices and `assertProvenance` verifies — never a numeric
-  // `start <= seq <= end` interval: the surface is locally non-monotonic after
-  // earlier replacements, so a legitimate range can have a current instruction
-  // row numerically inside its edges while the sliced span excludes it (issue
-  // #71 review B1). Resolved edges, not the raw inputs: resolveSurfaceRange may
-  // move them to a balanced cut, and a raw edge absent from the surface makes
-  // shadowedSeqsOf slice a garbage span.
+  // transaction prices — never a numeric `start <= seq <= end` interval: the
+  // surface is locally non-monotonic after earlier replacements, so a legitimate
+  // range can have a current instruction row numerically inside its edges while
+  // the sliced span excludes it (issue #71 review B1). Resolved edges, not the
+  // raw inputs: resolveSurfaceRange may move them to a balanced cut, and a raw
+  // edge absent from the surface makes shadowedSeqsOf slice a garbage span.
+  const guarded = guardedSurfaceSeqsOf(session)
   const shadowed = shadowedSeqsOf(session, start, end)
-  const instructionHits = guardedRowsInSpan(guardedSurfaceSeqsOf(session), shadowed)
-  if (instructionHits.length > 0) {
-    return protectedRowRejectionNote(start, end, instructionHits, shadowed, session)
-  }
-  // Same hard reject as the compress tool: this is a plain T1 range transaction,
-  // so it must not fold the checkpoint carrier of a still-active block (the
-  // kernel keeps such a carrier visible; the one-op replace below would hide it
-  // anyway). Explicit human intent does not override the arithmetic — distillation
-  // is the compress tool's block-ref path, and the edge check above already
-  // refuses a range whose EDGE is a summary node.
+  const instructionHits = guardedRowsInSpan(guarded, shadowed)
   const carriers = liveCheckpointCarriersInSpan(session, shadowed)
-  if (carriers.length > 0) {
-    // Same policy as the compress tool: `reject` refuses the span, `split`
-    // (default) folds the runs around each carrier and keeps them visible.
-    if ((env.carrierSpans ?? 'split') === 'reject') {
+  const barrierSeqs = [...new Set([...carriers.map((carrier) => carrier.seq), ...instructionHits])]
+    .sort((left, right) => left - right)
+  if (barrierSeqs.length > 0) {
+    if (carriers.length > 0 && (env.carrierSpans ?? 'split') === 'reject') {
       return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`
     }
-    const carrierLabel = carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(', ')
+    const keptVisible: string[] = []
+    if (carriers.length > 0) {
+      keptVisible.push(`checkpoint ${carriers.map((carrier) => `seq ${carrier.seq} (${carrier.kernelBlockId})`).join(', ')}`)
+    }
+    if (instructionHits.length > 0) keptVisible.push(`current protected row(s) ${instructionHits.join(', ')}`)
     const folded: string[] = []
-    for (const run of splitSpanAtSeqs(shadowed, carriers.map((carrier) => carrier.seq))) {
+    for (const run of splitSpanAtSeqs(shadowed, barrierSeqs)) {
       const first = run[0]
       const last = run[run.length - 1]
       if (first === undefined || last === undefined) continue
@@ -213,7 +211,7 @@ function compressText(env: ToolEnvironment, agent: Agent, args: string[]): strin
       }
       const subShadowed = shadowedSeqsOf(session, sub.start, sub.end)
       if (subShadowed.length === 0) continue
-      if (guardedRowsInSpan(guardedSurfaceSeqsOf(session), subShadowed).length > 0) continue
+      if (guardedRowsInSpan(guarded, subShadowed).length > 0) continue
       const { provider, model } = routeFor(agent)
       const { compactionId } = runCompactionTransaction(session, {
         start: sub.start,
@@ -227,9 +225,11 @@ function compressText(env: ToolEnvironment, agent: Agent, args: string[]): strin
       folded.push(`${compactionId.slice(0, 8)} (seqs ${sub.start}..${sub.end})`)
     }
     if (folded.length === 0) {
-      return `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`
+      return carriers.length > 0
+        ? `/acp-prune compress:${liveCarrierRejectionNote(start, end, carriers)}`
+        : `/acp-prune compress:${protectedRowRejectionNote(start, end, instructionHits, shadowed, session)}`
     }
-    return `Compressed ${folded.length} block(s) around checkpoint ${carrierLabel}: ${folded.join(', ')} — the carrier(s) stay visible`
+    return `Compressed ${folded.length} block(s) around ${keptVisible.join(' and ')}: ${folded.join(', ')} — the kept row(s) stay visible`
   }
   // Price the reclaimed tokens in the HOST's token vocabulary (rule 12):
   // prefer the live meter's per-node prices, fall back to the exact mirror.

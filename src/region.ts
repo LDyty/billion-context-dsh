@@ -1204,32 +1204,53 @@ export function surfaceKindCounts(session: Session): SurfaceKindCount[] {
 }
 
 /**
- * Surface seqs of SUPERSEDED host "state echo" rows — the ones the range table
- * may fold even though `classifySurfaceEvent` calls their kind a barrier.
+ * Surface seqs of SUPERSEDED host rows — the ones the range table may fold even
+ * though `classifySurfaceEvent` calls their kind a barrier.
  *
- * Reads the visible surface in order and keeps, per audited kind
- * ({@link STALE_FOLDABLE_HOST_KINDS}), only the newest row; every older row of
- * that kind is superseded history and no longer splits a compressible span. The
- * newest row stays a barrier, so the model always sees current goal/time/team
- * state. Live case: 2026-10-14, 241 such rows chopped a 906-node surface.
+ * Two families, both "only the newest copy carries live state":
+ *
+ *  - **state echoes** ({@link STALE_FOLDABLE_HOST_KINDS}: goal / tool-goal /
+ *    time-context / team-message / agent-message), newest per KIND. Live case:
+ *    2026-10-14, 241 such rows chopped a 906-node surface into 3-4 node runs.
+ *  - **superseded instruction rows and skill catalogs**, newest per SCOPE. The
+ *    host re-injects the newest AGENTS.md copy the moment the surface loses it
+ *    (`visibleBaselineSource` walks the surface newest-first and compares the
+ *    baseline identity), and the skill catalog's resend gate is the digest — so
+ *    the NEWEST copy of each scope must stay, while every older copy is history
+ *    the host will never look at again. Live case 2026-10-16: one session's
+ *    surface still carried 11 superseded copies of the same cjdb AGENTS.md,
+ *    ~30K host-vocabulary tokens (≈11% of a 283K surface) that the table could
+ *    never offer while every AGENTS.md row was a blanket barrier.
+ *
+ * Only rows the classifier would otherwise call a barrier need the override;
+ * anything already foldable is left untouched.
  */
 export function staleFoldableHostRowSeqs(session: Session): Set<number> {
-  const newest = new Map<string, number>()
+  const newestByKind = new Map<string, number>()
   const candidates: { seq: number; kind: string }[] = []
+  const stale = new Set<number>()
+  const newestInstructions = newestInstructionSeqsOf(session)
+  const newestCatalog = newestSkillCatalogSeqOf(session)
   for (const seq of session.surface.nodes) {
     const event = eventAtOf(session, seq)
     if (event === undefined || event.type !== 'user/message') continue
+    // Superseded instruction rows / catalogs: newest per scope stays a barrier.
+    if (isAgentInstructionsRow(event)) {
+      if (!newestInstructions.has(seq)) stale.add(seq)
+      continue
+    }
+    if (isSkillCatalogRow(event)) {
+      if (newestCatalog !== null && seq !== newestCatalog) stale.add(seq)
+      continue
+    }
     const kind = (event.data as { source?: { kind?: string } } | undefined)?.source?.kind
     if (kind === undefined || !STALE_FOLDABLE_HOST_KINDS.has(kind)) continue
-    // Only rows the classifier would otherwise treat as a barrier need the
-    // override; anything already foldable is left untouched.
     if (classifySurfaceEvent(event) !== 'instruction') continue
     candidates.push({ seq, kind })
-    newest.set(kind, seq)
+    newestByKind.set(kind, seq)
   }
-  const stale = new Set<number>()
   for (const candidate of candidates) {
-    if (newest.get(candidate.kind) !== candidate.seq) stale.add(candidate.seq)
+    if (newestByKind.get(candidate.kind) !== candidate.seq) stale.add(candidate.seq)
   }
   return stale
 }
