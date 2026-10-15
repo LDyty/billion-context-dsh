@@ -122,6 +122,56 @@ test('M3: compress lands a durable block, shrinks the surface, and uses the effe
 
 const COMPRESS_SUMMARY = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute per IP address, bcrypt hashing at cost factor 12.'
 
+/**
+ * The kernel's 50-character summary floor is waived for ONE shape of call: every
+ * entry a discard. Junk fragments are exactly where a floor does the least good
+ * (there is nothing to be substantive about, and padding it into a paragraph is
+ * pure noise the model then has to write) and the most harm (the model either
+ * refuses or writes filler). The exemption is per CALL and keyed on the marker,
+ * so a mixed call — or any call without the marker — keeps the floor.
+ */
+test('M3: an all-discard call may carry a short summary; a mixed call may not', async () => {
+  // A fresh env per case: one store/kernel per session keeps the sub-cases
+  // independent (the kernel state is per session, but the tool holds the env).
+  const compressFor = (): { compress: ReturnType<typeof toolOf>; exec: ReturnType<typeof fakeExec> } => {
+    const session = buildTextSession(12)
+    return { compress: toolOf(makeEnv(), 'compress'), exec: fakeExec(session) }
+  }
+
+  // (a) Every entry a discard → the floor is waived, and the fold lands.
+  const allDiscard = compressFor()
+  const discardOnly = await allDiscard.compress.execute({
+    content: [
+      { startSeq: 1, endSeq: 3, summary: '(discarded) two retry rounds — nothing kept' },
+      { startSeq: 4, endSeq: 5, summary: '(discarded) duplicate tool output — nothing kept' },
+    ],
+  } as never, allDiscard.exec)
+  const discardText = (discardResultText(discardOnly))
+  assert.match(discardText, /Compressed 2 block/, `both short discards landed (${discardText.slice(0, 120)})`)
+
+  // (b) A short NON-discard summary still trips the kernel floor.
+  const plain = compressFor()
+  const shortReal = await plain.compress.execute({
+    content: [{ startSeq: 1, endSeq: 5, summary: 'auth work' }],
+  } as never, plain.exec)
+  assert.match(discardResultText(shortReal), /Summary too short/, 'a lazy stub on real content is refused')
+
+  // (c) Mixed call: the discard marker does not carry the other entry past the floor.
+  const mixed = compressFor()
+  const mixedResult = await mixed.compress.execute({
+    content: [
+      { startSeq: 1, endSeq: 3, summary: '(discarded) retries — nothing kept' },
+      { startSeq: 4, endSeq: 5, summary: 'auth work' },
+    ],
+  } as never, mixed.exec)
+  assert.match(discardResultText(mixedResult), /Summary too short/, 'the floor stands in a mixed call')
+})
+
+/** The result text, whether the handler returned text or an error payload. */
+function discardResultText(result: unknown): string {
+  return String((result as { text?: string }).text ?? '')
+}
+
 /** Append the assistant message that ISSUES a compress call, thinking included. */
 function appendCompressCall(session: Session, callId: string, thinking: string | null): void {
   session.append('assistant/message', {

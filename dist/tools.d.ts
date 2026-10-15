@@ -98,7 +98,7 @@ export declare const compressParameters: {
                 readonly summary: {
                     readonly type: 'string';
                     readonly required: true;
-                    readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, so a discard line must still be a full sentence. For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.';
+                    readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.';
                 };
                 readonly topic: {
                     readonly type: 'string';
@@ -116,6 +116,20 @@ export declare const compressParameters: {
         };
     };
 };
+/** The marker every discard summary starts with (see the compress description). */
+export declare const DISCARD_SUMMARY_MARKER = "(discarded)";
+/**
+ * Whether one entry is the DISCARD form — a range with nothing worth keeping,
+ * folded with a marker instead of an invented summary. The marker is the whole
+ * contract: the model writes it deliberately, and the engine only widens the
+ * kernel's summary floor for calls where EVERY entry carries it (see
+ * `handleCompress`), so the marker cannot be used to smuggle a stub past the
+ * floor for content that was supposed to be summarized.
+ *
+ * @param summary - the entry's summary text.
+ * @returns true when the trimmed summary opens with the marker.
+ */
+export declare function isDiscardSummary(summary: string): boolean;
 /** Exported so the ref-width contract test can pin it without a 100K-message fixture. */
 export declare function mnRefIndex(value: string): number | null;
 /**

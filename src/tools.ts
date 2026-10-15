@@ -168,7 +168,7 @@ export const compressParameters = {
         summary: {
           type: 'string' as const,
           required: true,
-          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, so a discard line must still be a full sentence. For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
+          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
         },
         topic: { type: 'string' as const, description: 'Short label (3-5 words) for this range.' },
         // B3 (2026-09-08 governance plan): the handler and region.ts have
@@ -198,6 +198,24 @@ function parseSeq(value: number | string): number {
     throw new Error(`billion-context-dsh: invalid seq "${String(value)}" — use a surface seq like 295`)
   }
   return seq
+}
+
+/** The marker every discard summary starts with (see the compress description). */
+export const DISCARD_SUMMARY_MARKER = '(discarded)'
+
+/**
+ * Whether one entry is the DISCARD form — a range with nothing worth keeping,
+ * folded with a marker instead of an invented summary. The marker is the whole
+ * contract: the model writes it deliberately, and the engine only widens the
+ * kernel's summary floor for calls where EVERY entry carries it (see
+ * `handleCompress`), so the marker cannot be used to smuggle a stub past the
+ * floor for content that was supposed to be summarized.
+ *
+ * @param summary - the entry's summary text.
+ * @returns true when the trimmed summary opens with the marker.
+ */
+export function isDiscardSummary(summary: string): boolean {
+  return summary.trimStart().toLowerCase().startsWith(DISCARD_SUMMARY_MARKER)
 }
 
 /**
@@ -865,11 +883,18 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     return { text: text.join('\n') }
   }
 
+  // The kernel's 50-character summary floor exists to stop a fold from being
+  // written as a stub. A DISCARD — every entry in this call is the `(discarded)`
+  // form, i.e. content with nothing to keep — has nothing to be substantive
+  // about, so the floor is waived FOR THIS CALL ONLY (the kernel takes the floor
+  // per call via its config). A mixed call, or any call without the marker,
+  // keeps the floor: there the model is summarizing real content.
+  const allDiscard = ranges.length > 0 && ranges.every((range) => isDiscardSummary(range.summary))
   const applied = env.kernel.applyCompression({
     ranges: ranges.map(({ startRef, endRef, summary, topic }) => ({ startRef, endRef, summary, topic })),
     messages: coreMessages,
     state: turn.state,
-    config,
+    config: allDiscard ? { ...config, compress: { ...config.compress, minSummaryLength: 0 } } : config,
     // Deliberately NOT overriding protectedMessageIds: with the full log the
     // kernel's recent/last-user protection is computed over the same
     // non-block-covered messages as the visible feed, so default behavior is

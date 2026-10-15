@@ -14,7 +14,7 @@ import { AcpStateStore } from '../src/state.ts'
 import { buildInspectSnapshot, handleInspectRequest, inspectBlocksOf, inspectCacheOf, rememberPressure } from '../src/inspect.ts'
 import { buildNudge, rangeTable } from '../src/nudge.ts'
 import { runCompactionTransaction } from '../src/region.ts'
-import { makeTools } from '../src/tools.ts'
+import { isDiscardSummary, makeTools } from '../src/tools.ts'
 import type { ToolEnvironment } from '../src/tools.ts'
 import { appendAssistant, appendToolCall, appendToolResult, appendTurn, appendUser, buildTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
 
