@@ -111,10 +111,6 @@ export declare const compressParameters: {
                     };
                     readonly description: 'Optional: acceptance readings that are already green before this compression (e.g. "t0-fastpath 8/8", "closedloop 414/414"). Stored structurally on the compaction/summary event and recovered by verifiedReadingsOf, so later steps need not re-run the checks.';
                 };
-                readonly reason: {
-                    readonly type: 'string';
-                    readonly description: 'Optional, one short line: WHY you picked this range — what you weighed (size, fold cost / payback, how recent the work is, what it concluded). It is echoed in this tool result and stored on the compaction event, so the choice stays auditable afterwards. Max ~300 characters.';
-                };
             };
             readonly additionalProperties: false;
         };

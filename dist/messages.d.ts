@@ -93,6 +93,28 @@ export declare function toolCallIdOfResultEvent(event: SessionEvent): string | n
  */
 export declare function buildToolCallIndex(events: readonly SessionEvent[]): ReadonlyMap<string, string>;
 /**
+ * The model's own THINKING while it issued tool call `callId`.
+ *
+ * A tool call the model wrote is an `assistant/message` whose content holds its
+ * `reasoning` block(s) right next to the `tool-call` block — that thinking IS
+ * the record of why the call looks the way it does, and it is already in the
+ * log. Nothing is asked of the model to produce it; the engine only lifts it out
+ * at the moment the call lands (see `handleCompress` → the block ledger), so the
+ * decision can be read back long after the transcript moved on.
+ *
+ * Hosts that emit thinking as its own assistant message are covered by the
+ * same-step walk-back: consecutive `assistant/message` events of the SAME
+ * turn/step are stitched (newest first, at most {@link REASONING_STITCH_LIMIT})
+ * until a non-assistant event, so an unrelated earlier turn can never bleed in.
+ * Truncated to {@link REASONING_EXCERPT_LIMIT} characters — a durable excerpt,
+ * not a second copy of the whole step.
+ *
+ * @param events - the session log; scanned in seq order.
+ * @param callId - the tool call id to attribute (e.g. `exec.callId`).
+ * @returns the reasoning text, or undefined when the call has none on record.
+ */
+export declare function reasoningForToolCall(events: readonly SessionEvent[], callId: string): string | undefined;
+/**
  * Project one surface message event into CoreMessage(s).
  *  - user/message      → user text (verbatim content)
  *  - assistant/message → assistant text, or one CoreMessage per tool-call

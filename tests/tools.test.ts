@@ -8,9 +8,9 @@ import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { AcpStateStore } from '../src/state.ts'
 import { edgeRefForSeq, makeTools, mnRefIndex, type ToolEnvironment } from '../src/tools.ts'
-import { blockRegistry, rebuildBlockLedger, reasonOf, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
+import { blockRegistry, rebuildBlockLedger, reasoningOf, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
 import { rangeTable } from '../src/nudge.ts'
-import { SUMMARY_FRAME_PREFIX } from '../src/messages.ts'
+import { SUMMARY_FRAME_PREFIX, reasoningForToolCall } from '../src/messages.ts'
 import { appendTurn, appendToolResult, appendEmptyToolResult, appendToolCall, appendMultiToolCall, appendUser, appendAssistant, buildTextSession, buildShortTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
 
 function makeEnv(limit = 128000): ToolEnvironment {
@@ -120,57 +120,104 @@ test('M3: compress lands a durable block, shrinks the surface, and uses the effe
   assert.deepEqual(modelContextLimits, [1000000], 'compress gives the kernel the auto-detected window, not the 128K fallback')
 })
 
+const COMPRESS_SUMMARY = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute per IP address, bcrypt hashing at cost factor 12.'
+
+/** Append the assistant message that ISSUES a compress call, thinking included. */
+function appendCompressCall(session: Session, callId: string, thinking: string | null): void {
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    stream: [],
+    message: createAssistantMessage({
+      content: [
+        ...(thinking === null ? [] : [{ type: 'reasoning' as const, text: thinking }]),
+        { type: 'tool-call' as const, id: callId, name: 'compress', arguments: '{"content":[]}' },
+      ],
+      provider: 'test-provider',
+      model: 'test-model',
+    }),
+  }, { surfaceOp: 'append' })
+}
+
 /**
- * The model's own reason for picking a span: written in the same call that picks
- * it (before hindsight rewrites the story), echoed in the result so a reader sees
- * decision + rationale together, and stored on the block so it survives a
- * restart. Blank input must never become a durable key.
+ * The thinking that produced a fold is captured, not requested.
+ *
+ * The model's `reasoning` block sits next to the compress tool call in the SAME
+ * assistant message, so the engine lifts it out when the block lands (nothing is
+ * asked of the model, and no second summary is written). It rides the ledger, so
+ * the decision is readable long after the transcript moved on.
  */
-test('M3: compress records and echoes the model\'s reason for a range', async () => {
+test('M3: compress stores the thinking that produced the fold', async () => {
   const env = makeEnv()
   const session = buildTextSession(12)
+  const thinking = 'The biggest offered span is 1..5 and its tool output has been fully consumed — I will not re-read those results. Folding it also starts late in the surface, so the cached prefix it invalidates stays small.'
+  appendCompressCall(session, 'call-thinking', thinking)
+
   const compress = toolOf(env, 'compress')
-  const summary = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute per IP address, bcrypt hashing at cost factor 12.'
-
-  const result = await compress.execute({
-    content: [{
-      startSeq: 1,
-      endSeq: 5,
-      summary,
-      reason: '  biggest span offered and its results were already consumed; folding it also starts near the tail, so the prefix rewrite stays small  ',
-    }],
-  } as never, fakeExec(session))
-
-  const text = (result as { text: string }).text
-  assert.match(
-    text,
-    /, why: biggest span offered and its results were already consumed; folding it also starts near the tail, so the prefix rewrite stays small$/m,
-    'the reason is echoed with the block it explains, normalised',
+  await compress.execute(
+    { content: [{ startSeq: 1, endSeq: 5, summary: COMPRESS_SUMMARY }] } as never,
+    fakeExec(session, { callId: 'call-thinking' }),
   )
+
   const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary')
   assert.ok(summaryEvent, 'the compression landed')
+  assert.equal(reasoningOf(summaryEvent!), thinking, 'the thinking is readable from the durable block')
   assert.equal(
-    reasonOf(summaryEvent!),
-    'biggest span offered and its results were already consumed; folding it also starts near the tail, so the prefix rewrite stays small',
-    'and the same text is readable from the durable block after a restart',
+    rebuildBlockLedger(session.snapshotEvents())[0]!.reasoning,
+    thinking,
+    'the ledger entry carries it too — no second store to drift',
   )
-  assert.equal(rebuildBlockLedger(session.snapshotEvents())[0]!.reason, reasonOf(summaryEvent!), 'the ledger entries carry it too')
 })
 
-test('M3: a blank or absent reason writes no durable key', async () => {
+/**
+ * Some hosts emit thinking as its OWN assistant message instead of putting it in
+ * the message that carries the tool call. The same-step walk-back covers that
+ * shape — and must stop at the step boundary, so an earlier turn's thinking can
+ * never be attached to a later fold.
+ */
+test('M3: thinking is stitched from the same step, never from an earlier one', () => {
+  const session = Session.create('reasoning-split')
+  const assistant = (content: unknown[], turn: number, step: number): void => {
+    session.append('assistant/message', {
+      turn,
+      step,
+      stream: [],
+      message: createAssistantMessage({
+        content: content as never,
+        provider: 'test-provider',
+        model: 'test-model',
+      }),
+    }, { surfaceOp: 'append' })
+  }
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  // An EARLIER step's thinking, then this step's thinking-only message, then the call.
+  assistant([{ type: 'reasoning', text: 'OLD-TURN thinking that must not bleed in' }], 1, 0)
+  assistant([{ type: 'reasoning', text: 'THIS-TURN thinking' }], 1, 1)
+  assistant([{ type: 'tool-call', id: 'call-split', name: 'compress', arguments: '{}' }], 1, 1)
+
+  assert.equal(
+    reasoningForToolCall(session.snapshotEvents(), 'call-split'),
+    'THIS-TURN thinking',
+    'the split thinking of the SAME step is stitched in; the earlier step is not',
+  )
+  assert.equal(reasoningForToolCall(session.snapshotEvents(), 'call-unknown'), undefined, 'an unknown call has no thinking')
+})
+
+test('M3: a compress call with no thinking on record stores no reasoning key', async () => {
   const env = makeEnv()
   const session = buildTextSession(12)
+  appendCompressCall(session, 'call-silent', null)
+
   const compress = toolOf(env, 'compress')
-  const summary = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute per IP address, bcrypt hashing at cost factor 12.'
+  await compress.execute(
+    { content: [{ startSeq: 1, endSeq: 5, summary: COMPRESS_SUMMARY }] } as never,
+    fakeExec(session, { callId: 'call-silent' }),
+  )
 
-  const result = await compress.execute({
-    content: [{ startSeq: 1, endSeq: 5, summary, reason: '   ' }],
-  } as never, fakeExec(session))
-
-  assert.ok(!(result as { text: string }).text.includes(', why:'), 'nothing is echoed for a blank reason')
   const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary')!
-  assert.equal(reasonOf(summaryEvent), undefined, 'and nothing is stored')
-  assert.equal(rebuildBlockLedger(session.snapshotEvents())[0]!.reason, undefined)
+  assert.equal(reasoningOf(summaryEvent), undefined, 'nothing is invented when the model did not think out loud')
+  assert.deepEqual(rebuildBlockLedger(session.snapshotEvents())[0]!.reasoning, undefined)
 })
 
 test('M3: compress stamps the summary with the LIVE route, not stale agent.options', async () => {

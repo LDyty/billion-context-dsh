@@ -17,6 +17,7 @@ import { acpCommand } from '../src/commands.ts'
 import type { ToolEnvironment } from '../src/tools.ts'
 import { DEFAULT_CONTEXT_WINDOW, type AcpWindow } from '../src/window.ts'
 import { appendTurn, appendUser, appendAssistant, longText } from './helpers.ts'
+import { reasoningOf, runCompactionTransaction } from '../src/region.ts'
 
 function makeEnv(limit = 128000, windowFor?: (agent: Agent) => Promise<AcpWindow>): ToolEnvironment {
   return {
@@ -269,4 +270,40 @@ test('M4: /acp-prune compress stamps the summary with the LIVE route, not stale 
   assert.ok(summaryEvent, 'compaction/summary landed')
   assert.equal((summaryEvent.data as { provider?: string }).provider, 'live-provider', 'the summary carries the LIVE provider')
   assert.equal((summaryEvent.data as { model?: string }).model, 'live-model', 'the summary carries the LIVE model')
+})
+
+test('M4: /acp-prune why prints the thinking that produced a fold', async () => {
+  const env = makeEnv(128000)
+  const session = buildSession(12)
+  const thinking = 'These tool outputs are consumed and summarised; folding from near the tail keeps the prefix rewrite cheap.'
+  // The stored text is what the engine lifted out of the issuing assistant
+  // message when the block landed (the capture itself is pinned in
+  // tests/tools.test.ts, on the model path).
+  runCompactionTransaction(session, {
+    start: 1,
+    end: 5,
+    shadowedSeqs: [1, 2, 3, 4, 5],
+    summary: [{ type: 'text', text: 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL.' }],
+    shadowedTokenCount: 100,
+    provider: 'p',
+    model: 'm',
+    reasoning: thinking,
+  })
+  const summaryEvent = session.snapshotEvents().find((event) => event.type === 'compaction/summary')!
+  assert.equal(reasoningOf(summaryEvent), thinking, 'the block carries the thinking')
+
+  const text = await runAcp(env, fakeAgent(session), 'why')
+  assert.ok(text.includes('Block '), `the header names the block (${text.slice(0, 60)})`)
+  assert.ok(text.includes(thinking), 'and the thinking is printed for the human')
+
+  // A block without thinking (every pre-upgrade block, and the slash-command
+  // path, where no model turn issued the call) must say so, not print nothing.
+  // 12 nodes, same as above: a 6-node surface leaves almost everything inside
+  // the protected recent window, and the fold would be rejected before it lands.
+  const silent = buildSession(12)
+  const quietEnv = makeEnv(128000)
+  await runAcp(quietEnv, fakeAgent(silent), 'compress 1 5 Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL.')
+  const quietEvent = silent.snapshotEvents().find((event) => event.type === 'compaction/summary')!
+  assert.equal(reasoningOf(quietEvent), undefined, 'a slash command has no model thinking to attribute')
+  assert.match(await runAcp(quietEnv, fakeAgent(silent), 'why'), /no thinking on record/, 'and the view says so')
 })

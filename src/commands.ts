@@ -25,6 +25,7 @@ import {
   expandShadowedSeqs,
   guardedSurfaceSeqsOf,
   rebuildBlockLedger,
+  reasoningOf,
   resolveSurfaceRange,
   runCompactionTransaction,
   liveCheckpointCarriersInSpan,
@@ -251,6 +252,39 @@ function compressText(env: ToolEnvironment, agent: Agent, args: string[]): strin
 
 const DECOMPRESS_USAGE = '/acp-prune decompress <blockId> [offset] [limit]'
 
+const WHY_USAGE = '/acp-prune why [blockId]'
+
+/**
+ * 给人看的"当时到底在想什么"：这个块落地时，模型发出那次 compress 的思考
+ * （assistant/message 的 reasoning 块，压缩时由 reasoningForToolCall 抽出来随块
+ * 落盘）。不带参数时看最近一次压缩。
+ *
+ * 和 decompress 一样接受内核块 ref（bN）或 compaction id 前缀；老块（这次改动
+ * 之前压的）没有这一段，明确说清楚而不是显示空白。
+ */
+function whyText(_env: ToolEnvironment, agent: Agent, args: string[]): string {
+  const session = agent.session
+  const ledger = rebuildBlockLedger(sessionEventsOf(session))
+  if (ledger.length === 0) return 'no compressed block yet — nothing to explain'
+  const wanted = args[0]
+  const blockId = wanted === undefined ? null : blockIdOfKernelRef(session, wanted)
+  const block = wanted === undefined
+    ? ledger[ledger.length - 1]!
+    : blockId === null
+      ? ledger.find((entry) => entry.blockId.startsWith(wanted))
+      : ledger.find((entry) => entry.blockId === blockId)
+  if (block === undefined) return `block "${String(wanted)}" not found (see /acp-prune status)`
+  const event = eventAtOf(session, block.summarySeq ?? -1)
+  const reasoning = event === undefined
+    ? block.reasoning
+    : (reasoningOf(event) ?? block.reasoning)
+  const header = `Block ${block.blockId} — seqs ${block.start}..${block.end} (${block.shadowedTokenCount} tokens, tier ${block.tier})`
+  if (reasoning === undefined || reasoning.length === 0) {
+    return `${header}\n\n(no thinking on record for this block — it was folded before the engine started capturing reasoning, or that step did not think out loud)`
+  }
+  return `${header}\n\n${reasoning}`
+}
+
 function decompressText(_env: ToolEnvironment, agent: Agent, args: string[]): string {
   if (args.length < 1) return DECOMPRESS_USAGE
   const offset = args[1] === undefined ? 0 : Number(args[1])
@@ -304,7 +338,7 @@ export function acpCommand(env: ToolEnvironment): CommandDefinition {
     name: 'acp-prune',
     description:
       'Active Context Pruning — model-driven context compression. '
-      + 'Usage: /acp-prune status | /acp-prune compress <startSeq> <endSeq> <summary> | /acp-prune decompress <blockId> [offset] [limit] | /acp-prune config [list|set <key> <value>|reset <key>|all]',
+      + 'Usage: /acp-prune status | /acp-prune compress <startSeq> <endSeq> <summary> | /acp-prune decompress <blockId> [offset] [limit] | /acp-prune why [blockId] | /acp-prune config [list|set <key> <value>|reset <key>|all]',
     handler: async (invocation) => {
       const raw = invocation.rawInput.trim()
       if (raw === '' || raw === 'status') {
@@ -319,7 +353,11 @@ export function acpCommand(env: ToolEnvironment): CommandDefinition {
       if (raw.startsWith('decompress')) {
         return { kind: 'success', text: decompressText(env, invocation.agent, raw.slice('decompress'.length).trim().split(/\s+/)) }
       }
-      return { kind: 'error', text: `unknown /acp-prune subcommand "${raw.split(/\s+/)[0]}" — use status | compress | decompress | config` }
+      if (raw === 'why' || raw.startsWith('why ')) {
+        const rest = raw.slice('why'.length).trim()
+        return { kind: 'success', text: whyText(env, invocation.agent, rest.length === 0 ? [] : rest.split(/\s+/)) }
+      }
+      return { kind: 'error', text: `unknown /acp-prune subcommand "${raw.split(/\s+/)[0]}" — use status | compress | decompress | why | config` }
     },
   }
 }

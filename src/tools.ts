@@ -42,7 +42,7 @@ import {
   DEFAULT_DECOMPRESS_PAGE_CHARS,
   type ResolvedSurfaceRange,
 } from './region.ts'
-import { allLogMessages, attachmentsOfEvent, buildToolCallIndex, eventsToCoreMessages, extractEventText, isAgentInstructionsRow, isCheckpointNode, isRealUserTurn, isSkillCatalogRow, surfaceEventsOf, toolCallsOf } from './messages.ts'
+import { allLogMessages, attachmentsOfEvent, buildToolCallIndex, eventsToCoreMessages, extractEventText, isAgentInstructionsRow, isCheckpointNode, isRealUserTurn, isSkillCatalogRow, reasoningForToolCall, surfaceEventsOf, toolCallsOf } from './messages.ts'
 import { shadowedTokensViaMeter } from './host-tokens.ts'
 import { eventAtOf, sessionEventsOf } from './session-events.ts'
 import { DEFAULT_RESOLVED, type ResolvedPrompts } from './prompts.ts'
@@ -180,12 +180,6 @@ export const compressParameters = {
           items: { type: 'string' as const },
           description: 'Optional: acceptance readings that are already green before this compression (e.g. "t0-fastpath 8/8", "closedloop 414/414"). Stored structurally on the compaction/summary event and recovered by verifiedReadingsOf, so later steps need not re-run the checks.',
         },
-        // 为什么挑这一段：写下来就是给人看的（也随手落盘）。没有它，事后只能
-        // 从表里的数字倒推模型在权衡什么。
-        reason: {
-          type: 'string' as const,
-          description: 'Optional, one short line: WHY you picked this range — what you weighed (size, fold cost / payback, how recent the work is, what it concluded). It is echoed in this tool result and stored on the compaction event, so the choice stays auditable afterwards. Max ~300 characters.',
-        },
       },
       additionalProperties: false,
     },
@@ -200,24 +194,6 @@ function parseSeq(value: number | string): number {
     throw new Error(`billion-context-dsh: invalid seq "${String(value)}" — use a surface seq like 295`)
   }
   return seq
-}
-
-/**
- * The model's own one-line reason for a range, normalised for durable storage:
- * whitespace collapsed, trimmed, length-capped, and empty→undefined so a blank
- * string never becomes a durable key (an absent key is the only "no reason").
- *
- * The reason is written by the model in the same call that picks the span, so it
- * records the DECISION while it is still being made — minutes later the
- * transcript holds the outcome and the model's reconstruction of why would be
- * hindsight. It rides the block ledger (see src/block-ledger.ts) and is echoed
- * in the compress result, so a reader can see both immediately and after a
- * restart.
- */
-function rangeReason(range: { reason?: string }): string | undefined {
-  if (typeof range.reason !== 'string') return undefined
-  const text = range.reason.replace(/\s+/g, ' ').trim()
-  return text.length === 0 ? undefined : text.slice(0, 300)
 }
 
 /**
@@ -312,8 +288,6 @@ interface CompressArgs {
     summary: string
     topic?: string
     verifiedReadings?: string[]
-    /** 模型为什么挑这一段（可选，一句话）。 */
-    reason?: string
   }>
 }
 
@@ -628,6 +602,12 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // exist here; the deterministic re-assignment yields the same mN for the
   // same messages (see parseBoundary).
   const byRef = turn.state.messageRefs.byRef
+  // The thinking that produced THIS call, lifted out of the assistant message
+  // that carried it (the `reasoning` blocks next to the compress tool-call).
+  // Captured once per call, before anything lands, and stored on every block the
+  // call creates — the model is never asked to write a rationale, its actual
+  // reasoning is already on the record (`reasoningForToolCall`).
+  const thinking = reasoningForToolCall(session.snapshotEvents(), exec.callId)
 
   // Tolerate the wrapped-arguments forms some models emit (double-nested
   // `{ arguments: "..." }`), which the old DSH validator surfaced as
@@ -653,8 +633,6 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
       topic?: string
       /** B3：本段压缩时已绿的验收读数（结构化落盘）。 */
       verifiedReadings?: string[]
-      /** 模型给这段写的选择理由（一句话，回显+落盘）。 */
-      reason?: string
     }
   > = []
   // Ranges whose whole span was already shadowed by earlier compressions.
@@ -798,7 +776,6 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
             ...(Array.isArray(range.verifiedReadings) && range.verifiedReadings.length > 0
               ? { verifiedReadings: range.verifiedReadings.map(String) }
               : {}),
-            ...(rangeReason(range) === undefined ? {} : { reason: rangeReason(range)! }),
           })
           foldedRuns.push(`${sub.start}..${sub.end}`)
         }
@@ -838,7 +815,6 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
       ...(Array.isArray(range.verifiedReadings) && range.verifiedReadings.length > 0
         ? { verifiedReadings: range.verifiedReadings.map(String) }
         : {}),
-      ...(rangeReason(range) === undefined ? {} : { reason: rangeReason(range)! }),
       summary: range.summary,
       ...(range.topic ?? args.topic) === undefined ? {} : { topic: range.topic ?? args.topic },
     })
@@ -966,7 +942,8 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
       effectiveMessageIds: block.effectiveMessageIds,
       // B3：已绿验收读数随压缩块落盘（缺位=不写键）
       ...(range.verifiedReadings === undefined ? {} : { verifiedReadings: range.verifiedReadings }),
-      ...(range.reason === undefined ? {} : { reason: range.reason }),
+      // 模型挑这一段的真实思考随块落盘（缺位=不写键）
+      ...(thinking === undefined ? {} : { reasoning: thinking }),
     })
     const adjusted = start !== range.startSeq || end !== range.endSeq
     // Always report the tier, even tier 1: a silently-downgraded distill
@@ -980,17 +957,13 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     const readingsLabel = range.verifiedReadings !== undefined && range.verifiedReadings.length > 0
       ? `, verified: ${range.verifiedReadings.join('; ')}`
       : ''
-    // The model's own reason comes back in the same line as the block it
-    // explains, so a reader (human or the next session) sees the decision and
-    // its rationale together instead of having to reconstruct it from numbers.
-    const reasonLabel = range.reason === undefined ? '' : `, why: ${range.reason}`
     const note = range.recovered === true
       ? ` (seqs ${range.startSeq}..${range.endSeq} were already shadowed — compressed the live remainder ${start}..${end})`
       : adjusted
         ? ` (adjusted from ${range.startSeq}..${range.endSeq} to balanced edges)`
         : ''
     lines.push(
-      `  block ${compactionId.slice(0, 8)}: seqs ${start}..${end}, ${shadowed.length} messages shadowed${tierLabel}${readingsLabel}${note}${reasonLabel}`,
+      `  block ${compactionId.slice(0, 8)}: seqs ${start}..${end}, ${shadowed.length} messages shadowed${tierLabel}${readingsLabel}${note}`,
     )
   }
 

@@ -17,7 +17,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Session } from '@deepseek-ai/dsh-session'
-import { runCompactionTransaction, readCompactionSummary, verifiedReadingsOf, type CompactionTransactionInput } from '../src/region.ts'
+import { runCompactionTransaction, readCompactionSummary, reasoningOf, verifiedReadingsOf, type CompactionTransactionInput } from '../src/region.ts'
 import { compressParameters } from '../src/tools.ts'
 import { buildNudgeText } from '../src/nudge.ts'
 import type { NudgeDecision } from 'acp-kernel'
@@ -140,20 +140,27 @@ test('B3-4 工具面可达：compress 参数 schema 必须声明 verifiedReading
 })
 
 /**
- * 同一个陷阱的第二次出现（2026-10-15）：`reason` 是"模型为什么挑这一段"的
- * 一句话记录，走的是 verifiedReadings 同一条路——handler + 落盘 + 回显都实现了，
- * 但 content.items 声明了 `additionalProperties: false` 却没列出它的话，实调用会
- * 被 schema 闸拒收（`invalid arguments: "content[0].reason" is not a declared
- * property`），字段在模型工具面上等于不存在。这里锁住声明面，并锁住未知字段
- * 仍然被拒（修法只能靠声明，不能靠放宽 additionalProperties）。
+ * 模型挑这一段时的真实思考随块落盘（2026-10-15）。它不走模型输入字段——
+ * reasoning 块本来就写在发出 compress 的那条 assistant/message 里，引擎只是
+ * 把它抽出来存进 ledger（见 src/messages.ts 的 reasoningForToolCall）。
+ * 这里锁住两件事：(1) 思考可读回来；(2) 它同样不得成为顶层成员（#141 纪律：
+ * 冻结的 v0 reader 只承认白名单成员）。
  */
-test('工具面可达：compress 参数 schema 必须声明 reason（模型的选择理由）', () => {
-  const items = compressParameters.content.items
-  assert.equal(items.additionalProperties, false, '未知字段仍应被拒（不靠放宽 additionalProperties 修）')
-  const prop = items.properties.reason
-  assert.ok(prop, 'content[].reason 必须在声明里，否则 schema 闸会拒收合法调用')
-  assert.equal(prop.type, 'string')
-  assert.ok(prop.description.length > 0, '声明面需带说明，模型才知道该字段存在')
-  assert.ok(prop.description.includes('WHY'), '说明必须点明它是"为什么"而不是又一个摘要字段')
-  assert.ok(DEFAULT_PROMPTS.tools.compress.includes('reason'), '工具描述同样要提到该字段')
+test('思考随块落盘：reasoningOf 可读回，且不是顶层成员', () => {
+  const session = buildTextSession(6)
+  const thinking = '这两段工具输出我都已经读过并写进结论了，再留着只是占位；从尾部附近开始折叠，前缀重写也便宜。'
+  const { seqs } = tx(session, { reasoning: thinking })
+  const event = eventAtOf(session, seqs[1]!)!
+  assert.equal(event.type, 'compaction/summary')
+  assert.equal(reasoningOf(event), thinking, '思考可以从落盘的块里读回来')
+  assert.equal(Object.hasOwn(event.data, 'reasoning'), false, '#141 纪律：reasoning 不得是顶层成员')
+  assert.equal(decodeAcpBlockLedger((event.data as { rawOutput?: unknown }).rawOutput).reasoning, thinking)
+})
+
+test('思考缺位时不写键（老块、静默步骤都不造假数据）', () => {
+  const session = buildTextSession(6)
+  const { seqs } = tx(session, {})
+  const event = eventAtOf(session, seqs[1]!)!
+  assert.equal(Object.hasOwn(event.data, 'reasoning'), false)
+  assert.equal(reasoningOf(event), undefined)
 })

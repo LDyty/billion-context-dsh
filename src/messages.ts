@@ -204,6 +204,80 @@ export function buildToolCallIndex(events: readonly SessionEvent[]): ReadonlyMap
   return index
 }
 
+/** Writer-side ceiling for a stored thinking excerpt (~1.5K tokens). */
+const REASONING_EXCERPT_LIMIT = 6000
+/** Assistant messages one step may have its thinking stitched from, at most. */
+const REASONING_STITCH_LIMIT = 4
+
+/** `reasoning` block text of one event, in content order ('' when it has none). */
+function reasoningTextOf(event: SessionEvent): string {
+  if (event.type !== 'assistant/message') return ''
+  const content = (event.data as { message?: { content?: unknown } }).message?.content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((block) => {
+      const candidate = block as { type?: unknown; text?: unknown } | null
+      return candidate !== null && typeof candidate === 'object' && candidate.type === 'reasoning' && typeof candidate.text === 'string'
+        ? candidate.text
+        : ''
+    })
+    .filter((text) => text.length > 0)
+    .join('\n')
+}
+
+/**
+ * The model's own THINKING while it issued tool call `callId`.
+ *
+ * A tool call the model wrote is an `assistant/message` whose content holds its
+ * `reasoning` block(s) right next to the `tool-call` block — that thinking IS
+ * the record of why the call looks the way it does, and it is already in the
+ * log. Nothing is asked of the model to produce it; the engine only lifts it out
+ * at the moment the call lands (see `handleCompress` → the block ledger), so the
+ * decision can be read back long after the transcript moved on.
+ *
+ * Hosts that emit thinking as its own assistant message are covered by the
+ * same-step walk-back: consecutive `assistant/message` events of the SAME
+ * turn/step are stitched (newest first, at most {@link REASONING_STITCH_LIMIT})
+ * until a non-assistant event, so an unrelated earlier turn can never bleed in.
+ * Truncated to {@link REASONING_EXCERPT_LIMIT} characters — a durable excerpt,
+ * not a second copy of the whole step.
+ *
+ * @param events - the session log; scanned in seq order.
+ * @param callId - the tool call id to attribute (e.g. `exec.callId`).
+ * @returns the reasoning text, or undefined when the call has none on record.
+ */
+export function reasoningForToolCall(events: readonly SessionEvent[], callId: string): string | undefined {
+  const ordered = [...events].sort((left, right) => left.seq - right.seq)
+  const ownerAt = ordered.findIndex((event) => {
+    if (event.type !== 'assistant/message') return false
+    const content = (event.data as { message?: { content?: unknown } }).message?.content
+    if (!Array.isArray(content)) return false
+    return content.some((block) => {
+      const candidate = block as { type?: unknown; id?: unknown } | null
+      return candidate !== null && typeof candidate === 'object' && candidate.type === 'tool-call' && candidate.id === callId
+    })
+  })
+  if (ownerAt < 0) return undefined
+  const owner = ordered[ownerAt]!
+  const parts: string[] = []
+  const own = reasoningTextOf(owner)
+  if (own.length > 0) parts.push(own)
+  const ownerStep = (owner.data as { turn?: unknown; step?: unknown })
+  for (let at = ownerAt - 1; parts.length === 0 && at >= 0 && ownerAt - at <= REASONING_STITCH_LIMIT; at -= 1) {
+    const earlier = ordered[at]!
+    if (earlier.type !== 'assistant/message') break
+    const step = (earlier.data as { turn?: unknown; step?: unknown })
+    if (step.turn !== ownerStep.turn || step.step !== ownerStep.step) break
+    const text = reasoningTextOf(earlier)
+    if (text.length > 0) parts.push(text)
+  }
+  const joined = parts.join('\n').trim()
+  if (joined.length === 0) return undefined
+  return joined.length <= REASONING_EXCERPT_LIMIT
+    ? joined
+    : `${joined.slice(0, REASONING_EXCERPT_LIMIT)}\n[thinking excerpt truncated at ${REASONING_EXCERPT_LIMIT} chars]`
+}
+
 /**
  * Project one surface message event into CoreMessage(s).
  *  - user/message      → user text (verbatim content)

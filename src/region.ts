@@ -74,8 +74,8 @@ export interface AcpBlockLedgerEntry {
   readonly effectiveMessageIds?: readonly string[]
   /** B3: acceptance readings that were already green before compression (absent when the compress call carried none). */
   readonly verifiedReadings?: readonly string[]
-  /** Why the model picked this span, in its own words (absent when the call carried none). */
-  readonly reason?: string
+  /** The thinking that produced this fold (absent when the call's assistant message carried none). */
+  readonly reasoning?: string
   /** Unix epoch ms of the compaction/summary event. */
   readonly createdAt: number
 }
@@ -428,8 +428,11 @@ export interface CompactionTransactionInput {
   readonly effectiveMessageIds?: readonly string[]
   /** B3：压缩前已绿的验收读数（结构化，压缩后仍可读）。 */
   readonly verifiedReadings?: readonly string[]
-  /** 模型为什么挑这一段（一句话，它自己的措辞）——随块落盘，事后可查。 */
-  readonly reason?: string
+  /**
+   * 模型挑这一段时的真实思考（那条 assistant/message 的 reasoning 块，由
+   * `reasoningForToolCall` 抽取）——随块落盘，事后可查。
+   */
+  readonly reasoning?: string
 }
 
 type CompactionSummaryData = SessionEventMap['compaction/summary']
@@ -460,16 +463,14 @@ export function verifiedReadingsOf(event: SessionEvent): string[] {
 }
 
 /**
- * 模型为这个块写下的选择理由（`compress` 的可选 `reason`），读不出来时返回
- * undefined。新写入方把它放在承认的 `rawOutput` 成员里
- * （{@link decodeAcpBlockLedger}），所以老日志、外来日志都不会因为缺这个键而出错。
+ * 这个块落地时，模型挑选它的那条 assistant/message 里的真实思考
+ * （reasoning 块，压缩时由 {@link reasoningForToolCall} 抽取并随块落盘）。
+ * 读不出来时返回 undefined——老块本来就是没有这一项，永远不会抛错。
  */
-export function reasonOf(event: SessionEvent): string | undefined {
+export function reasoningOf(event: SessionEvent): string | undefined {
   const data = readCompactionSummary(event)
-  const embedded = decodeAcpBlockLedger(data.rawOutput).reason
-  if (typeof embedded === 'string' && embedded.length > 0) return embedded
-  const legacy = data.reason
-  return typeof legacy === 'string' && legacy.length > 0 ? legacy : undefined
+  const embedded = decodeAcpBlockLedger(data.rawOutput).reasoning
+  return typeof embedded === 'string' && embedded.length > 0 ? embedded : undefined
 }
 
 /**
@@ -602,7 +603,7 @@ export function runCompactionTransaction(
       ...(input.verifiedReadings === undefined || input.verifiedReadings.length === 0
         ? {}
         : { verifiedReadings: [...input.verifiedReadings] }),
-      ...(input.reason === undefined || input.reason.length === 0 ? {} : { reason: input.reason }),
+      ...(input.reasoning === undefined || input.reasoning.length === 0 ? {} : { reasoning: input.reasoning }),
     }
     // B1: frame the model-written summary ONCE at creation and write the SAME framed
     // blocks to both the durable compaction/summary event and the checkpoint node
@@ -732,8 +733,8 @@ export function rebuildBlockLedger(events: readonly SessionEvent[]): AcpBlockLed
     const verifiedReadings: string[] | undefined = embedded.verifiedReadings
       ? [...embedded.verifiedReadings]
       : (Array.isArray(data.verifiedReadings) ? [...data.verifiedReadings] : undefined)
-    const reason: string | undefined = embedded.reason
-      ?? (typeof data.reason === 'string' && data.reason.length > 0 ? data.reason : undefined)
+    const reasoning: string | undefined = embedded.reasoning
+      ?? (typeof data.reasoning === 'string' && data.reasoning.length > 0 ? data.reasoning : undefined)
     const summarySeq = summarySeqs.get(data.compactionId) ?? null
     ledger.push({
       blockId: data.compactionId,
@@ -750,7 +751,7 @@ export function rebuildBlockLedger(events: readonly SessionEvent[]): AcpBlockLed
       ...(directMessageIds === undefined ? {} : { directMessageIds }),
       ...(effectiveMessageIds === undefined ? {} : { effectiveMessageIds }),
       ...(verifiedReadings === undefined ? {} : { verifiedReadings }),
-      ...(reason === undefined ? {} : { reason }),
+      ...(reasoning === undefined ? {} : { reasoning }),
       createdAt: event.time,
     })
   }

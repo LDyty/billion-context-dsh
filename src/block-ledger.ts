@@ -50,11 +50,12 @@ export interface AcpBlockLedgerPayload {
   /** B3: acceptance readings already green before compression (e.g. "t0-fastpath 8/8"). */
   readonly verifiedReadings?: readonly string[]
   /**
-   * Why the model picked this span (one short line, in its own words — what it
-   * weighed: size, fold cost, freshness, how finished the work was). Written by
-   * the `compress` tool's optional `reason` field and stored here so the choice
-   * stays auditable after the transcript has moved on: the tool result echoes it
-   * immediately, this copy survives a restart.
+   * The model's own THINKING while it chose this span — the `reasoning` blocks of
+   * the assistant message that carried the compress tool call (see
+   * `reasoningForToolCall` in src/messages.ts). Not a summary the model was asked
+   * to write afterwards: the reasoning that actually produced the call, captured
+   * at the moment it lands so the decision can be read back long after the
+   * transcript moved on (`/acp-prune why`). Capped by the writer.
    *
    * Additive optional field, so ACP_BLOCK_LEDGER_VERSION stays 1 on purpose:
    * decode in this repo is per-field lenient (an unknown member is ignored), but
@@ -62,7 +63,7 @@ export interface AcpBlockLedgerPayload {
    * fall back to "no ledger data" and lose tier/lineage for every block. Adding a
    * member that old readers ignore keeps both directions working.
    */
-  readonly reason?: string
+  readonly reasoning?: string
 }
 
 /** True only for an array whose every element is a string. */
@@ -90,7 +91,7 @@ export function encodeAcpBlockLedger(payload: AcpBlockLedgerPayload): ContentBlo
   if (payload.verifiedReadings !== undefined && payload.verifiedReadings.length > 0) {
     obj.verifiedReadings = [...payload.verifiedReadings]
   }
-  if (payload.reason !== undefined && payload.reason.length > 0) obj.reason = payload.reason
+  if (payload.reasoning !== undefined && payload.reasoning.length > 0) obj.reasoning = payload.reasoning
   return [{ type: 'text', text: JSON.stringify(obj) }]
 }
 
@@ -128,7 +129,7 @@ export function decodeAcpBlockLedger(rawOutput: unknown): AcpBlockLedgerPayload 
          directMessageIds?: string[]
           effectiveMessageIds?: string[]
           verifiedReadings?: string[]
-          reason?: string
+          reasoning?: string
         } = {}
        if (record.tier === 1 || record.tier === 2 || record.tier === 3) result.tier = record.tier
        if (typeof record.kernelBlockId === 'string') result.kernelBlockId = record.kernelBlockId
@@ -137,7 +138,7 @@ export function decodeAcpBlockLedger(rawOutput: unknown): AcpBlockLedgerPayload 
        if (isStringArray(record.directMessageIds)) result.directMessageIds = [...record.directMessageIds]
        if (isStringArray(record.effectiveMessageIds)) result.effectiveMessageIds = [...record.effectiveMessageIds]
         if (isStringArray(record.verifiedReadings)) result.verifiedReadings = [...record.verifiedReadings]
-        if (typeof record.reason === 'string' && record.reason.length > 0) result.reason = record.reason
+        if (typeof record.reasoning === 'string' && record.reasoning.length > 0) result.reasoning = record.reasoning
         return result
     }
     return {}
