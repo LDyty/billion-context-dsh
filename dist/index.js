@@ -7508,7 +7508,27 @@ function surfaceNodeTokens(event, seq, attachments, mediaPriceOf) {
   const mediaPrice = attachments.images + attachments.files > 0 ? (mediaPriceOf?.(seq) ?? 0) + hostMediaStructuralPrice(mediaBlocksOfEvent(event)) : 0;
   return hostPriceEvent(event) + mediaPrice;
 }
-function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, mediaPriceOf, staleFoldableSeqs = /* @__PURE__ */ new Set()) {
+function priceSurfaceSlice(session, nodes, from, to, mediaPriceOf) {
+  let count = 0;
+  let tokens = 0;
+  let toolCount = 0;
+  let images = 0;
+  let files = 0;
+  for (let index = from; index <= to; index += 1) {
+    const seq = nodes[index];
+    if (seq === void 0) continue;
+    const event = eventAtOf(session, seq);
+    if (event === void 0) continue;
+    const attachments = attachmentsOfEvent(event);
+    tokens += surfaceNodeTokens(event, seq, attachments, mediaPriceOf);
+    if (isToolEvent(event)) toolCount += 1;
+    images += attachments.images;
+    files += attachments.files;
+    count += 1;
+  }
+  return { count, tokens, toolPct: count > 0 ? Math.round(toolCount / count * 100) : 0, images, files };
+}
+function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, staleFoldableSeqs = /* @__PURE__ */ new Set()) {
   const nodes = session.surface.nodes;
   const segments = [];
   let current = null;
@@ -7524,27 +7544,12 @@ function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, medi
       flush();
       continue;
     }
-    const attachments = attachmentsOfEvent(event);
-    const tokens = surfaceNodeTokens(event, seq, attachments, mediaPriceOf);
-    const isTool = isToolEvent(event);
     if (current === null) {
-      current = {
-        start: seq,
-        end: seq,
-        count: 1,
-        tokens,
-        toolCount: isTool ? 1 : 0,
-        images: attachments.images,
-        files: attachments.files
-      };
+      current = { from: index, to: index, start: seq, end: seq };
     } else {
+      current.to = index;
       current.start = Math.min(current.start, seq);
       current.end = Math.max(current.end, seq);
-      current.count += 1;
-      current.tokens += tokens;
-      current.toolCount += isTool ? 1 : 0;
-      current.images += attachments.images;
-      current.files += attachments.files;
     }
   }
   flush();
@@ -7569,20 +7574,23 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
       Math.min(from, to),
       Math.max(from, to),
       protectedSeqs,
-      opts.mediaPriceOf,
       staleFoldableSeqs
     );
     for (const segment of segments) {
       try {
         const { start, end } = resolveSurfaceRange(session, segment.start, segment.end);
+        const resolvedFrom = indexOfSeq.get(start);
+        const resolvedTo = indexOfSeq.get(end);
+        if (resolvedFrom === void 0 || resolvedTo === void 0 || resolvedFrom > resolvedTo) continue;
+        const priced = priceSurfaceSlice(session, nodes, resolvedFrom, resolvedTo, opts.mediaPriceOf);
         out.push({
           start,
           end,
-          count: segment.count,
-          tokens: segment.tokens,
-          toolPct: segment.count > 0 ? Math.round(segment.toolCount / segment.count * 100) : 0,
-          images: segment.images,
-          files: segment.files
+          count: priced.count,
+          tokens: priced.tokens,
+          toolPct: priced.toolPct,
+          images: priced.images,
+          files: priced.files
         });
       } catch {
       }

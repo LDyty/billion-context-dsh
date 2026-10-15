@@ -1306,15 +1306,30 @@ function protectedSurfaceSeqs(session: Session, preserve: number): Set<number> {
   return protectedSeqs
 }
 
-/** One compressible run inside a kernel range. `start`/`end` are surface seqs. */
+/**
+ * One compressible run inside a kernel range: a CONTIGUOUS slice of the
+ * surface array (indices `from..to`), plus the seq edges to hand the resolver.
+ *
+ * It deliberately carries no price. The number a row prints must describe the
+ * range printed NEXT TO IT, and that range is only known after
+ * `resolveSurfaceRange` has moved the requested edges onto clean cuts — pricing
+ * the run before that step is what let a live row read
+ * `- seq 35734..35760 — 11 messages, ~20729 tokens` while both the count and the
+ * price actually described `35729..35760`: the resolver had dropped the
+ * unpaired `tool/result` at 35729 from the printed start, but the number was
+ * summed over the pre-resolution run (2026-10-15). `buildCompressibleSeqRanges`
+ * prices the RESOLVED slice instead, through {@link priceSurfaceSlice}, so the
+ * range, the count and the token column are one set by construction.
+ */
 interface CompressibleSegment {
+  /** First surface-array index of the run (inclusive). */
+  from: number
+  /** Last surface-array index of the run (inclusive). */
+  to: number
+  /** The run's requested start edge (the MIN seq of the run). */
   start: number
+  /** The run's requested end edge (the MAX seq of the run). */
   end: number
-  count: number
-  tokens: number
-  toolCount: number
-  images: number
-  files: number
 }
 
 /**
@@ -1365,12 +1380,55 @@ function surfaceNodeTokens(
   return hostPriceEvent(event) + mediaPrice
 }
 
+/**
+ * Price one contiguous SLICE of the surface array — the exact set a compress on
+ * those edges shadows (`shadowedSeqsOf` is this same index slice), so the row's
+ * range, message count and token column can never describe different content.
+ *
+ * Nodes whose event is missing are skipped; every other node in the slice is
+ * priced, including host policy rows that may sit inside a slice the resolver
+ * expanded across (they are shadowed by that compression, so they must be
+ * counted, not hidden).
+ *
+ * @param session - the session to read events from.
+ * @param nodes - the current surface node list (seqs, in prompt order).
+ * @param from - first index of the slice (inclusive).
+ * @param to - last index of the slice (inclusive).
+ * @param mediaPriceOf - routed media price lookup, when the host has one.
+ * @returns the slice's size, price, tool share and media counts.
+ */
+function priceSurfaceSlice(
+  session: Session,
+  nodes: readonly number[],
+  from: number,
+  to: number,
+  mediaPriceOf?: MediaPriceOf,
+): { count: number; tokens: number; toolPct: number; images: number; files: number } {
+  let count = 0
+  let tokens = 0
+  let toolCount = 0
+  let images = 0
+  let files = 0
+  for (let index = from; index <= to; index += 1) {
+    const seq = nodes[index]
+    if (seq === undefined) continue
+    const event = eventAtOf(session, seq)
+    if (event === undefined) continue
+    const attachments = attachmentsOfEvent(event)
+    tokens += surfaceNodeTokens(event, seq, attachments, mediaPriceOf)
+    if (isToolEvent(event)) toolCount += 1
+    images += attachments.images
+    files += attachments.files
+    count += 1
+  }
+  return { count, tokens, toolPct: count > 0 ? Math.round((toolCount / count) * 100) : 0, images, files }
+}
+
 function compressibleSegmentsOf(
   session: Session,
   fromIndex: number,
   toIndex: number,
   protectedSeqs: ReadonlySet<number>,
-  mediaPriceOf?: MediaPriceOf,
   staleFoldableSeqs: ReadonlySet<number> = new Set(),
 ): CompressibleSegment[] {
   const nodes = session.surface.nodes
@@ -1405,27 +1463,12 @@ function compressibleSegmentsOf(
       flush()
       continue
     }
-    const attachments = attachmentsOfEvent(event)
-    const tokens = surfaceNodeTokens(event, seq, attachments, mediaPriceOf)
-    const isTool = isToolEvent(event)
     if (current === null) {
-      current = {
-        start: seq,
-        end: seq,
-        count: 1,
-        tokens,
-        toolCount: isTool ? 1 : 0,
-        images: attachments.images,
-        files: attachments.files,
-      }
+      current = { from: index, to: index, start: seq, end: seq }
     } else {
+      current.to = index
       current.start = Math.min(current.start, seq)
       current.end = Math.max(current.end, seq)
-      current.count += 1
-      current.tokens += tokens
-      current.toolCount += isTool ? 1 : 0
-      current.images += attachments.images
-      current.files += attachments.files
     }
   }
   flush()
@@ -1491,20 +1534,28 @@ export function buildCompressibleSeqRanges(
       Math.min(from, to),
       Math.max(from, to),
       protectedSeqs,
-      opts.mediaPriceOf,
       staleFoldableSeqs,
     )
     for (const segment of segments) {
       try {
         const { start, end } = resolveSurfaceRange(session, segment.start, segment.end)
+        // Price the RESOLVED edges, not the pre-resolution run: a compress on
+        // the seqs this row prints shadows exactly this slice, so the range and
+        // its numbers are the same set. (The two differed live: a row read
+        // `35734..35760 — 11 messages, ~20729 tokens` while the count/price came
+        // from `35729..35760` — see CompressibleSegment.)
+        const resolvedFrom = indexOfSeq.get(start)
+        const resolvedTo = indexOfSeq.get(end)
+        if (resolvedFrom === undefined || resolvedTo === undefined || resolvedFrom > resolvedTo) continue
+        const priced = priceSurfaceSlice(session, nodes, resolvedFrom, resolvedTo, opts.mediaPriceOf)
         out.push({
           start,
           end,
-          count: segment.count,
-          tokens: segment.tokens,
-          toolPct: segment.count > 0 ? Math.round((segment.toolCount / segment.count) * 100) : 0,
-          images: segment.images,
-          files: segment.files,
+          count: priced.count,
+          tokens: priced.tokens,
+          toolPct: priced.toolPct,
+          images: priced.images,
+          files: priced.files,
         })
       } catch {
         // Cannot be balanced into a compressible span — skip.

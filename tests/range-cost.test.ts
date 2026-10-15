@@ -10,10 +10,21 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildCompressibleSeqRanges, foldCostsOfRanges } from '../src/region.ts'
+import { Session } from '@deepseek-ai/dsh-session'
+import { buildCompressibleSeqRanges, foldCostsOfRanges, shadowedSeqsOf } from '../src/region.ts'
 import { bestBatchProposal } from '../src/region.ts'
 import { RANGE_TABLE_COST_WARN_BREAK_EVEN, rangeTable } from '../src/nudge.ts'
-import { buildTextSession, wholeSurfaceRangeView } from './helpers.ts'
+import { hostPriceEvent, shadowedTokensViaMeter } from '../src/host-tokens.ts'
+import {
+  appendAssistant,
+  appendToolCall,
+  appendToolResult,
+  appendTurn,
+  appendUser,
+  buildTextSession,
+  longText,
+  wholeSurfaceRangeView,
+} from './helpers.ts'
 
 /** A kernel range view offering exactly one span, by node position. */
 function spanView(session: ReturnType<typeof buildTextSession>, from: number, to: number) {
@@ -143,4 +154,66 @@ test('batch proposal: a flagged row extends only toward newer neighbours', () =>
   const batchLine = rows[at + 2]!
   const entryStarts = [...batchLine.matchAll(/(\d+)\.\.\d+/g)].map((match) => Number(match[1]))
   assert.ok(entryStarts.every((start) => start >= baseStart), 'no entry starts before the flagged base row')
+})
+
+/**
+ * The row's numbers must describe the range PRINTED NEXT TO THEM.
+ *
+ * Live shape (2026-10-15): the kernel handed `buildCompressibleSeqRanges` a
+ * range whose HEAD was an unpaired `tool/result`. `resolveSurfaceRange` moved
+ * the printed start inward to the next clean cut, but the message count and the
+ * token column were summed over the PRE-resolution run, so one row read
+ * `- seq 35734..35760 — 11 messages, ~20729 tokens` while both numbers actually
+ * described `35729..35760` (the dropped node was a 3905-token tool result).
+ * A model compressing what the row PRINTS therefore reclaimed less than the row
+ * promised, for the same reason the caliber fix exists at all.
+ *
+ * The invariant pinned here is the strongest form of "the table says what the
+ * fold books": the row's `tokens` equals the host-vocabulary price of exactly
+ * `shadowedSeqsOf(row.start, row.end)` — the same slice `handleCompress` prices
+ * its `shadowedTokenCount` claim from (rule 12). Reverting to run-pricing adds
+ * the dropped node back into the number and fails this equality.
+ */
+test('range row: count and tokens price the PRINTED span, not the pre-resolution run', () => {
+  const session = Session.create('span-price')
+  appendTurn(session, 1)
+  appendUser(session, longText('ask', 1))
+  appendToolCall(session, longText('call', 1), 'c1', 1, 2)
+  appendToolResult(session, longText('head result', 2), 'c1', 1, 2)
+  // `appendToolResult` returns nothing, so read the node it just appended.
+  const dropped = session.surface.nodes[session.surface.nodes.length - 1]!
+  appendUser(session, longText('ask2', 3))
+  appendAssistant(session, longText('reply2', 4))
+  // Tail traffic: keeps the offered span out of the protected recent window.
+  for (let index = 0; index < 4; index += 1) {
+    appendUser(session, longText('tail', index))
+    appendAssistant(session, longText('tail-a', index))
+  }
+
+  const nodes = [...session.surface.nodes]
+  // The kernel range STARTS at the unpaired tool result — the live shape.
+  const view = {
+    ranges: [{ startRef: 'm00001', endRef: 'm00002' }],
+    refs: { byRef: { m00001: String(dropped), m00002: String(nodes[nodes.length - 1]!) } },
+  }
+  const ranges = buildCompressibleSeqRanges(session, view as never)
+  assert.ok(ranges.length > 0, 'the fixture still offers a span after the resolver moves its head')
+
+  const row = ranges[0]!
+  assert.ok(row.start > dropped, 'the resolver moved the head off the unpaired tool result')
+  const shadowed = shadowedSeqsOf(session, row.start, row.end)
+  assert.ok(!shadowed.includes(dropped), 'the dropped node is not inside the printed range')
+  assert.equal(row.count, shadowed.length, 'the printed message count is the printed range')
+  assert.equal(
+    row.tokens,
+    shadowedTokensViaMeter(session, shadowed),
+    'the printed token column is the host-vocabulary price of exactly the printed range',
+  )
+  // Teeth: the price must not still carry the node the range no longer covers.
+  assert.notEqual(
+    row.tokens,
+    shadowedTokensViaMeter(session, [dropped, ...shadowed]),
+    'the dropped head is not priced into the row any more',
+  )
+  assert.ok(hostPriceEvent(session.eventAt(dropped)!) > 0, 'the dropped node really carried tokens')
 })
