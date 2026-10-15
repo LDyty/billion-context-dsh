@@ -21,9 +21,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
 	main: string
 	types: string
-	exports: Record<string, { types?: string; import?: string }>
+	exports: Record<string, string | { types?: string; import?: string }>
 	files: string[]
-	dsh: { bundle: { patch: string } }
+	dsh: { bundle: { patch: string }; client?: { platform?: string; external?: string[] } }
 	scripts: Record<string, string>
 }
 
@@ -41,6 +41,37 @@ test('the entry points and bundle patch resolve to committed files', () => {
 		assert.ok(existsSync(path), `committed artifact missing: ${target}`)
 		assert.ok(statSync(path).size > 0, `committed artifact is empty: ${target}`)
 	}
+})
+
+/**
+ * The browser half's contract (`dsh.client`): the shell evaluates
+ * `dist/client.js` as a CLASSIC script whose single statement registers a module
+ * factory, and treats the returned object as a cordis plugin. Three things can
+ * silently break that: the wrapper (the bundle becomes a module the page never
+ * imports), the platform externals (a second copy of react breaks hook identity
+ * across plugins), and the declaration itself (no `dsh.client` row in
+ * package.json → the shell never loads the file at all).
+ */
+test('the committed client half keeps the dsh.client bundle contract', () => {
+	assert.equal(pkg.dsh.client?.platform, 'web', 'the client half declares the web platform')
+	assert.equal(pkg.exports['./client'], './dist/client.js', 'and the ./client export the shell resolves')
+	const clientPath = new URL('../dist/client.js', import.meta.url)
+	assert.ok(existsSync(clientPath), 'committed artifact missing: dist/client.js')
+	const js = readFileSync(clientPath, 'utf8')
+	assert.match(
+		js,
+		/^window\.__ModuleLoader__\.load\(\{ id: "billion-context-dsh", factory: \(require\) => \{/u,
+		'the bundle opens the module-loader factory the shell expects',
+	)
+	assert.match(js, /return module\.exports; \} \}\);/u, 'and closes it by returning the plugin object')
+	assert.match(js, /module\.exports=\{name:"billion-context-dsh-ui",inject:\["slots"\],apply:/u, 'exporting the cordis plugin face')
+	const required = [...js.matchAll(/require\("([^"]+)"/gu)].map((match) => match[1]!)
+	assert.deepEqual(
+		[...new Set(required)],
+		['react'],
+		'the only external is the platform-seeded react — anything else must be declared in dsh.client.external',
+	)
+	assert.ok(js.includes('/api/billion-context/inspect'), 'and it talks to the host route this repo registers')
 })
 
 test('the committed bundle is the ACP engine (ESM, AcpCompactionEngine exported)', () => {

@@ -8009,6 +8009,139 @@ function kernelConfigFor(input) {
 // src/nudge.ts
 import { createUserMessage as createUserMessage2 } from "@deepseek-ai/dsh-llm";
 
+// src/inspect.ts
+var caches = /* @__PURE__ */ new Map();
+function rememberRangeTable(sessionId, rows, sweeps) {
+  const cache2 = caches.get(sessionId) ?? { capturedAt: 0, rows: [], sweeps: [] };
+  cache2.capturedAt = Date.now();
+  cache2.rows = [...rows];
+  cache2.sweeps = [...sweeps];
+  caches.set(sessionId, cache2);
+}
+function rememberPressure(sessionId, pressure, window) {
+  const cache2 = caches.get(sessionId) ?? { capturedAt: Date.now(), rows: [], sweeps: [] };
+  cache2.pressure = pressure;
+  if (window !== void 0) cache2.window = window;
+  caches.set(sessionId, cache2);
+}
+function rememberBreakdown(sessionId, breakdown) {
+  const cache2 = caches.get(sessionId) ?? { capturedAt: Date.now(), rows: [], sweeps: [] };
+  if (breakdown !== void 0) cache2.breakdown = breakdown;
+  caches.set(sessionId, cache2);
+}
+function inspectCacheOf(sessionId) {
+  return caches.get(sessionId);
+}
+async function handleInspectRequest(host, request) {
+  const reply = (body, status = 200) => new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+  try {
+    const body = await request.json();
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : "";
+    if (sessionId === "") {
+      return reply({ ok: false, error: { code: "bad-request", message: "missing sessionId" } }, 400);
+    }
+    const sessions = host.ctx.get("sessions");
+    const session = typeof sessions?.get === "function" ? sessions.get(sessionId) : void 0;
+    if (session === void 0 || session === null) return reply({ ok: true, value: null });
+    const { settings } = host;
+    return reply({
+      ok: true,
+      value: buildInspectSnapshot({
+        sessionId,
+        session,
+        cache: inspectCacheOf(sessionId),
+        blocks: inspectBlocksOf(session),
+        settings: {
+          modelContextLimit: settings.modelContextLimit ?? host.defaultContextWindow,
+          // Absent = the kernel's own floor stays in effect; show THAT number
+          // rather than a blank the reader would misread as "no limit".
+          nudgeMinContextLimitPct: settings.nudgeMinContextLimitPct ?? host.kernelNudgeMinContextLimitPct,
+          nudgeMaxContextLimitPct: settings.nudgeMaxContextLimitPct,
+          nudgeEmergencyThresholdPct: settings.nudgeEmergencyThresholdPct,
+          ...host.preset === void 0 ? {} : { preset: host.preset }
+        }
+      })
+    });
+  } catch (error) {
+    return reply({
+      ok: false,
+      error: { code: "internal", message: error instanceof Error ? error.message : String(error) }
+    }, 500);
+  }
+}
+function buildInspectSnapshot(input) {
+  const { session, sessionId } = input;
+  const nodes = session.surface.nodes;
+  const guarded = guardedSurfaceSeqsOf(session);
+  const staleFoldable = staleFoldableHostRowSeqs(session);
+  const map = [];
+  for (const seq of nodes) {
+    const event = eventAtOf(session, seq);
+    if (event === void 0) continue;
+    const attachments = attachmentsOfEvent(event);
+    const media = attachments.images + attachments.files > 0 ? hostMediaStructuralPrice(mediaBlocksOfEvent(event)) : 0;
+    map.push({
+      seq,
+      tokens: hostPriceEvent(event) + media,
+      kind: nodeKindOf(event, guarded.has(seq), staleFoldable.has(seq)),
+      ...guarded.has(seq) ? { barrier: "current host row \u2014 folding it re-injects (or loses) it" } : {}
+    });
+  }
+  const cache2 = input.cache;
+  const pressure = cache2?.pressure ?? 0;
+  const window = cache2?.window ?? input.settings.modelContextLimit;
+  return {
+    sessionId,
+    capturedAt: cache2?.capturedAt ?? 0,
+    surface: {
+      nodes: nodes.length,
+      firstSeq: nodes[0] ?? 0,
+      lastSeq: nodes[nodes.length - 1] ?? 0
+    },
+    usage: {
+      tokens: pressure,
+      window,
+      pct: window > 0 ? Math.min(100, Math.round(pressure / window * 100)) : 0,
+      breakdown: cache2?.breakdown ?? { tool: 0, text: 0, code: 0, summaries: 0, system: 0 }
+    },
+    map,
+    rows: cache2?.rows ?? [],
+    sweeps: cache2?.sweeps ?? [],
+    blocks: [...input.blocks],
+    settings: input.settings
+  };
+}
+function inspectBlocksOf(session) {
+  const ledger = rebuildBlockLedger(sessionEventsOf(session));
+  return ledger.map((entry) => {
+    const event = entry.summarySeq === void 0 ? void 0 : eventAtOf(session, entry.summarySeq);
+    const why = entry.reasoning ?? (event === void 0 ? void 0 : reasoningOf(event));
+    return {
+      id: entry.blockId,
+      shortId: entry.blockId.slice(0, 8),
+      start: entry.start,
+      end: entry.end,
+      messages: entry.shadowedSeqs.length,
+      tokens: entry.shadowedTokenCount,
+      tier: entry.tier,
+      createdAt: entry.createdAt,
+      summary: entry.summary,
+      ...why === void 0 ? {} : { why }
+    };
+  });
+}
+function nodeKindOf(event, isGuarded, isStaleFoldable) {
+  if (isGuarded) return "protected";
+  if (isCheckpointNode(event)) return "checkpoint";
+  const classification = classifySurfaceEvent(event);
+  if (classification === "instruction") return isStaleFoldable ? "instruction" : "protected";
+  if (classification === "metadata") return "metadata";
+  return isToolEvent(event) ? "tool" : "text";
+}
+
 // src/prompts.ts
 var NUDGE_ALLOWED = {
   normal: /* @__PURE__ */ new Set(["pct", "philosophy"]),
@@ -8240,6 +8373,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
   const proposalOfAt = /* @__PURE__ */ new Map();
+  const sweeps = [];
   for (const row of baseRows) {
     if (row.at < 0) continue;
     if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break;
@@ -8248,6 +8382,15 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     const labels = proposal.entries.map(batchEntryLabel);
     const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT ? labels.join(", ") : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(", ")} \u2026 +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep`;
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0);
+    sweeps.push({
+      rowStart: row.range.start,
+      entries: proposal.entries.length,
+      messages,
+      reclaims: proposal.reclaimedTokens,
+      invalidates: proposal.invalidatedTokens,
+      breakEven: proposal.breakEvenRequests,
+      spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end }))
+    });
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
@@ -8279,6 +8422,21 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     if (batch !== void 0) rows.push(batch);
     return rows;
   });
+  rememberRangeTable(
+    String(session.id),
+    baseRows.map((row, index) => ({
+      band: index + 1,
+      start: row.range.start,
+      end: row.range.end,
+      messages: row.range.count,
+      tokens: row.range.tokens,
+      toolPct: row.range.toolPct,
+      invalidated: row.cost.invalidatedTokens,
+      breakEven: row.cost.breakEvenRequests,
+      expensive: row.expensive
+    })),
+    sweeps
+  );
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     "",
@@ -8326,6 +8484,7 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
   const surfaceEvents = surfaceEventsOf(session);
   const surfaceMessages = eventsToCoreMessages(surfaceEvents);
   const tokenCount = measuredTokenCount(agent, surfaceMessages);
+  rememberPressure(String(session.id), tokenCount, env.modelContextLimit);
   const config = kernelConfigFor(env);
   const turn = env.kernel.processTurn({ messages: coreMessages, state, config, tokenCount });
   env.store.set(session, turn.state);
@@ -8336,6 +8495,13 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
     surfaceEvents.filter((event) => isCheckpointNode(event) === false)
   );
   nudge.contextBreakdown = computeSurfaceBreakdown(turn.state, statusMessages, tokenCount, nudge.contextBreakdown?.growth ?? 0);
+  rememberBreakdown(String(session.id), {
+    tool: nudge.contextBreakdown.tool,
+    text: nudge.contextBreakdown.text,
+    code: nudge.contextBreakdown.code,
+    summaries: nudge.contextBreakdown.summaries,
+    system: nudge.contextBreakdown.system
+  });
   const emergency = nudge.breakdown?.emergencyOverride === 1;
   if (!hasActionableTarget(session, nudge, turn.state)) {
     onNothingToCompress?.(emergency ? "emergency" : "normal");
@@ -9952,6 +10118,27 @@ var AcpCompactionEngine = class extends CompactionEngine {
   compressCallIdsToHide = /* @__PURE__ */ new Set();
   /** Per provider/model route the resolved window (probe failures cached too). */
   windowCache = /* @__PURE__ */ new Map();
+  /**
+   * Serve one inspector-panel read (`/api/billion-context/inspect`).
+   *
+   * Read-only by construction: it resolves the session through the host
+   * `sessions` face, serves the REMEMBERED range-table build (src/inspect.ts),
+   * the durable ledger with each block's captured thinking, and the live
+   * settings — and never runs the kernel, so a panel open in a browser cannot
+   * disturb the engine's per-session state.
+   *
+   * @param request - the POST request carrying `{ sessionId }`.
+   * @returns `{ ok: true, value }` with a snapshot, or a typed failure.
+   */
+  async handleInspectRequest(request, ctx) {
+    return handleInspectRequest({
+      ctx,
+      settings: this.readSettingsSource(),
+      ...this.config.preset === void 0 ? {} : { preset: this.config.preset },
+      kernelNudgeMinContextLimitPct: defaultConfig(DEFAULT_CONTEXT_WINDOW).nudge.minContextLimitPct,
+      defaultContextWindow: DEFAULT_CONTEXT_WINDOW
+    }, request);
+  }
   /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (installSection on ≤0.1.6 lines, volatile-ref re-read on the ≥0.1.7 forms line). */
   readSettingsSource = () => resolveAcpSettings({});
   /** Hot-apply driver: re-reads the live source and runs the change diff; called once per agent step, a no-op unless something changed. */
@@ -10102,6 +10289,32 @@ var AcpCompactionEngine = class extends CompactionEngine {
       ctx.on("internal/service", (name) => {
         if (name === "commands") registerCommand();
       });
+    }
+    {
+      let done = false;
+      const registerInspectRoute = () => {
+        if (done) return;
+        const connection = ctx.get("connection");
+        const register = typeof connection?.fetch?.register === "function" ? connection.fetch.register.bind(connection.fetch) : void 0;
+        if (register === void 0) return;
+        done = true;
+        try {
+          ctx.effect(() => register({
+            path: "/api/billion-context/inspect",
+            methods: ["POST"],
+            requestBody: "buffered",
+            fetch: (request) => engine.handleInspectRequest(request, ctx)
+          }), "billion-context-dsh: inspector route");
+        } catch {
+          done = false;
+        }
+      };
+      registerInspectRoute();
+      if (!done) {
+        ctx.on("internal/service", (name) => {
+          if (name === "connection") registerInspectRoute();
+        });
+      }
     }
     ctx.on("session/event", (session, event) => {
       if (event.type === "assistant/message") {

@@ -782,7 +782,8 @@ export interface SeqCompressibleRange {
 export type MediaPriceOf = (seq: number) => number
 
 /** Whether a surface message event is a tool message (tool-call or tool-result) — kernel `isToolMessage` parity. */
-function isToolEvent(event: SessionEvent): boolean {
+/** Whether one surface event counts as tool traffic (the table's `[tool X%]`). */
+export function isToolEvent(event: SessionEvent): boolean {
   if (event.type === 'tool/result') return true
   if (event.type !== 'assistant/message') return false
   const content = (event.data as { message?: { content?: unknown } }).message?.content

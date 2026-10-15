@@ -198,6 +198,19 @@ export declare class AcpCompactionEngine extends CompactionEngine {
     private readonly compressCallIdsToHide;
     /** Per provider/model route the resolved window (probe failures cached too). */
     private readonly windowCache;
+    /**
+     * Serve one inspector-panel read (`/api/billion-context/inspect`).
+     *
+     * Read-only by construction: it resolves the session through the host
+     * `sessions` face, serves the REMEMBERED range-table build (src/inspect.ts),
+     * the durable ledger with each block's captured thinking, and the live
+     * settings — and never runs the kernel, so a panel open in a browser cannot
+     * disturb the engine's per-session state.
+     *
+     * @param request - the POST request carrying `{ sessionId }`.
+     * @returns `{ ok: true, value }` with a snapshot, or a typed failure.
+     */
+    private handleInspectRequest;
     /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (installSection on ≤0.1.6 lines, volatile-ref re-read on the ≥0.1.7 forms line). */
     private readSettingsSource;
     /** Hot-apply driver: re-reads the live source and runs the change diff; called once per agent step, a no-op unless something changed. */

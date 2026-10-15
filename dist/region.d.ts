@@ -237,6 +237,9 @@ export interface SeqCompressibleRange {
  * carry an image/file block.
  */
 export type MediaPriceOf = (seq: number) => number;
+/** Whether a surface message event is a tool message (tool-call or tool-result) — kernel `isToolMessage` parity. */
+/** Whether one surface event counts as tool traffic (the table's `[tool X%]`). */
+export declare function isToolEvent(event: SessionEvent): boolean;
 /**
  * Durable model-free prune: append `compaction/prune` as the shadow price,
  * then replace the given surface seqs with a user message. dsh-session 0.1.5+

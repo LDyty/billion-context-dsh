@@ -37,6 +37,8 @@ import {
 import { mediaPriceViaMeter } from './host-tokens.ts'
 import { sessionEventsOf } from './session-events.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
+import { rememberBreakdown, rememberPressure, rememberRangeTable } from './inspect.ts'
+import type { AcpInspectSweep } from './inspect-types.ts'
 import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompts.ts'
 
 /**
@@ -328,6 +330,8 @@ export function rangeTable(
   // Keyed by the row's position in the offerable list (two nested rows can share
   // a start seq, and a start-keyed map printed one proposal under both rows).
   const proposalOfAt = new Map<number, string>()
+  // The same proposals, structured, for the inspector panel (src/inspect.ts).
+  const sweeps: AcpInspectSweep[] = []
   for (const row of baseRows) {
     if (row.at < 0) continue
     if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break
@@ -338,6 +342,15 @@ export function rangeTable(
       ? labels.join(', ')
       : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(', ')} … +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep`
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0)
+    sweeps.push({
+      rowStart: row.range.start,
+      entries: proposal.entries.length,
+      messages,
+      reclaims: proposal.reclaimedTokens,
+      invalidates: proposal.invalidatedTokens,
+      breakEven: proposal.breakEvenRequests,
+      spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end })),
+    })
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
@@ -369,6 +382,23 @@ export function rangeTable(
     if (batch !== undefined) rows.push(batch)
     return rows
   })
+  // Hand the structured build to the inspector panel. Same numbers, remembered
+  // once per build — the panel never recomputes (see src/inspect.ts).
+  rememberRangeTable(
+    String(session.id),
+    baseRows.map((row, index) => ({
+      band: index + 1,
+      start: row.range.start,
+      end: row.range.end,
+      messages: row.range.count,
+      tokens: row.range.tokens,
+      toolPct: row.range.toolPct,
+      invalidated: row.cost.invalidatedTokens,
+      breakEven: row.cost.breakEvenRequests,
+      expensive: row.expensive,
+    })),
+    sweeps,
+  )
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     '',
@@ -493,6 +523,10 @@ export function buildNudge(
   const surfaceEvents = surfaceEventsOf(session)
   const surfaceMessages = eventsToCoreMessages(surfaceEvents)
   const tokenCount = measuredTokenCount(agent, surfaceMessages)
+  // The panel's pressure gauge is the SAME measurement the nudge decides on, so
+  // the two can never disagree; it is remembered before the should-inject gate
+  // because every step knows it (unlike the breakdown below).
+  rememberPressure(String(session.id), tokenCount, env.modelContextLimit)
   const config = kernelConfigFor(env)
   const turn = env.kernel.processTurn({ messages: coreMessages, state, config, tokenCount })
   env.store.set(session, turn.state)
@@ -516,6 +550,13 @@ export function buildNudge(
     surfaceEvents.filter((event) => isCheckpointNode(event) === false),
   )
   nudge.contextBreakdown = computeSurfaceBreakdown(turn.state, statusMessages, tokenCount, nudge.contextBreakdown?.growth ?? 0)
+  rememberBreakdown(String(session.id), {
+    tool: nudge.contextBreakdown.tool,
+    text: nudge.contextBreakdown.text,
+    code: nudge.contextBreakdown.code,
+    summaries: nudge.contextBreakdown.summaries,
+    system: nudge.contextBreakdown.system,
+  })
   const emergency = nudge.breakdown?.emergencyOverride === 1
 
   // Never demand a compression the surface cannot offer. The kernel decides

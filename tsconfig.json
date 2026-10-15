@@ -3,8 +3,9 @@
 		"target": "es2022",
 		"module": "es2022",
 		"moduleResolution": "bundler",
+		"jsx": "react-jsx",
 		"allowImportingTsExtensions": true,
-		"lib": ["es2022"],
+		"lib": ["es2022", "DOM"],
 		"types": ["node"],
 		"strict": true,
 		"noUncheckedIndexedAccess": true,
@@ -16,6 +17,6 @@
 		"resolveJsonModule": true,
 		"forceConsistentCasingInFileNames": true
 	},
-	"include": ["src/**/*.ts"],
+	"include": ["src/**/*.ts", "src/**/*.tsx"],
 	"exclude": ["node_modules", "dist", "tests"]
 }

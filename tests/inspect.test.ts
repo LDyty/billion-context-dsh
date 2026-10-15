@@ -1,0 +1,202 @@
+/**
+ * The inspector panel's host half: the remembered range table, the surface map,
+ * the block ledger with its captured thinking, and the route that serves them.
+ *
+ * The panel is only worth looking at if it shows what the ENGINE showed, so the
+ * assertions here compare the snapshot against the rendered nudge and against the
+ * durable ledger rather than against hand-written numbers.
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { Session } from '@deepseek-ai/dsh-session'
+import { createCore } from 'acp-kernel'
+import { AcpStateStore } from '../src/state.ts'
+import { buildInspectSnapshot, handleInspectRequest, inspectBlocksOf, inspectCacheOf } from '../src/inspect.ts'
+import { buildNudge, rangeTable } from '../src/nudge.ts'
+import { runCompactionTransaction } from '../src/region.ts'
+import { makeTools } from '../src/tools.ts'
+import type { ToolEnvironment } from '../src/tools.ts'
+import { appendAssistant, appendToolCall, appendToolResult, appendTurn, appendUser, buildTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
+
+function makeEnv(limit = 128000): ToolEnvironment {
+  return {
+    kernel: createCore({}),
+    store: new AcpStateStore(),
+    modelContextLimit: limit,
+    compressCallIdsToHide: new Set(),
+  }
+}
+
+/** A session with a stale+cured instruction pair, a checkpoint and a tool pair. */
+function buildRichSession(): Session {
+  const session = Session.create('inspect-fixture')
+  appendTurn(session, 1)
+  appendUser(session, longText('q0', 0))
+  appendAssistant(session, longText('a0', 1), 1, 1)
+  session.append('user/message', {
+    role: 'user',
+    content: [{ type: 'text', text: '<system-reminder> Additional instructions from: AGENTS.md v1' }],
+    source: { kind: 'agent-instructions', form: 'instructions', changes: [{ scope: 'AGENTS.md' }] },
+  } as never, { surfaceOp: 'append' }) // stale copy
+  appendToolCall(session, longText('call', 2), 'c1', 1, 2)
+  appendToolResult(session, longText('res', 3), 'c1', 1, 2)
+  session.append('user/message', {
+    role: 'user',
+    content: [{ type: 'text', text: '<system-reminder> Updated instructions from: AGENTS.md v2' }],
+    source: { kind: 'agent-instructions', form: 'instructions', changes: [{ scope: 'AGENTS.md' }] },
+  } as never, { surfaceOp: 'append' }) // CURRENT — must read `protected`
+  const node = session.append('user/message', {
+    role: 'user',
+    content: [{ type: 'text', text: '[Model-written summary] earlier work folded' }],
+    source: { kind: 'compact-checkpoint', compactionId: 'compact-inspect' },
+  } as never, { surfaceOp: 'append' })
+  void node
+  for (let index = 0; index < 6; index += 1) {
+    appendUser(session, longText('tail', index))
+    appendAssistant(session, longText('tail-a', index), 1, 10 + index)
+  }
+  return session
+}
+
+test('inspect: the snapshot serves the remembered table, map kinds and settings', () => {
+  const session = buildRichSession()
+  // Building the table is what remembers it (the engine does this on every pre-step).
+  const text = rangeTable(session, wholeSurfaceRangeView(session) as never)
+  const snapshot = buildInspectSnapshot({
+    sessionId: String(session.id),
+    session,
+    cache: inspectCacheOf(String(session.id)),
+    blocks: [],
+    settings: {
+      modelContextLimit: 200000,
+      nudgeMinContextLimitPct: 0.7,
+      nudgeMaxContextLimitPct: 0.85,
+      nudgeEmergencyThresholdPct: 0.95,
+    },
+  })
+
+  assert.ok(text.includes('Compressible ranges'), 'the fixture really renders a table')
+  assert.ok(snapshot.rows.length > 0, 'the snapshot carries the rows')
+  assert.equal(snapshot.rows[0]!.band, 1, 'bands are numbered from the oldest')
+  // The panel's rows ARE the printed rows: same seqs, same tokens.
+  for (const row of snapshot.rows) {
+    assert.ok(text.includes(`${row.start}..${row.end}`), `row ${row.start}..${row.end} appears in the nudge text`)
+    assert.ok(text.includes(`~${row.tokens} tokens`), `row ${row.start}..${row.end} prints the same size`)
+  }
+  for (const sweep of snapshot.sweeps) {
+    assert.ok(
+      text.includes(`all ${sweep.entries} spans in ONE call`),
+      `sweep under ${sweep.rowStart} prints the same entry count`,
+    )
+    assert.ok(sweep.spans.length === sweep.entries, 'the sweep carries one span per entry (copy-paste ready)')
+  }
+  assert.equal(snapshot.surface.nodes, session.surface.nodes.length)
+  assert.equal(snapshot.usage.window, 200000, 'the panel shows the configured window')
+
+  // The map's legend matches the engine's folding decision, not a second opinion.
+  const kinds = new Map(snapshot.map.map((node) => [node.seq, node.kind]))
+  const instructionRows = session.surface.nodes.filter((seq) => {
+    const event = session.eventAt(seq)
+    return (event?.data as { source?: { kind?: string } } | undefined)?.source?.kind === 'agent-instructions'
+  })
+  assert.equal(instructionRows.length, 2, 'the fixture has a stale and a current instruction row')
+  assert.equal(kinds.get(instructionRows[0]!), 'instruction', 'the superseded copy reads as foldable')
+  assert.equal(kinds.get(instructionRows[1]!), 'protected', 'the CURRENT copy reads as protected')
+  const checkpointSeq = session.surface.nodes.find((seq) => {
+    const event = session.eventAt(seq)
+    return (event?.data as { source?: { kind?: string } } | undefined)?.source?.kind === 'compact-checkpoint'
+  })
+  assert.equal(kinds.get(checkpointSeq!), 'checkpoint')
+  assert.ok([...kinds.values()].includes('tool'), 'tool traffic is labelled')
+  assert.ok([...kinds.values()].includes('text'), 'conversation is labelled')
+})
+
+test('inspect: the ledger carries each block with the thinking that produced it', () => {
+  const session = buildTextSession(12)
+  const thinking = 'These tool outputs are consumed; folding from near the tail keeps the prefix rewrite cheap.'
+  runCompactionTransaction(session, {
+    start: 1,
+    end: 5,
+    shadowedSeqs: [1, 2, 3, 4, 5],
+    summary: [{ type: 'text', text: 'Earlier work: JWT access tokens, 15 minute expiry, refresh in Redis.' }],
+    shadowedTokenCount: 1234,
+    provider: 'p',
+    model: 'm',
+    reasoning: thinking,
+  })
+  const blocks = inspectBlocksOf(session)
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0]!.tokens, 1234, 'the ledger price rides through')
+  assert.equal(blocks[0]!.messages, 5, 'and the shadowed message count')
+  assert.equal(blocks[0]!.why, thinking, 'the model’s own thinking is on the panel')
+  assert.equal(blocks[0]!.shortId, blocks[0]!.id.slice(0, 8))
+})
+
+test('inspect route: bad body, unknown session, and a real snapshot', async () => {
+  const session = buildRichSession()
+  rangeTable(session, wholeSurfaceRangeView(session) as never)
+  const host = {
+    ctx: { get: (name: string) => (name === 'sessions' ? { get: (id: string) => (id === String(session.id) ? session : undefined) } : undefined) },
+    settings: {
+      modelContextLimit: 128000,
+      nudgeMinContextLimitPct: 0.7,
+      nudgeMaxContextLimitPct: 0.85,
+      nudgeEmergencyThresholdPct: 0.95,
+    },
+    kernelNudgeMinContextLimitPct: 0.45,
+    defaultContextWindow: 128000,
+  }
+  const post = (body: unknown): Request => new Request('http://local/api/billion-context/inspect', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
+  const bad = await handleInspectRequest(host, post({}))
+  assert.equal(bad.status, 400, 'a body without a sessionId is refused')
+  const missing = await handleInspectRequest(host, post({ sessionId: 'nope' }))
+  assert.equal(missing.status, 200)
+  assert.deepEqual(await missing.json(), { ok: true, value: null }, 'an unknown session resolves to null, not an error')
+  const good = await handleInspectRequest(host, post({ sessionId: String(session.id) }))
+  assert.equal(good.status, 200)
+  const payload = await good.json() as { ok: boolean; value: { rows: unknown[]; map: unknown[] } | null }
+  assert.equal(payload.ok, true)
+  assert.ok((payload.value?.rows.length ?? 0) > 0, 'the real read carries the rows')
+  assert.ok((payload.value?.map.length ?? 0) > 0, 'and the surface map')
+})
+
+test('inspect: a session the engine never built a table for still answers (empty rows)', () => {
+  const session = buildTextSession(12)
+  const snapshot = buildInspectSnapshot({
+    sessionId: String(session.id),
+    session,
+    cache: undefined,
+    blocks: [],
+    settings: {
+      modelContextLimit: 128000,
+      nudgeMinContextLimitPct: 0.7,
+      nudgeMaxContextLimitPct: 0.85,
+      nudgeEmergencyThresholdPct: 0.95,
+    },
+  })
+  assert.deepEqual(snapshot.rows, [], 'no remembered build → no rows (the panel says so instead of inventing them)')
+  assert.equal(snapshot.capturedAt, 0)
+  assert.ok(snapshot.map.length > 0, 'the live map is still served')
+})
+
+test('inspect: buildNudge remembers the pressure gauge the engine decided on', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(40)
+  const agent = {
+    id: session.id,
+    session,
+    options: { provider: 'test-provider', model: 'test-model' },
+    ctx: { tokenMeter: undefined },
+  } as never
+  const outcome = buildNudge(agent, env, new Map(), new Map())
+  const cache = inspectCacheOf(String(session.id))
+  assert.ok(cache !== undefined, 'a pre-step remembers something even when the nudge stays silent')
+  assert.ok((cache?.pressure ?? 0) > 0, `the pressure gauge is recorded (${String(cache?.pressure)})`)
+  if (outcome !== null) {
+    assert.ok(cache?.breakdown !== undefined, 'an injected nudge also records the surface breakdown')
+  }
+})

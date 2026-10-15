@@ -35,7 +35,7 @@ import {
   type CompactionTrigger,
   type ManualCompactAgentContext,
 } from '@deepseek-ai/dsh-compaction'
-import { createCore, setDocCacheCap, type CompressionCore } from 'acp-kernel'
+import { createCore, defaultConfig, setDocCacheCap, type CompressionCore } from 'acp-kernel'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
@@ -57,6 +57,7 @@ import {
 } from './region.ts'
 import { allLogMessages, eventsToCoreMessages, overflowMarkerSummary, surfaceEventsOf, toolCallIdOfResultEvent } from './messages.ts'
 import { shadowedTokensViaMeter } from './host-tokens.ts'
+import { handleInspectRequest } from './inspect.ts'
 import { kernelConfigFor } from './config.ts'
 import {
   ACP_SETTINGS_NAMESPACE,
@@ -419,6 +420,28 @@ export class AcpCompactionEngine extends CompactionEngine {
   private readonly compressCallIdsToHide = new Set<string>()
   /** Per provider/model route the resolved window (probe failures cached too). */
   private readonly windowCache = new Map<string, AcpWindow>()
+
+  /**
+   * Serve one inspector-panel read (`/api/billion-context/inspect`).
+   *
+   * Read-only by construction: it resolves the session through the host
+   * `sessions` face, serves the REMEMBERED range-table build (src/inspect.ts),
+   * the durable ledger with each block's captured thinking, and the live
+   * settings — and never runs the kernel, so a panel open in a browser cannot
+   * disturb the engine's per-session state.
+   *
+   * @param request - the POST request carrying `{ sessionId }`.
+   * @returns `{ ok: true, value }` with a snapshot, or a typed failure.
+   */
+  private async handleInspectRequest(request: Request, ctx: Context): Promise<Response> {
+    return handleInspectRequest({
+      ctx,
+      settings: this.readSettingsSource(),
+      ...(this.config.preset === undefined ? {} : { preset: this.config.preset }),
+      kernelNudgeMinContextLimitPct: defaultConfig(DEFAULT_CONTEXT_WINDOW).nudge.minContextLimitPct,
+      defaultContextWindow: DEFAULT_CONTEXT_WINDOW,
+    }, request)
+  }
   /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (installSection on ≤0.1.6 lines, volatile-ref re-read on the ≥0.1.7 forms line). */
   private readSettingsSource: () => AcpSettings = () => resolveAcpSettings({})
   /** Hot-apply driver: re-reads the live source and runs the change diff; called once per agent step, a no-op unless something changed. */
@@ -679,6 +702,48 @@ export class AcpCompactionEngine extends CompactionEngine {
       ctx.on('internal/service', (name: unknown) => {
         if (name === 'commands') registerCommand()
       })
+    }
+    // The inspector panel's ONE data route (src/client/index.tsx). Registered
+    // through the host `connection` face and deferred like tools/commands: a
+    // process with no web server simply has no route, and the panel degrades to
+    // absent rather than taking the plugin down. The payload is the remembered
+    // range-table build (see src/inspect.ts) — the panel never recomputes, so it
+    // can never disagree with the nudge the model saw.
+    {
+      let done = false
+      const registerInspectRoute = (): void => {
+        if (done) return
+        const connection = ctx.get('connection') as {
+          fetch?: { register?: (route: {
+            path: string
+            methods: readonly string[]
+            requestBody: 'buffered'
+            fetch: (request: Request) => Response | Promise<Response>
+          }) => () => void }
+        } | undefined
+        const register = typeof connection?.fetch?.register === 'function'
+          ? connection.fetch.register.bind(connection.fetch)
+          : undefined
+        if (register === undefined) return
+        done = true
+        try {
+          ctx.effect(() => register({
+            path: '/api/billion-context/inspect',
+            methods: ['POST'],
+            requestBody: 'buffered',
+            fetch: (request: Request) => engine.handleInspectRequest(request, ctx),
+          }), 'billion-context-dsh: inspector route')
+        } catch {
+          // A hostile or rejecting registry costs only the panel.
+          done = false
+        }
+      }
+      registerInspectRoute()
+      if (!done) {
+        ctx.on('internal/service', (name: unknown) => {
+          if (name === 'connection') registerInspectRoute()
+        })
+      }
     }
     // After a successful compress tool result is appended, hide its
     // call/result pair. The durable summary node was inserted mid-turn (before
