@@ -43,6 +43,17 @@ export interface AcpInspectRow {
     readonly toolRowPct: number;
     /** The row-count caliber as a mix (`3 tool · 2 assistant · 1 user`; empty classes omitted). */
     readonly rowMix: string;
+    /**
+     * The same mix as raw counts (`rowMix` is the model-facing English spelling).
+     * The panel renders Chinese labels (`工具 2 · 助手 1`), so it needs numbers,
+     * not the pre-rendered string.
+     */
+    readonly rowCounts: {
+        readonly tool: number;
+        readonly assistant: number;
+        readonly user: number;
+        readonly other: number;
+    };
     /** Tokens the next request re-sends uncached once because of this fold. */
     readonly invalidated: number;
     /** `invalidated ÷ tokens` — requests needed to pay the rewrite back. */
@@ -73,6 +84,13 @@ export interface AcpInspectSweep {
      * recomputes them.
      */
     readonly rowMix: string;
+    /** The sweep's aggregate row counts, same shape as a row's. */
+    readonly rowCounts: {
+        readonly tool: number;
+        readonly assistant: number;
+        readonly user: number;
+        readonly other: number;
+    };
     readonly toolPct: number;
     readonly reasoningPct: number;
     readonly textPct: number;

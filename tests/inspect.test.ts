@@ -109,6 +109,28 @@ test('inspect: the snapshot serves the remembered table, map kinds and settings'
     assert.ok(text.includes(`${String(row.messages)} messages (${row.rowMix})`),
       `row ${row.start}..${row.end} prints the same row mix as the panel`)
   }
+  // The panel prints the row mix in Chinese, so it reads raw counts instead of
+  // the model-facing English string. The two must describe the same rows: a
+  // class appears in the Chinese label exactly when the English spelling has it.
+  for (const row of snapshot.rows) {
+    const counts = row.rowCounts
+    const classes = [
+      ['tool', counts.tool], ['assistant', counts.assistant],
+      ['user', counts.user], ['other', counts.other],
+    ] as const
+    assert.equal(
+      classes.some(([, count]) => count > 0),
+      row.rowMix !== '0',
+      `row ${row.start}: the Chinese row counts exist exactly when the English mix does`,
+    )
+    for (const [label, count] of classes) {
+      assert.equal(
+        row.rowMix.includes(`${String(count)} ${label}`),
+        count > 0,
+        `row ${row.start}: the ${label} count matches the printed mix`,
+      )
+    }
+  }
 
   // The map's legend matches the engine's folding decision, not a second opinion.
   const kinds = new Map(snapshot.map.map((node) => [node.seq, node.kind]))
@@ -256,6 +278,14 @@ test('inspect: the panel mirrors each row\'s sweep (same entries/reclaims/paybac
       // The panel carries the sweep's AGGREGATE composition too, and it is the
       // same three figures the printed line shows (one build, one ruler).
       assert.ok(sweepLine.includes(`(${sweep!.rowMix})`), `row ${start}: same sweep row mix`)
+      // …and the same counts behind that mix, which is what the panel's Chinese
+      // label renders (the sweep line stays English for the model).
+      const sweepCounts = sweep!.rowCounts
+      assert.equal(
+        sweepCounts.tool + sweepCounts.assistant + sweepCounts.user + sweepCounts.other > 0,
+        sweep!.rowMix !== '0',
+        `row ${start}: the sweep's Chinese row counts exist exactly when its English mix does`,
+      )
       assert.ok(
         sweepLine.includes(`[tool ${String(sweep!.toolPct)}% | reasoning ${String(sweep!.reasoningPct)}% | text ${String(sweep!.textPct)}%]`),
         `row ${start}: same sweep partition`,

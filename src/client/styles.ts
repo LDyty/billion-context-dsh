@@ -60,8 +60,11 @@ export const ACP_PANEL_CSS = `
 .acp-mix-tool { opacity: .55; }
 .acp-mix-reason { opacity: .3; }
 .acp-mix-text { opacity: .12; }
-.acp-cost-rate { margin-left: 5px; font-size: 11px; }
-.acp-badge { margin-left: 5px; padding: 0 5px; border-radius: 7px; font-size: 10px; background: color-mix(in srgb, currentColor 14%, transparent); }
+/* 代价格与清扫格现在各自成行，不再靠 margin 挤在一行里。 */
+.acp-cost-rate { font-size: 11px; }
+.acp-badge { display: inline-block; padding: 0 5px; border-radius: 7px; font-size: 10px; background: color-mix(in srgb, currentColor 14%, transparent); }
+/* 子行（行构成等）允许折行，免得一个长标签把整列撑宽。 */
+.acp-ranges .acp-sub { white-space: normal; }
 .acp-blocks { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
 .acp-block { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 6px; padding: 6px 8px; }
 .acp-block > summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; }

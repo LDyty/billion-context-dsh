@@ -8652,6 +8652,12 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       invalidates: proposal.invalidatedTokens,
       breakEven: proposal.breakEvenRequests,
       rowMix: composition.rowMix,
+      rowCounts: {
+        tool: proposal.entries.reduce((sum, entry) => sum + entry.mass.toolRows, 0),
+        assistant: proposal.entries.reduce((sum, entry) => sum + entry.mass.assistantRows, 0),
+        user: proposal.entries.reduce((sum, entry) => sum + entry.mass.userRows, 0),
+        other: proposal.entries.reduce((sum, entry) => sum + entry.mass.otherRows, 0)
+      },
       toolPct: composition.toolPct,
       reasoningPct: composition.reasoningPct,
       textPct: composition.textPct,
@@ -8711,6 +8717,12 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       textPct: row.range.textPct,
       toolRowPct: row.range.toolRowPct,
       rowMix: row.range.rowMix,
+      rowCounts: {
+        tool: row.range.mass.toolRows,
+        assistant: row.range.mass.assistantRows,
+        user: row.range.mass.userRows,
+        other: row.range.mass.otherRows
+      },
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
