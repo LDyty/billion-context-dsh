@@ -56,7 +56,11 @@ export interface RangeTablePrompts {
    * 占位符:{region} {age} {skipped}
    */
   region: string
-  /** 每行。占位符:{start} {end} {count} {tokens} */
+  /**
+   * 每行。占位符:{start} {end} {count} {tokens} {picks}
+   * {picks}=该行在年龄区域里担任的角色（cheapest / largest / oldest 用 + 连接；
+   * 同一区间可以同时是多个角色）。
+   */
   line: string
   /**
    * 每行的折叠成本。占位符:{reclaimed} {newer} {invalidated} {breakEven} {flag}
@@ -110,7 +114,7 @@ const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string>
   context: new Set(['used', 'window', 'pct', 'ratio']),
   title: new Set(['count']),
   region: new Set(['region', 'age', 'skipped']),
-  line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'skipped']),
+  line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'skipped', 'picks']),
   cost: new Set(['reclaimed', 'newer', 'invalidated', 'breakEven', 'flag']),
   batch: new Set(['count', 'reclaimed', 'newer', 'invalidated', 'breakEven', 'coverage', 'rowMix', 'toolPct', 'reasoningPct', 'textPct']),
   footer: new Set(),
@@ -235,7 +239,7 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
     // summing to 100).
-    line: '    - seq {start}..{end} — {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}',
+    line: '    - seq {start}..{end} — {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media} · {picks}',
     // Billing caliber (owner ruling, 2026-10-17): the payback is in REQUESTS at the
     // provider's cache pricing — the newer tail (re-sent uncached once) is what
     // dominates it, so it is printed next to what the fold reclaims.
@@ -244,9 +248,9 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
     // batch's totals — including the summed character partition and row mix,
     // the same two figures every row carries — and points at acp_status for the
     // list the model must fetch anyway before compressing.
-    batch: '        sweep from here — all {count} spans in ONE call ({coverage}) · ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] · re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s))',
+    batch: '        sweep from here — all {count} spans in ONE call ({coverage}) · ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] · re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s)) · one call: endSeq:"sweep"',
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'
-      + 'Sweep entries are not printed: the exact spans of any sweep come from acp_status({ scope: "uncompressed", view: "ranges" }).\n'
+      + 'A sweep folds in ONE call with ONE shared summary — name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The sweep\'s exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).\n'
       + 'Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\n'
       + 'Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.',
   },

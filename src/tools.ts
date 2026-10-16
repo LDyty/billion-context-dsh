@@ -40,8 +40,13 @@ import {
   openToolCallIds,
   sliceDecompressPage,
   surfaceSummary,
+  buildCompressibleSeqRanges,
+  foldCostsOfRanges,
+  sweepFromBaseRange,
   DEFAULT_DECOMPRESS_PAGE,
   DEFAULT_DECOMPRESS_PAGE_CHARS,
+  type KernelRangeView,
+  type MediaPriceOf,
   type ResolvedSurfaceRange,
 } from './region.ts'
 import { allLogMessages, attachmentsOfEvent, buildToolCallIndex, eventsToCoreMessages, extractEventText, isAgentInstructionsRow, isCheckpointNode, isRealUserTurn, isSkillCatalogRow, reasoningForToolCall, surfaceEventsOf, toolCallsOf } from './messages.ts'
@@ -176,7 +181,7 @@ export const compressParameters = {
         endSeq: {
           oneOf: [
             { type: 'integer' as const, description: 'Inclusive last surface seq of the range.' },
-            { type: 'string' as const, description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3).' },
+            { type: 'string' as const, description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3). Or the literal "sweep": fold the whole forward sweep that starts at startSeq in ONE call, every span sharing your summary (see the table\'s sweep lines).' },
           ],
         },
         summary: {
@@ -463,12 +468,92 @@ function unwrapEnvelope<T extends object>(args: T): T {
  * An empty/whitespace-only summary counts as missing (the kernel would
  * reject it anyway — fail early with the field name instead).
  */
+/** The sweep shorthand's sentinel: `endSeq: "sweep"` (see expandSweepEntries). */
+const SWEEP_END = 'sweep'
+
+/** True for the sentinel `endSeq` value, in any casing/whitespace. */
+function isSweepEnd(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === SWEEP_END
+}
+
+/** A startSeq the sweep shorthand accepts: an integer, or the digits as text. */
+function isPlainSeq(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isInteger(value)
+  return typeof value === 'string' && /^\d+$/.test(value.trim())
+}
+
+/**
+ * Expand the sweep shorthand (owner ruling, 2026-10-17) BEFORE the per-range
+ * loop: one entry with `endSeq: "sweep"` and ONE shared summary becomes one entry
+ * per span of the sweep that starts at its `startSeq` — the same forward run the
+ * table prints (base row + every later non-overlapping offerable span). Each
+ * expanded entry then goes through the ordinary pipeline, so stale spans,
+ * barriers and duplicates are handled exactly as if the model had listed them.
+ *
+ * The offerable list is rebuilt from THIS turn's kernel view, not from the
+ * remembered table: the model may be acting on a table built a moment ago.
+ *
+ * @param session - the session being folded.
+ * @param turn - the kernel turn whose ranges describe the current surface.
+ * @param mediaPriceOf - optional media price resolver (same as the table's).
+ * @param content - the parsed content entries.
+ * @returns the expanded entries plus one note per expansion (or per refusal).
+ */
+function expandSweepEntries(
+  session: Session,
+  turn: ReturnType<CompressionCore['processTurn']>,
+  mediaPriceOf: MediaPriceOf | undefined,
+  content: CompressContent,
+): { content: CompressContent; notes: string[] } {
+  if (!content.some((item) => isSweepEnd(item.endSeq))) return { content, notes: [] }
+  const view: KernelRangeView = { ranges: turn.nudge?.compressibleRanges ?? [], refs: turn.state.messageRefs }
+  const offerable = buildCompressibleSeqRanges(session, view, mediaPriceOf === undefined ? {} : { mediaPriceOf })
+  const costs = foldCostsOfRanges(session, offerable, mediaPriceOf)
+  const notes: string[] = []
+  const out: CompressContent = []
+  for (const item of content) {
+    if (!isSweepEnd(item.endSeq)) {
+      out.push(item)
+      continue
+    }
+    const start = Number(String(item.startSeq).trim())
+    // The base row is the offerable span the start lands in; falling back to the
+    // first span that starts at/after it keeps a slightly stale seq usable.
+    let base = offerable.findIndex((span) => span.start <= start && start <= span.end)
+    if (base < 0) base = offerable.findIndex((span) => span.start >= start)
+    // `sweepFromBaseRange` needs the row it starts from and at least one span
+    // after it; both are the table's own rule, so the expansion matches the line
+    // the model read (the sweep it advertises, not a second opinion).
+    const sweep = base < 0 ? undefined : sweepFromBaseRange(offerable, costs, base)
+    if (sweep === undefined) {
+      notes.push(
+        `  seqs ${String(item.startSeq)}..sweep — nothing to sweep from there: no offerable span starts at or after it `
+        + '(the seq is already compressed, or the table has moved on). Run acp_status for current seqs, or fold a single range explicitly.',
+      )
+      continue
+    }
+    notes.push(
+      `  seqs ${String(sweep.entries[0]!.start)}..sweep expanded to ${String(sweep.entries.length)} ranges `
+      + `(${String(sweep.entries[0]!.start)}..${String(sweep.entries[sweep.entries.length - 1]!.end)}), one shared summary each`,
+    )
+    for (const entry of sweep.entries) {
+      out.push({ ...item, startSeq: entry.start, endSeq: entry.end })
+    }
+  }
+  return { content: out, notes }
+}
+
 function validateContentItems(content: CompressContent): void {
   const violations: string[] = []
   content.forEach((item, index) => {
     const path = `content[${index}]`
     if (item.startSeq === undefined) violations.push(`missing required property "${path}.startSeq"`)
     if (item.endSeq === undefined) violations.push(`missing required property "${path}.endSeq"`)
+    else if (isSweepEnd(item.endSeq) && !isPlainSeq(item.startSeq)) {
+      // The shorthand needs a REAL surface seq to start from — "sweep from an mN
+      // ref" has no defined base span on the current table.
+      violations.push(`"${path}.endSeq": "sweep" needs an integer startSeq (the row's first seq), got ${JSON.stringify(item.startSeq)}`)
+    }
     if (typeof item.summary !== 'string' || item.summary.trim().length === 0) {
       violations.push(`missing required property "${path}.summary"`)
     }
@@ -724,15 +809,24 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // as the array SERIALIZED as JSON text (deepseek-flash, live 2026-10-16:
   // `{"content": "[{\"startSeq\": 38721, …}]"}`, rejected by the schema gate as
   // `invalid arguments: "content" must be an array`). Both unwrap to the array.
-  const content = unwrapCompressArgs(args)
+  const rawContent = unwrapCompressArgs(args)
+  const content = rawContent
   if (content === null) {
     return {
       text: 'compress: missing content — pass the content array directly: compress({ content: [{ startSeq, endSeq, summary }] })',
     }
   }
+  // `endSeq: "sweep"` (owner ruling, 2026-10-17): expand BEFORE validation so the
+  // shorthand never reaches the per-range pipeline as a sentinel, and so an
+  // expansion that finds nothing reports a teaching note instead of a parse error.
+  // Media pricing is not needed here: the sweep's SPAN geometry is text-only, and
+  // each expanded entry is priced by the ordinary path below.
+  const sweepExpansion = expandSweepEntries(session, turn, undefined, content)
+  const sweepNotes = sweepExpansion.notes
+  const expanded = sweepExpansion.content
   // Items-level required check AFTER the envelope peel (see
   // validateContentItems for why the schema gate alone cannot do this).
-  validateContentItems(content)
+  validateContentItems(expanded)
 
   const ranges: Array<
     ResolvedSurfaceRange & {
@@ -769,7 +863,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // carrier branch below): facts for the model, not failures.
   const splitNotes: string[] = []
   const carrierSpans = env.carrierSpans ?? 'split'
-  for (const range of content) {
+  for (const range of expanded) {
     const startSeq = parseBoundary(range.startSeq, byRef, session)
     const endSeq = parseBoundary(range.endSeq, byRef, session)
     let resolved: ResolvedSurfaceRange
@@ -973,7 +1067,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // Nothing to do: every requested range was already compressed, rejected, or
   // a duplicate of an earlier range in the same call.
   if (foldable.length === 0) {
-    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes]
+    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...sweepNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes]
     if (alreadyCompressedNotes.length > 0) {
       text.push('  (all requested ranges were already compressed — decompress a block to recover its originals)')
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
@@ -1143,6 +1237,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   const failedLines = applied.result.errors.map((error) => `  ${error}`)
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
+    ...sweepNotes,
     ...failedLines,
     ...alreadyCompressedNotes,
     ...duplicateRangeNotes,

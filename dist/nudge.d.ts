@@ -144,9 +144,38 @@ export interface RangeTableRow<T> {
     readonly range: T;
     /** 1-based age region; every row of one region carries the same number. */
     readonly ageRegion: number;
-    /** 1-based rank inside the age region by the caller's key (1 = cheapest to fold). */
+    /**
+     * Why this interval is on the table (owner ruling, 2026-10-17): each age region
+     * offers its CHEAPEST fold, its LARGEST interval and its OLDEST one. A single
+     * interval can hold several roles at once.
+     */
+    readonly picks: readonly RangeTablePick[];
+}
+/** The three roles a printed row can hold inside its age region. */
+export type RangeTablePick = 'cheapest' | 'largest' | 'oldest';
+/** A row picked by a plain top-N ranking (see {@link rangeTableRowsOfGroups}). */
+export interface RangeTableRankedRow<T> {
+    readonly range: T;
+    readonly ageRegion: number;
+    /** 1-based rank inside the age region by the caller's key (1 = best). */
     readonly rank: number;
 }
+/**
+ * The rows the table prints under the three-role rule (owner ruling, 2026-10-17):
+ * per age region its cheapest fold (lowest billing payback), its largest interval
+ * and its oldest one, deduplicated and printed oldest-first. Fewer than three rows
+ * means two roles landed on the same interval — the table says so instead of
+ * padding the slot with a worse candidate.
+ *
+ * @param groups - the age regions, oldest first.
+ * @param costOf - billing payback of one interval (lower is cheaper).
+ * @returns one row per printed interval, oldest first, each with its roles.
+ */
+export declare function rangeTablePicksOfGroups<T extends {
+    start: number;
+    end: number;
+    tokens: number;
+}>(groups: readonly (readonly T[])[], costOf: (range: T) => number): RangeTableRow<T>[];
 /**
  * The pressure pair the range table's context line prints — the same measurement
  * the nudge decision uses (see `rememberPressure` in buildNudge):
@@ -163,11 +192,10 @@ export interface RangeTableContext {
     readonly missHitRatio: number;
 }
 /**
- * The rows the table prints: the {@link RANGE_TABLE_ROWS_PER_AGE_REGION} intervals
- * of every age region that rank best under `rankKey` — the billing payback in
- * production, so the three rows a region offers are its CHEAPEST folds. Within a
- * region the rows are printed in surface order (oldest first), so the whole table
- * stays the timeline it is; the rank itself follows the key.
+ * Top-N by a caller-supplied key: the generic ranking helper the selection
+ * invariants use (production prints three ROLES per region instead — see
+ * {@link rangeTablePicksOfGroups}). Within a region the rows are printed in
+ * surface order (oldest first), so the table stays the timeline it is.
  *
  * @param groups - the age regions, oldest first (see {@link partitionOfferableIntoAgeRegions}).
  * @param perRegion - rows per age region (defaults to {@link RANGE_TABLE_ROWS_PER_AGE_REGION}).
@@ -179,7 +207,7 @@ export declare function rangeTableRowsOfGroups<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(groups: readonly (readonly T[])[], perRegion?: number, rankKey?: (range: T) => number): RangeTableRow<T>[];
+}>(groups: readonly (readonly T[])[], perRegion?: number, rankKey?: (range: T) => number): RangeTableRankedRow<T>[];
 /**
  * The same rows, straight from the offerable list.
  *
@@ -192,7 +220,7 @@ export declare function selectRangeTableRows<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(all: readonly T[], ageRegions?: number, perRegion?: number, rankKey?: (range: T) => number): RangeTableRow<T>[];
+}>(all: readonly T[], ageRegions?: number, perRegion?: number, rankKey?: (range: T) => number): RangeTableRankedRow<T>[];
 /** Just the offered ranges, in the order the table prints them (tests, scratch tools). */
 export declare function selectRangeTableRanges<T extends {
     start: number;

@@ -52,7 +52,11 @@ export interface RangeTablePrompts {
      * 占位符:{region} {age} {skipped}
      */
     region: string;
-    /** 每行。占位符:{start} {end} {count} {tokens} */
+    /**
+     * 每行。占位符:{start} {end} {count} {tokens} {picks}
+     * {picks}=该行在年龄区域里担任的角色（cheapest / largest / oldest 用 + 连接；
+     * 同一区间可以同时是多个角色）。
+     */
     line: string;
     /**
      * 每行的折叠成本。占位符:{reclaimed} {newer} {invalidated} {breakEven} {flag}

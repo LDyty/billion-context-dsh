@@ -42,8 +42,20 @@ const BILLING_TIP = '计费口径（缓存未命中 ÷ 命中 = 参数里那个�
 const SKIP_TIP = '被跳过次数（年龄区域的属性）：模型每次选择折叠起点（sweep（清扫）算一次），起点没落在本年龄区域（ageRegion）里就 +1；如果这一次是 sweep（清扫，一拍折多个连着的区间），其中别的区间落进了本区域，就把这次的 +1 收回去（折穿就不算跳过）。爬得越高说明模型一直从别的年龄区域开始折、且从没折穿本区域；最小的那个数就是它反复选中的年龄区域。同一年龄区域印出的每一行共享这个数字。'
 
 /** The 年龄区域 header: what a region is, and what the badge beside its name means. */
-const AGE_REGION_TIP = 'ageRegion（年龄区域）：可压内容按年龄等分成 6 个年龄区域，1 最老、6 最新；折叠的起点落在哪个年龄区域，它下面的行就属于哪个区域。每个区域印它最大的 3 个区间（按大小取）。'
+const AGE_REGION_TIP = 'ageRegion（年龄区域）：可压内容按年龄等分成 6 个年龄区域，1 最老、6 最新；折叠的起点落在哪个年龄区域，它下面的行就属于哪个区域。每个区域印三种角色各一条区间：计费回本最低的、最大的、最旧的（同一区间可以兼多个角色）。'
   + SKIP_TIP
+
+/** 行角色（cheapest / largest / oldest）→ 面板里的中文标签。 */
+const PICK_LABEL: Record<'cheapest' | 'largest' | 'oldest', string> = {
+  cheapest: '最便宜',
+  largest: '最大',
+  oldest: '最旧',
+}
+
+/** `最便宜 · 最旧区间` / `最大区间` —— 本行在它那个年龄区域里担的角色。 */
+function PICK_LABEL_OF(picks: readonly ('cheapest' | 'largest' | 'oldest')[]): string {
+  return picks.map((pick) => PICK_LABEL[pick]).join(' · ')
+}
 
 const KIND_LABEL: Record<AcpInspectNode['kind'], string> = {
   tool: 'tool 工具输出',
@@ -219,7 +231,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
         h('td', {
           className: 'acp-age-region',
           title: `ageRegion（年龄区域）${String(row.ageRegion)}：${row.ageRegion === 1 ? '最老的年龄区域' : `从老到新数第 ${String(row.ageRegion)} 个年龄区域`}`
-            + `；本行是它印出的第 ${String(row.rankInAgeRegion)} 便宜区间（每个年龄区域最多印 3 个，按计费回本从低到高取，行的先后仍按 seq 从老到新）。${SKIP_TIP}`,
+            + `；本行担任的角色：${PICK_LABEL_OF(row.picks)}（每个年龄区域印三种角色：计费回本最低、最大、最旧；同一区间可兼多个角色；行的先后仍按 seq 从老到新）。${SKIP_TIP}`,
         }, firstOfRegion
           ? h('div', null,
             h('div', null, row.ageRegion === 1 ? '1 最老' : String(row.ageRegion)),
@@ -228,7 +240,9 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
               className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
               title: SKIP_TIP,
             }, `被跳过 ${String(row.skipped)}×`)))
-          : h('span', { className: 'acp-muted' }, '〃')),
+          : h('span', { className: 'acp-muted' }, '〃'),
+          // The row's roles, visible: 最便宜 / 最大 / 最旧 (a row can hold several).
+          h('span', { className: 'acp-sub', title: `本行担任的角色：${PICK_LABEL_OF(row.picks)}` }, PICK_LABEL_OF(row.picks))),
         h('td', { className: 'acp-range' },
           h('span', {
             title: `seq（事件序号）${String(row.start)}..${String(row.end)}，含首尾${stale ? '；这两个 seq 已不在表面上，行已过期' : ''}。`,

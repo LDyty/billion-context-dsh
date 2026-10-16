@@ -6982,7 +6982,7 @@ var RANGE_TABLE_ALLOWED = {
   context: /* @__PURE__ */ new Set(["used", "window", "pct", "ratio"]),
   title: /* @__PURE__ */ new Set(["count"]),
   region: /* @__PURE__ */ new Set(["region", "age", "skipped"]),
-  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped"]),
+  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped", "picks"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "newer", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["count", "reclaimed", "newer", "invalidated", "breakEven", "coverage", "rowMix", "toolPct", "reasoningPct", "textPct"]),
   footer: /* @__PURE__ */ new Set()
@@ -7071,7 +7071,7 @@ var DEFAULT_PROMPTS = {
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
     // summing to 100).
-    line: "    - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}",
+    line: "    - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media} \xB7 {picks}",
     // Billing caliber (owner ruling, 2026-10-17): the payback is in REQUESTS at the
     // provider's cache pricing — the newer tail (re-sent uncached once) is what
     // dominates it, so it is printed next to what the fold reclaims.
@@ -7080,8 +7080,11 @@ var DEFAULT_PROMPTS = {
     // batch's totals — including the summed character partition and row mix,
     // the same two figures every row carries — and points at acp_status for the
     // list the model must fetch anyway before compressing.
-    batch: "        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s))",
-    footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSweep entries are not printed: the exact spans of any sweep come from acp_status({ scope: "uncompressed", view: "ranges" }).\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.'
+    batch: '        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s)) \xB7 one call: endSeq:"sweep"',
+    footer: `Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
+A sweep folds in ONE call with ONE shared summary \u2014 name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The sweep's exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
+Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
+Before you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`
   },
   tools: {
     // Short, STABLE contracts. The rules these used to carry (timing, the
@@ -8665,6 +8668,9 @@ function skippedLabel(count) {
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
+function pickLabel(picks) {
+  return picks.join("+");
+}
 function paybackLabel(requests) {
   if (!Number.isFinite(requests)) return "\u221E";
   return requests.toFixed(1);
@@ -8699,14 +8705,22 @@ function partitionOfferableIntoAgeRegions(all, ageRegions = RANGE_TABLE_AGE_REGI
   close();
   return groups;
 }
-function rangeTableRowsOfGroups(groups, perRegion = RANGE_TABLE_ROWS_PER_AGE_REGION, rankKey = (range) => -range.tokens) {
+function rangeTablePicksOfGroups(groups, costOf) {
   const rows = [];
-  const take = Math.max(1, perRegion);
   for (const [index, group] of groups.entries()) {
-    const ranked = [...group].sort((left, right) => rankKey(left) - rankKey(right) || left.start - right.start).slice(0, take);
-    const rankOf = new Map(ranked.map((range, position) => [range, position + 1]));
-    for (const range of ranked.sort((left, right) => left.start - right.start)) {
-      rows.push({ range, ageRegion: index + 1, rank: rankOf.get(range) ?? 1 });
+    if (group.length === 0) continue;
+    const cheapest = group.reduce((best, range) => costOf(range) < costOf(best) ? range : best);
+    const largest = group.reduce((best, range) => range.tokens > best.tokens ? range : best);
+    const oldest = group.reduce((best, range) => range.start < best.start ? range : best);
+    const roles = [["cheapest", cheapest], ["largest", largest], ["oldest", oldest]];
+    const picksOf = /* @__PURE__ */ new Map();
+    for (const [pick, range] of roles) {
+      const list = picksOf.get(range);
+      if (list === void 0) picksOf.set(range, [pick]);
+      else list.push(pick);
+    }
+    for (const range of [...picksOf.keys()].sort((left, right) => left.start - right.start)) {
+      rows.push({ range, ageRegion: index + 1, picks: picksOf.get(range) });
     }
   }
   return rows;
@@ -8725,9 +8739,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     paybackOfRange.set(range, cost === void 0 ? Number.POSITIVE_INFINITY : billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatioForRank));
   }
   const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges);
-  const rangeRows = rangeTableRowsOfGroups(
+  const rangeRows = rangeTablePicksOfGroups(
     ageRegionGroups,
-    RANGE_TABLE_ROWS_PER_AGE_REGION,
     (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY
   );
   if (rangeRows.length === 0) return "";
@@ -8738,7 +8751,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   noteOfferableSpans(String(session.id), ranges.map((range) => ({ start: range.start, end: range.end })));
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id));
   const missHitRatio = missHitRatioForRank;
-  const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {
+  const baseRows = rangeRows.map(({ range, ageRegion, picks }) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
     const paybackRequests = billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatio);
@@ -8746,7 +8759,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       range,
       at,
       ageRegion,
-      rank,
+      picks,
       cost,
       /** Tokens newer than this span: re-sent uncached once (see the helper). */
       newerTokens: Math.max(0, cost.invalidatedTokens - range.tokens),
@@ -8811,7 +8824,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     }));
   }
   let previousAgeRegion = 0;
-  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion, newerTokens, paybackRequests }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion, newerTokens, paybackRequests, picks }) => {
     const rows = [];
     if (ageRegion !== previousAgeRegion) {
       previousAgeRegion = ageRegion;
@@ -8833,6 +8846,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
+        // Why this interval is on the table: its role(s) inside the age region.
+        picks: pickLabel(picks),
         // Kept in the placeholder set for custom templates; the default prints the
         // count on the region layer instead (it is the region's number, not a row's).
         skipped: skippedLabel(ageRegionSkips[ageRegion - 1] ?? 0)
@@ -8854,7 +8869,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     String(session.id),
     baseRows.map((row) => ({
       ageRegion: row.ageRegion,
-      rankInAgeRegion: row.rank,
+      picks: row.picks,
       start: row.range.start,
       end: row.range.end,
       messages: row.range.count,
@@ -9244,7 +9259,7 @@ var compressParameters = {
             endSeq: {
               oneOf: [
                 { type: "integer", description: "Inclusive last surface seq of the range." },
-                { type: "string", description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") \u2014 for a multi-block condense name the LAST block id (tier 3).' }
+                { type: "string", description: `Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") \u2014 for a multi-block condense name the LAST block id (tier 3). Or the literal "sweep": fold the whole forward sweep that starts at startSeq in ONE call, every span sharing your summary (see the table's sweep lines).` }
               ]
             },
             summary: {
@@ -9376,12 +9391,54 @@ function unwrapEnvelope(args) {
   if (typeof inner !== "object" || inner === null || Array.isArray(inner)) return args;
   return { ...args, ...inner };
 }
+var SWEEP_END = "sweep";
+function isSweepEnd(value) {
+  return typeof value === "string" && value.trim().toLowerCase() === SWEEP_END;
+}
+function isPlainSeq(value) {
+  if (typeof value === "number") return Number.isInteger(value);
+  return typeof value === "string" && /^\d+$/.test(value.trim());
+}
+function expandSweepEntries(session, turn, mediaPriceOf, content) {
+  if (!content.some((item) => isSweepEnd(item.endSeq))) return { content, notes: [] };
+  const view = { ranges: turn.nudge?.compressibleRanges ?? [], refs: turn.state.messageRefs };
+  const offerable2 = buildCompressibleSeqRanges(session, view, mediaPriceOf === void 0 ? {} : { mediaPriceOf });
+  const costs = foldCostsOfRanges(session, offerable2, mediaPriceOf);
+  const notes = [];
+  const out = [];
+  for (const item of content) {
+    if (!isSweepEnd(item.endSeq)) {
+      out.push(item);
+      continue;
+    }
+    const start = Number(String(item.startSeq).trim());
+    let base = offerable2.findIndex((span) => span.start <= start && start <= span.end);
+    if (base < 0) base = offerable2.findIndex((span) => span.start >= start);
+    const sweep = base < 0 ? void 0 : sweepFromBaseRange(offerable2, costs, base);
+    if (sweep === void 0) {
+      notes.push(
+        `  seqs ${String(item.startSeq)}..sweep \u2014 nothing to sweep from there: no offerable span starts at or after it (the seq is already compressed, or the table has moved on). Run acp_status for current seqs, or fold a single range explicitly.`
+      );
+      continue;
+    }
+    notes.push(
+      `  seqs ${String(sweep.entries[0].start)}..sweep expanded to ${String(sweep.entries.length)} ranges (${String(sweep.entries[0].start)}..${String(sweep.entries[sweep.entries.length - 1].end)}), one shared summary each`
+    );
+    for (const entry of sweep.entries) {
+      out.push({ ...item, startSeq: entry.start, endSeq: entry.end });
+    }
+  }
+  return { content: out, notes };
+}
 function validateContentItems(content) {
   const violations = [];
   content.forEach((item, index) => {
     const path2 = `content[${index}]`;
     if (item.startSeq === void 0) violations.push(`missing required property "${path2}.startSeq"`);
     if (item.endSeq === void 0) violations.push(`missing required property "${path2}.endSeq"`);
+    else if (isSweepEnd(item.endSeq) && !isPlainSeq(item.startSeq)) {
+      violations.push(`"${path2}.endSeq": "sweep" needs an integer startSeq (the row's first seq), got ${JSON.stringify(item.startSeq)}`);
+    }
     if (typeof item.summary !== "string" || item.summary.trim().length === 0) {
       violations.push(`missing required property "${path2}.summary"`);
     }
@@ -9489,13 +9546,17 @@ async function handleCompress(env, args, exec) {
   const byRaw = turn.state.messageRefs.byRaw;
   const byRef = turn.state.messageRefs.byRef;
   const thinking = reasoningForToolCall(session.snapshotEvents(), exec.callId);
-  const content = unwrapCompressArgs(args);
+  const rawContent = unwrapCompressArgs(args);
+  const content = rawContent;
   if (content === null) {
     return {
       text: "compress: missing content \u2014 pass the content array directly: compress({ content: [{ startSeq, endSeq, summary }] })"
     };
   }
-  validateContentItems(content);
+  const sweepExpansion = expandSweepEntries(session, turn, void 0, content);
+  const sweepNotes = sweepExpansion.notes;
+  const expanded = sweepExpansion.content;
+  validateContentItems(expanded);
   const ranges = [];
   const alreadyCompressedNotes = [];
   const rejectedNotes = [];
@@ -9504,7 +9565,7 @@ async function handleCompress(env, args, exec) {
   const guardedSeqs = guardedSurfaceSeqsOf(session);
   const splitNotes = [];
   const carrierSpans = env.carrierSpans ?? "split";
-  for (const range of content) {
+  for (const range of expanded) {
     const startSeq = parseBoundary2(range.startSeq, byRef, session);
     const endSeq = parseBoundary2(range.endSeq, byRef, session);
     let resolved;
@@ -9620,7 +9681,7 @@ async function handleCompress(env, args, exec) {
     return false;
   });
   if (foldable.length === 0) {
-    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes];
+    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...sweepNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes];
     if (alreadyCompressedNotes.length > 0) {
       text.push("  (all requested ranges were already compressed \u2014 decompress a block to recover its originals)");
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
@@ -9735,6 +9796,7 @@ async function handleCompress(env, args, exec) {
   const failedLines = applied.result.errors.map((error) => `  ${error}`);
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
+    ...sweepNotes,
     ...failedLines,
     ...alreadyCompressedNotes,
     ...duplicateRangeNotes,

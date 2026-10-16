@@ -196,12 +196,17 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
       assert.equal(partition![2], '0', 'a text-only fixture reports no scratchpad')
       assert.match(line, /re-sends \S+ tok newer uncached once \(pays back in ~[\d.∞]+ request\(s\)\)/, 'the billing arithmetic survives')
     }
-    // The list's source is named ONCE for the whole table (owner ruling,
-    // 2026-10-16): printing it on every sweep line was the same sentence
-    // seventeen times over.
+    // The sweep's own span list is named ONCE for the whole table (owner ruling,
+    // 2026-10-16), and since 2026-10-17 the table also teaches the shorthand that
+    // makes the list unnecessary: one entry with a shared summary. Every sweep
+    // line points at it in three words.
     assert.ok(
-      text.includes('Sweep entries are not printed: the exact spans of any sweep come from acp_status'),
+      text.includes('A sweep folds in ONE call with ONE shared summary'),
       'the table names one source for every sweep list',
+    )
+    assert.ok(
+      text.includes('one call: endSeq:"sweep"'),
+      'and every sweep line points at the shorthand',
     )
   }
 })

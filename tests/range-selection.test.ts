@@ -24,6 +24,7 @@ import test from 'node:test'
 import {
   RANGE_TABLE_LIMIT,
   RANGE_TABLE_ROWS_PER_AGE_REGION,
+  rangeTablePicksOfGroups,
   rangeTableRowsOfGroups,
   selectRangeTableRanges,
   selectRangeTableRows,
@@ -51,10 +52,37 @@ test('range selection: one age region offers its three largest intervals, oldest
 })
 
 /**
- * The production ranker is the BILLING PAYBACK (owner ruling, 2026-10-17), not
- * size: inside one age region a smaller, later-starting interval can re-send far
- * less of the prefix than the largest one, so the region must offer the cheapest
- * three. The default ranker stays size-based for the pure-geometry callers.
+ * Every age region offers three ROLES (owner ruling, 2026-10-17): its cheapest
+ * fold, its largest interval and its oldest one. The roles are concepts, not
+ * slots, so two of them landing on the SAME interval collapses the row while
+ * KEEPING both labels — the table explains itself instead of duplicating.
+ */
+test('range selection: the three roles collapse onto one row and keep every label', () => {
+  const groups = [[range(10, 300), range(20, 100), range(30, 500)]]
+  const cost = new Map([[10, 9], [20, 1], [30, 9]])
+  const rows = rangeTablePicksOfGroups(groups, (entry) => cost.get(entry.start)!)
+  assert.deepEqual(rows.map((row) => row.range.start), [10, 20, 30], 'printed oldest-first')
+  assert.deepEqual(
+    rows.map((row) => [...row.picks]),
+    [['oldest'], ['cheapest'], ['largest']],
+    'each role lands on its own interval here',
+  )
+
+  // One interval holding all three roles: ONE row, all three labels.
+  const collapsed = rangeTablePicksOfGroups([[range(10, 500), range(20, 100)]], (entry) => (entry.start === 10 ? 1 : 9))
+  assert.equal(collapsed.length, 1, 'a duplicate role set does not pad the table')
+  assert.deepEqual([...collapsed[0]!.picks], ['cheapest', 'largest', 'oldest'], 'and every concept label survives')
+
+  // Two roles on one interval: the row says exactly which two.
+  const pair = rangeTablePicksOfGroups([[range(10, 500), range(20, 100)]], (entry) => (entry.start === 20 ? 1 : 9))
+  assert.deepEqual(pair.map((row) => row.range.start), [10, 20])
+  assert.deepEqual([...pair[0]!.picks], ['largest', 'oldest'])
+  assert.deepEqual([...pair[1]!.picks], ['cheapest'])
+})
+
+/**
+ * The generic top-N helper is still available (and still defaults to size) for
+ * the pure-geometry callers; the table itself uses the role selector above.
  */
 test('range selection: a payback ranker makes a region offer its cheapest intervals, not its largest', () => {
   const groups = [[range(10, 300), range(20, 100)]]

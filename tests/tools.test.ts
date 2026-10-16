@@ -361,6 +361,43 @@ test('M3: successful compress registers its call id for post-result pair hiding'
   assert.ok(env.compressCallIdsToHide!.has('call-acp'), 'the engine knows to hide this compress call/result after the tool result lands')
 })
 
+/**
+ * The sweep shorthand (owner ruling, 2026-10-17): one entry with
+ * `endSeq: "sweep"` and ONE summary is expanded by the host into the whole
+ * forward sweep that starts at its startSeq — the run the table's "sweep from
+ * here" line describes — so a sweep no longer needs acp_status for its span list.
+ */
+test('M3: `endSeq: "sweep"` folds the whole forward run in one call with a shared summary', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(24)
+  const nodes = [...session.surface.nodes]
+  // Two disjoint offerable spans: the sweep from the first must cover both.
+  const view = {
+    ranges: [{ startRef: 's1', endRef: 'e1' }, { startRef: 's2', endRef: 'e2' }],
+    refs: {
+      byRef: {
+        s1: String(nodes[0]!), e1: String(nodes[2]!),
+        s2: String(nodes[6]!), e2: String(nodes[8]!),
+      },
+    },
+  }
+  const compress = toolOf(env, 'compress')
+  const shared = 'Sweep round: consumed probe output and its retries — nothing kept that this task still needs, decompress for the raw logs.'
+  const result = await compress.execute({
+    content: [{ startSeq: nodes[0]!, endSeq: 'sweep', summary: shared }],
+  } as never, fakeExec(session))
+  const text = (result as { text: string }).text
+  const expanded = /expanded to (\d+) ranges/.exec(text)
+  assert.ok(expanded !== null, `the result says what the shorthand expanded to (${text.slice(0, 160)})`)
+  const blocks = [...text.matchAll(/block [0-9a-f]+: seqs/g)].length
+  assert.ok(blocks >= 2, `the sweep folded more than one span (${String(blocks)})`)
+  assert.equal(blocks, Number(expanded![1]), 'one block per expanded span')
+  const summaries = rebuildBlockLedger(session.snapshotEvents()).map((entry) => entry.summary)
+  assert.equal(summaries.length, blocks, 'every block is in the ledger')
+  // The stored summary carries the host's frame prefix, so compare by content.
+  assert.ok(summaries.every((entry) => entry.includes(shared)), 'and every block carries the SAME summary')
+})
+
 test('M3: compress accepts multiple disjoint ranges in one call, each its own block', async () => {
   const env = makeEnv()
   const session = buildTextSession(12)

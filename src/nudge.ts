@@ -270,6 +270,14 @@ function compactTokens(tokens: number): string {
 }
 
 /**
+ * The row's roles on one line, `+`-joined: `cheapest+oldest`. One interval can
+ * hold several roles, and the table says so instead of duplicating the row.
+ */
+function pickLabel(picks: readonly RangeTablePick[]): string {
+  return picks.join('+')
+}
+
+/**
  * The billing payback as a figure: a plain request count, `0` when the fold is
  * already profitable on the first request, `∞` when the summary alone outweighs
  * what the fold reclaims.
@@ -354,8 +362,58 @@ export interface RangeTableRow<T> {
   readonly range: T
   /** 1-based age region; every row of one region carries the same number. */
   readonly ageRegion: number
-  /** 1-based rank inside the age region by the caller's key (1 = cheapest to fold). */
+  /**
+   * Why this interval is on the table (owner ruling, 2026-10-17): each age region
+   * offers its CHEAPEST fold, its LARGEST interval and its OLDEST one. A single
+   * interval can hold several roles at once.
+   */
+  readonly picks: readonly RangeTablePick[]
+}
+
+/** The three roles a printed row can hold inside its age region. */
+export type RangeTablePick = 'cheapest' | 'largest' | 'oldest'
+
+/** A row picked by a plain top-N ranking (see {@link rangeTableRowsOfGroups}). */
+export interface RangeTableRankedRow<T> {
+  readonly range: T
+  readonly ageRegion: number
+  /** 1-based rank inside the age region by the caller's key (1 = best). */
   readonly rank: number
+}
+
+/**
+ * The rows the table prints under the three-role rule (owner ruling, 2026-10-17):
+ * per age region its cheapest fold (lowest billing payback), its largest interval
+ * and its oldest one, deduplicated and printed oldest-first. Fewer than three rows
+ * means two roles landed on the same interval — the table says so instead of
+ * padding the slot with a worse candidate.
+ *
+ * @param groups - the age regions, oldest first.
+ * @param costOf - billing payback of one interval (lower is cheaper).
+ * @returns one row per printed interval, oldest first, each with its roles.
+ */
+export function rangeTablePicksOfGroups<T extends { start: number; end: number; tokens: number }>(
+  groups: readonly (readonly T[])[],
+  costOf: (range: T) => number,
+): RangeTableRow<T>[] {
+  const rows: RangeTableRow<T>[] = []
+  for (const [index, group] of groups.entries()) {
+    if (group.length === 0) continue
+    const cheapest = group.reduce((best, range) => (costOf(range) < costOf(best) ? range : best))
+    const largest = group.reduce((best, range) => (range.tokens > best.tokens ? range : best))
+    const oldest = group.reduce((best, range) => (range.start < best.start ? range : best))
+    const roles: Array<[RangeTablePick, T]> = [['cheapest', cheapest], ['largest', largest], ['oldest', oldest]]
+    const picksOf = new Map<T, RangeTablePick[]>()
+    for (const [pick, range] of roles) {
+      const list = picksOf.get(range)
+      if (list === undefined) picksOf.set(range, [pick])
+      else list.push(pick)
+    }
+    for (const range of [...picksOf.keys()].sort((left, right) => left.start - right.start)) {
+      rows.push({ range, ageRegion: index + 1, picks: picksOf.get(range)! })
+    }
+  }
+  return rows
 }
 
 /**
@@ -375,11 +433,10 @@ export interface RangeTableContext {
 }
 
 /**
- * The rows the table prints: the {@link RANGE_TABLE_ROWS_PER_AGE_REGION} intervals
- * of every age region that rank best under `rankKey` — the billing payback in
- * production, so the three rows a region offers are its CHEAPEST folds. Within a
- * region the rows are printed in surface order (oldest first), so the whole table
- * stays the timeline it is; the rank itself follows the key.
+ * Top-N by a caller-supplied key: the generic ranking helper the selection
+ * invariants use (production prints three ROLES per region instead — see
+ * {@link rangeTablePicksOfGroups}). Within a region the rows are printed in
+ * surface order (oldest first), so the table stays the timeline it is.
  *
  * @param groups - the age regions, oldest first (see {@link partitionOfferableIntoAgeRegions}).
  * @param perRegion - rows per age region (defaults to {@link RANGE_TABLE_ROWS_PER_AGE_REGION}).
@@ -391,8 +448,8 @@ export function rangeTableRowsOfGroups<T extends { start: number; end: number; t
   groups: readonly (readonly T[])[],
   perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
   rankKey: (range: T) => number = (range) => -range.tokens,
-): RangeTableRow<T>[] {
-  const rows: RangeTableRow<T>[] = []
+): RangeTableRankedRow<T>[] {
+  const rows: RangeTableRankedRow<T>[] = []
   const take = Math.max(1, perRegion)
   for (const [index, group] of groups.entries()) {
     const ranked = [...group]
@@ -419,7 +476,7 @@ export function selectRangeTableRows<T extends { start: number; end: number; tok
   ageRegions: number = RANGE_TABLE_AGE_REGIONS,
   perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
   rankKey?: (range: T) => number,
-): RangeTableRow<T>[] {
+): RangeTableRankedRow<T>[] {
   return rangeTableRowsOfGroups(partitionOfferableIntoAgeRegions(all, ageRegions), perRegion, rankKey)
 }
 
@@ -466,13 +523,14 @@ export function rangeTable(
       : billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatioForRank))
   }
   // The age regions are cut ONCE: their spans are what a later fold start is
-  // attributed against (src/age-region-skips.ts), and the printed rows are the
-  // cheapest-to-fold intervals inside them. Panel rebuilds record the same
-  // regions as a nudge does — a build is never a choice, so nothing increments.
+  // attributed against (src/age-region-skips.ts). Each region then offers THREE
+  // ROLES (owner ruling, 2026-10-17): its cheapest fold, its largest interval and
+  // its oldest one — cheap enough to act on, big enough to be worth it, old enough
+  // to keep the timeline honest. Panel rebuilds record the same regions as a nudge
+  // does — a build is never a choice, so nothing increments.
   const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges)
-  const rangeRows = rangeTableRowsOfGroups(
+  const rangeRows = rangeTablePicksOfGroups(
     ageRegionGroups,
-    RANGE_TABLE_ROWS_PER_AGE_REGION,
     (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY,
   )
   // 零范围:整块省略(保留现状的提前返回与 nudge 尾部 '\n')。
@@ -494,7 +552,7 @@ export function rangeTable(
   const missHitRatio = missHitRatioForRank
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
-  const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {
+  const baseRows = rangeRows.map(({ range, ageRegion, picks }) => {
     const at = ranges.indexOf(range)
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
     const paybackRequests = billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatio)
@@ -502,7 +560,7 @@ export function rangeTable(
       range,
       at,
       ageRegion,
-      rank,
+      picks,
       cost,
       /** Tokens newer than this span: re-sent uncached once (see the helper). */
       newerTokens: Math.max(0, cost.invalidatedTokens - range.tokens),
@@ -583,7 +641,7 @@ export function rangeTable(
     }))
   }
   let previousAgeRegion = 0
-  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion, newerTokens, paybackRequests }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion, newerTokens, paybackRequests, picks }) => {
     const rows: string[] = []
     // The age-region layer, printed once per region: its name and number, and the
     // pass-over count that belongs to the REGION (not to any one interval), with
@@ -608,6 +666,8 @@ export function rangeTable(
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
+        // Why this interval is on the table: its role(s) inside the age region.
+        picks: pickLabel(picks),
         // Kept in the placeholder set for custom templates; the default prints the
         // count on the region layer instead (it is the region's number, not a row's).
         skipped: skippedLabel(ageRegionSkips[ageRegion - 1] ?? 0),
@@ -631,7 +691,7 @@ export function rangeTable(
     String(session.id),
     baseRows.map((row) => ({
       ageRegion: row.ageRegion,
-      rankInAgeRegion: row.rank,
+      picks: row.picks,
       start: row.range.start,
       end: row.range.end,
       messages: row.range.count,

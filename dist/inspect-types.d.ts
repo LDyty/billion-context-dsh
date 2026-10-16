@@ -28,12 +28,11 @@ export interface AcpInspectRow {
     /** 1-based age region index; age region 1 is the oldest sixth of the reclaimable content. */
     readonly ageRegion: number;
     /**
-     * 1-based rank of this row's interval inside its age region by BILLING PAYBACK
-     * (1 = that region's cheapest to fold; owner ruling 2026-10-17). Every age
-     * region prints up to three intervals
-     * ({@link RANGE_TABLE_ROWS_PER_AGE_REGION} in src/nudge.ts).
+     * Why this interval was picked (owner ruling, 2026-10-17): every age region
+     * prints its cheapest fold, its largest interval and its oldest one, so a row
+     * carries one or more of `cheapest` / `largest` / `oldest`.
      */
-    readonly rankInAgeRegion: number;
+    readonly picks: readonly ('cheapest' | 'largest' | 'oldest')[];
     readonly start: number;
     readonly end: number;
     readonly messages: number;
