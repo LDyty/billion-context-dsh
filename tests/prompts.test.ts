@@ -212,7 +212,10 @@ test('M4/prompts 4b: a range row reports how much of its mass is reasoning (scra
     stream: [],
     message: createAssistantMessage({
       content: [
-        { type: 'thinking', thinking: 'Scratchpad: weigh option A against option B. '.repeat(80) },
+        // The DURABLE shape (what the session log stores): `{type:'reasoning', text}`.
+        // The provider-side `{type:'thinking', thinking}` spelling is covered by
+        // the second assistant row below.
+        { type: 'reasoning', text: 'Scratchpad: weigh option A against option B. '.repeat(80) },
         { type: 'tool-call', id: 'call-share-1', name: 'bash', arguments: '{"command":"ls"}' },
       ],
       provider: 'test-provider',
@@ -221,7 +224,19 @@ test('M4/prompts 4b: a range row reports how much of its mass is reasoning (scra
   }, { surfaceOp: 'append' })
   appendToolResult(session, longText('out', 1), 'call-share-1')
   appendUser(session, longText('q1', 2))
-  appendAssistant(session, longText('a1', 3), 1, 3)
+  session.append('assistant/message', {
+    turn: 1,
+    step: 3,
+    stream: [],
+    message: createAssistantMessage({
+      content: [
+        { type: 'thinking', thinking: 'Provider-side spelling: the same scratchpad. '.repeat(40) },
+        { type: 'text', text: longText('a1', 3) },
+      ],
+      provider: 'test-provider',
+      model: 'test-model',
+    }),
+  }, { surfaceOp: 'append' })
   appendUser(session, longText('q2', 4))
   appendAssistant(session, longText('a2', 5), 1, 5)
   appendUser(session, longText('q3', 6))

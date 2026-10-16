@@ -1521,10 +1521,18 @@ function priceSurfaceSlice(
 
 /**
  * Character mass of one surface row: everything the prompt carries, split into
- * reasoning and the rest. Text, thinking and tool-call argument strings are
+ * reasoning and the rest. Text, reasoning and tool-call argument strings are
  * counted at any nesting depth (tool results nest their payload one level
  * down); attachments and structural blocks contribute nothing, matching
  * `extractText`'s contract.
+ *
+ * Reasoning arrives in TWO spellings: the durable DSH event shape
+ * `{ type: 'reasoning', text }` (what the session log actually stores — audited
+ * 2026-10-16: 31 reasoning blocks, keys `type+text`) and the provider-side
+ * Anthropic shape `{ type: 'thinking', thinking }` seen in request bodies. The
+ * first cut of this helper only knew the second one, so every live row reported
+ * `reasoning 0%`; both are recognized here so a projection change cannot
+ * silently zero the column again.
  */
 function characterMassOf(event: SessionEvent): { total: number; reasoning: number } {
   const blocks = (event.data as { content?: unknown; message?: { content?: unknown } }).content
@@ -1536,7 +1544,10 @@ function characterMassOf(event: SessionEvent): { total: number; reasoning: numbe
     for (const block of value) {
       if (block === null || typeof block !== 'object') continue
       const entry = block as { type?: unknown; text?: unknown; thinking?: unknown; arguments?: unknown; content?: unknown }
-      if (typeof entry.text === 'string') total += entry.text.length
+      if (typeof entry.text === 'string') {
+        total += entry.text.length
+        if (entry.type === 'reasoning') reasoning += entry.text.length
+      }
       if (typeof entry.arguments === 'string') total += entry.arguments.length
       if (typeof entry.thinking === 'string') {
         total += entry.thinking.length

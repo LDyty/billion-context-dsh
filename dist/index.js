@@ -7816,7 +7816,10 @@ function characterMassOf(event) {
     for (const block of value) {
       if (block === null || typeof block !== "object") continue;
       const entry = block;
-      if (typeof entry.text === "string") total += entry.text.length;
+      if (typeof entry.text === "string") {
+        total += entry.text.length;
+        if (entry.type === "reasoning") reasoning += entry.text.length;
+      }
       if (typeof entry.arguments === "string") total += entry.arguments.length;
       if (typeof entry.thinking === "string") {
         total += entry.thinking.length;

@@ -95,6 +95,14 @@ test('inspect: the snapshot serves the remembered table, map kinds and settings'
   // The panel mirrors the nudge's `offered N×` column too (same counter).
   assert.ok(snapshot.rows.every((row) => row.offered >= 1), 'every row carries its offer count')
   assert.equal(snapshot.rows[0]!.offered, 1, 'and a first build reports 1')
+  // …and the reasoning column: the panel prints the SAME character-based share
+  // the nudge row prints (one remembered build, no recomputation).
+  for (const row of snapshot.rows) {
+    assert.ok(Number.isInteger(row.reasoningPct) && row.reasoningPct >= 0 && row.reasoningPct <= 100,
+      `row ${row.start}..${row.end} carries its reasoning share`)
+    assert.ok(text.includes(`| reasoning ${row.reasoningPct}% |`),
+      `row ${row.start}..${row.end} prints the same reasoning share as the panel`)
+  }
 
   // The map's legend matches the engine's folding decision, not a second opinion.
   const kinds = new Map(snapshot.map.map((node) => [node.seq, node.kind]))
