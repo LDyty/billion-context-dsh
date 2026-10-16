@@ -213,12 +213,12 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
       h('th', { title: AGE_REGION_TIP }, '年龄区域'),
       // 列名不叫「范围」：这个说法会和整张表的「可压范围」撞车，读者分不清是
       // 「这一行要折的那个区间」还是「整张表所有可压的区间」。一行 = 一个区间；
-      // 每个年龄区域印它最大的 3 个区间。
-      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本行折叠时实际覆盖的那个区间。每个年龄区域印「计费回本」最低的 3 个（行仍按 seq 从老到新排）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
+      // 每个年龄区域按三种角色各印一条：最便宜 / 最大 / 最旧（角色可叠在同一条上）。
+      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本行折叠时实际覆盖的那个区间。每个年龄区域印三种角色各一条：计费回本最低的、最大的、最旧的（同一区间可兼多个角色，行仍按 seq 从老到新排）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
       h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
       h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
       h('th', { title: `invalidated（作废）＝ 折叠这一行要让下一发请求重新按未命中发送多少 token（词元）＝ 被折内容 + 更新的尾部；回本 ＝ 按缓存计费算，这笔重写要多少次请求才赚回来（≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠）。被跳过次数是年龄区域的属性，印在「年龄区域」那一格。${BILLING_TIP}` }, '代价'),
-      h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 回本倍数）；与 nudge（提醒文本）里那一行是同一组数字。' }, '清扫'),
+      h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 计费回本次数）；与 nudge（提醒文本）里那一行是同一组数字。模型可以一次调用执行它：endSeq 写 "sweep"，整串区间共用一条摘要。' }, '清扫'),
       h('th', { title: '复制一条可直接粘贴的 compress（压缩）调用。' }, ''))),
     h('tbody', null, rows.map((row, rowIndex) => {
       const sweep = sweepOf(row.start)
@@ -337,7 +337,7 @@ function Params(props: { snapshot: AcpInspectSnapshot }): ReactElement {
     // 计费比值：缓存未命中价 ÷ 缓存命中价。nudge 里作为事实印给模型，这里是同一个数，
     // 顺带给出改它的命令。
     h('div', { title: '缓存未命中 ÷ 缓存命中 的单价倍数：模型按这个比值把「折叠一次性重写」换算成钱（作废 ~X token × 这个倍数，对比之后每次请求省下的 ~Y token）。' },
-      `计费：缓存未命中 / 命中 = ${String(settings.cacheMissPriceRatio)}×（可设）`),
+      `计费：缓存未命中 / 命中 = ${String(settings.cacheMissPriceRatio)}×（可设）· 回本 ⚠ 阈值 ${String(WARN_PAYBACK_REQUESTS)} 次 · 摘要按被折内容的 4.5% 估`),
     h('div', { className: 'acp-row-head' },
       h('code', null, line),
       h(CopyButton, { text: line })),
