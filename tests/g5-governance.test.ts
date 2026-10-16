@@ -129,7 +129,7 @@ test('B6-3 默认模板不再内嵌 {philosophy}，但 systemPrompt 覆盖通道
 // 结构化字段在模型工具面上不可达。此例锁住「声明面必须暴露该字段」，
 // 同时锁住 additionalProperties 仍为 false（不放宽未知字段）。
 test('B3-4 工具面可达：compress 参数 schema 必须声明 verifiedReadings', () => {
-  const items = compressParameters.content.items
+  const items = compressParameters.content.oneOf[0].items
   assert.equal(items.additionalProperties, false, '未知字段仍应被拒（不靠放宽 additionalProperties 修）')
   const prop = items.properties.verifiedReadings
   assert.ok(prop, 'content[].verifiedReadings 必须在声明里，否则 schema 闸会拒收合法调用')

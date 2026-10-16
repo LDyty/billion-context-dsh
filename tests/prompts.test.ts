@@ -225,7 +225,7 @@ test('M4/prompts 5f: the discard form is sanctioned in BOTH the tool description
   )
   assert.ok(compress.includes('never silently skip it'), 'and forbids dropping the entry instead')
   assert.ok(
-    compressParameters.content.items.properties.summary.description.includes('(discarded)'),
+    compressParameters.content.oneOf[0].items.properties.summary.description.includes('(discarded)'),
     'the summary field itself shows the form (that is what the model sees while writing it)',
   )
   assert.ok(

@@ -70,50 +70,52 @@ export declare const compressParameters: {
         readonly description: 'Fallback topic for entries without their own.';
     };
     readonly content: {
-        readonly type: 'array';
-        readonly description: 'One or more ranges to compress, each with startSeq/endSeq boundaries (surface seqs) and a dense summary. Required — pass it directly, not wrapped in an arguments key.';
-        readonly items: {
-            readonly type: 'object';
-            readonly properties: {
-                readonly startSeq: {
-                    readonly required: true;
-                    readonly oneOf: readonly [{
-                        readonly type: 'integer';
-                        readonly description: 'First surface seq of the range.';
-                    }, {
-                        readonly type: 'string';
-                        readonly description: 'Seq as text; a trailing #callId fragment is ignored. A drilldown mN ref ("m00306") or a kernel block id ("b1", as acp_status lists) is also accepted — a block id resolves to that block\'s checkpoint seq, which makes the fold a tier 2/3 distillation.';
-                    }];
-                };
-                readonly endSeq: {
-                    readonly required: true;
-                    readonly oneOf: readonly [{
-                        readonly type: 'integer';
-                        readonly description: 'Inclusive last surface seq of the range.';
-                    }, {
-                        readonly type: 'string';
-                        readonly description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3).';
-                    }];
-                };
-                readonly summary: {
-                    readonly type: 'string';
-                    readonly required: true;
-                    readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.';
-                };
-                readonly topic: {
-                    readonly type: 'string';
-                    readonly description: 'Short label (3-5 words) for this range.';
-                };
-                readonly verifiedReadings: {
-                    readonly type: 'array';
-                    readonly items: {
-                        readonly type: 'string';
+        readonly oneOf: readonly [{
+            readonly type: 'array';
+            readonly description: 'One or more ranges to compress, each with startSeq/endSeq boundaries (surface seqs) and a dense summary. Required — pass it directly, not wrapped in an arguments key.';
+            readonly items: {
+                readonly type: 'object';
+                readonly properties: {
+                    readonly startSeq: {
+                        readonly oneOf: readonly [{
+                            readonly type: 'integer';
+                            readonly description: 'First surface seq of the range.';
+                        }, {
+                            readonly type: 'string';
+                            readonly description: 'Seq as text; a trailing #callId fragment is ignored. A drilldown mN ref ("m00306") or a kernel block id ("b1", as acp_status lists) is also accepted — a block id resolves to that block\'s checkpoint seq, which makes the fold a tier 2/3 distillation.';
+                        }];
                     };
-                    readonly description: 'Optional: acceptance readings that are already green before this compression (e.g. "t0-fastpath 8/8", "closedloop 414/414"). Stored structurally on the compaction/summary event and recovered by verifiedReadingsOf, so later steps need not re-run the checks.';
+                    readonly endSeq: {
+                        readonly oneOf: readonly [{
+                            readonly type: 'integer';
+                            readonly description: 'Inclusive last surface seq of the range.';
+                        }, {
+                            readonly type: 'string';
+                            readonly description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3).';
+                        }];
+                    };
+                    readonly summary: {
+                        readonly type: 'string';
+                        readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.';
+                    };
+                    readonly topic: {
+                        readonly type: 'string';
+                        readonly description: 'Short label (3-5 words) for this range.';
+                    };
+                    readonly verifiedReadings: {
+                        readonly type: 'array';
+                        readonly items: {
+                            readonly type: 'string';
+                        };
+                        readonly description: 'Optional: acceptance readings that are already green before this compression (e.g. "t0-fastpath 8/8", "closedloop 414/414"). Stored structurally on the compaction/summary event and recovered by verifiedReadingsOf, so later steps need not re-run the checks.';
+                    };
                 };
+                readonly additionalProperties: false;
             };
-            readonly additionalProperties: false;
-        };
+        }, {
+            readonly type: 'string';
+            readonly description: 'Tolerated wrapped form: the SAME content array serialized as JSON text (what a model channel sometimes emits). It is parsed back before validation — prefer passing the array directly.';
+        }];
     };
 };
 /** The marker every discard summary starts with (see the compress description). */

@@ -8812,59 +8812,74 @@ var compressParameters = {
   // wrapped shape before `handleCompress` can see it. The tool description
   // still tells the model content is mandatory.
   //
-  // The items fields are the opposite case: startSeq/endSeq/summary MUST be
-  // `required: true`. Without that, a model call that omits `summary` (only
-  // startSeq/endSeq/topic present) passed schema validation and failed late
-  // inside the kernel with "Summary is empty" — and live sessions showed the
-  // model retrying the identical broken call in a loop. With the fields
-  // required, the same call is rejected at the schema gate with
-  // `missing required property "content[0].summary"`, which tells the model
-  // exactly which field to add (same pattern as decompress's required
-  // blockId / search_context's required query).
+  // The items fields need a precise MISSING-FIELD message (a call that omits
+  // `summary` used to fail late inside the kernel with "Summary is empty", which
+  // sent live sessions into a retry loop; the fix is
+  // `missing required property "content[0].summary"`). That message now comes
+  // from `validateContentItems` — which runs on BOTH forms after the envelope
+  // peel — and NOT from `required: true` on the declaration: `content` has to
+  // stay a `oneOf` of array-or-JSON-text (below), the enforced JSON Schema
+  // subset has no `type: [array, string]`, and a `required` inside the array
+  // branch therefore answers a broken array with the generic
+  // `must match exactly one oneOf branch (matched 0)` — losing the field name
+  // exactly when the model needs it.
   arguments: { type: "json", description: "Tolerated wrapped-arguments form (model-generated); unwrapped in handleCompress. Prefer passing content directly." },
   topic: { type: "string", description: "Fallback topic for entries without their own." },
   content: {
-    type: "array",
-    description: "One or more ranges to compress, each with startSeq/endSeq boundaries (surface seqs) and a dense summary. Required \u2014 pass it directly, not wrapped in an arguments key.",
-    items: {
-      type: "object",
-      properties: {
-        startSeq: {
-          required: true,
-          oneOf: [
-            { type: "integer", description: "First surface seq of the range." },
-            { type: "string", description: `Seq as text; a trailing #callId fragment is ignored. A drilldown mN ref ("m00306") or a kernel block id ("b1", as acp_status lists) is also accepted \u2014 a block id resolves to that block's checkpoint seq, which makes the fold a tier 2/3 distillation.` }
-          ]
-        },
-        endSeq: {
-          required: true,
-          oneOf: [
-            { type: "integer", description: "Inclusive last surface seq of the range." },
-            { type: "string", description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") \u2014 for a multi-block condense name the LAST block id (tier 3).' }
-          ]
-        },
-        summary: {
-          type: "string",
-          required: true,
-          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters \u2014 the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.'
-        },
-        topic: { type: "string", description: "Short label (3-5 words) for this range." },
-        // B3 (2026-09-08 governance plan): the handler and region.ts have
-        // accepted verifiedReadings since the plan landed, but the declared
-        // parameter schema did not list it — `additionalProperties: false`
-        // then rejected every live call that carried it
-        // (`invalid arguments: "content[0].verifiedReadings" is not a declared
-        // property`), so the structured-loss-stopping field was unreachable
-        // from the model's tool interface. Declared here; additionalProperties
-        // stays false so unknown fields are still rejected.
-        verifiedReadings: {
-          type: "array",
-          items: { type: "string" },
-          description: 'Optional: acceptance readings that are already green before this compression (e.g. "t0-fastpath 8/8", "closedloop 414/414"). Stored structurally on the compaction/summary event and recovered by verifiedReadingsOf, so later steps need not re-run the checks.'
+    // The canonical array, plus the SAME array serialized as JSON text. The host
+    // validates arguments against this declaration BEFORE the handler runs, and
+    // deepseek-flash emitted the stringified form live (2026-10-16:
+    // `{"content": "[{\"startSeq\": 38721, \"endSeq\": 38763, \"summary\": …}]"}`)
+    // — the gate answered `invalid arguments: "content" must be an array` and the
+    // fold was lost. `handleCompress` parses the string back (unwrapCompressArgs),
+    // so declaring it here makes the tolerance reachable; the array form stays
+    // first and the description keeps telling the model to use it.
+    oneOf: [
+      {
+        type: "array",
+        description: "One or more ranges to compress, each with startSeq/endSeq boundaries (surface seqs) and a dense summary. Required \u2014 pass it directly, not wrapped in an arguments key.",
+        items: {
+          type: "object",
+          properties: {
+            startSeq: {
+              oneOf: [
+                { type: "integer", description: "First surface seq of the range." },
+                { type: "string", description: `Seq as text; a trailing #callId fragment is ignored. A drilldown mN ref ("m00306") or a kernel block id ("b1", as acp_status lists) is also accepted \u2014 a block id resolves to that block's checkpoint seq, which makes the fold a tier 2/3 distillation.` }
+              ]
+            },
+            endSeq: {
+              oneOf: [
+                { type: "integer", description: "Inclusive last surface seq of the range." },
+                { type: "string", description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") \u2014 for a multi-block condense name the LAST block id (tier 3).' }
+              ]
+            },
+            summary: {
+              type: "string",
+              description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters \u2014 the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.'
+            },
+            topic: { type: "string", description: "Short label (3-5 words) for this range." },
+            // B3 (2026-09-08 governance plan): the handler and region.ts have
+            // accepted verifiedReadings since the plan landed, but the declared
+            // parameter schema did not list it — `additionalProperties: false`
+            // then rejected every live call that carried it
+            // (`invalid arguments: "content[0].verifiedReadings" is not a declared
+            // property`), so the structured-loss-stopping field was unreachable
+            // from the model's tool interface. Declared here; additionalProperties
+            // stays false so unknown fields are still rejected.
+            verifiedReadings: {
+              type: "array",
+              items: { type: "string" },
+              description: 'Optional: acceptance readings that are already green before this compression (e.g. "t0-fastpath 8/8", "closedloop 414/414"). Stored structurally on the compaction/summary event and recovered by verifiedReadingsOf, so later steps need not re-run the checks.'
+            }
+          },
+          additionalProperties: false
         }
       },
-      additionalProperties: false
-    }
+      {
+        type: "string",
+        description: "Tolerated wrapped form: the SAME content array serialized as JSON text (what a model channel sometimes emits). It is parsed back before validation \u2014 prefer passing the array directly."
+      }
+    ]
   }
 };
 function parseSeq(value) {
@@ -8915,7 +8930,7 @@ function parseBoundary2(value, byRef, session) {
   return seq;
 }
 function unwrapCompressArgs(args) {
-  if (args.content !== void 0) return args;
+  if (args.content !== void 0) return parseWrappedContent(args.content) ?? (Array.isArray(args.content) ? args.content : null);
   if (args.arguments === void 0) return null;
   let inner = args.arguments;
   if (typeof inner === "string") {
@@ -8928,7 +8943,16 @@ function unwrapCompressArgs(args) {
   if (typeof inner !== "object" || inner === null || Array.isArray(inner)) return null;
   const content = inner.content;
   if (content === void 0) return null;
-  return { ...args, content };
+  return parseWrappedContent(content) ?? (Array.isArray(content) ? content : null);
+}
+function parseWrappedContent(content) {
+  if (typeof content !== "string") return void 0;
+  try {
+    const parsed = JSON.parse(content);
+    return Array.isArray(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
 }
 function unwrapEnvelope(args) {
   const envelope = args.arguments;
@@ -9057,14 +9081,13 @@ async function handleCompress(env, args, exec) {
   const byRaw = turn.state.messageRefs.byRaw;
   const byRef = turn.state.messageRefs.byRef;
   const thinking = reasoningForToolCall(session.snapshotEvents(), exec.callId);
-  const unwrapped = unwrapCompressArgs(args);
-  if (unwrapped === null) {
+  const content = unwrapCompressArgs(args);
+  if (content === null) {
     return {
       text: "compress: missing content \u2014 pass the content array directly: compress({ content: [{ startSeq, endSeq, summary }] })"
     };
   }
-  args = unwrapped;
-  validateContentItems(args.content);
+  validateContentItems(content);
   const ranges = [];
   const alreadyCompressedNotes = [];
   const rejectedNotes = [];
@@ -9073,7 +9096,7 @@ async function handleCompress(env, args, exec) {
   const guardedSeqs = guardedSurfaceSeqsOf(session);
   const splitNotes = [];
   const carrierSpans = env.carrierSpans ?? "split";
-  for (const range of args.content) {
+  for (const range of content) {
     const startSeq = parseBoundary2(range.startSeq, byRef, session);
     const endSeq = parseBoundary2(range.endSeq, byRef, session);
     let resolved;

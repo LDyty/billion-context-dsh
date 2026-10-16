@@ -123,6 +123,32 @@ test('M3: compress lands a durable block, shrinks the surface, and uses the effe
 const COMPRESS_SUMMARY = 'Authentication system: JWT access tokens with 15 minute expiry, refresh tokens in Redis with 30 day TTL, login flow in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute per IP address, bcrypt hashing at cost factor 12.'
 
 /**
+ * A `content` that arrived as JSON TEXT lands, because the host's schema gate
+ * would otherwise reject the call before the handler could unwrap it.
+ *
+ * Live evidence (2026-10-16, deepseek-flash): the model sent
+ * `compress({ content: "[{\"startSeq\": 38721, \"endSeq\": 38763, \"summary\": …}]" })`
+ * and the tool result was exactly `Error: invalid arguments: "content" must be an
+ * array` — the fold was lost, and the previous declaration (a bare `type: 'array'`)
+ * was why. The declaration now carries both forms and the handler parses the string.
+ */
+test('M3: a content array that arrives as JSON text is unwrapped, not rejected', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(12)
+  const compress = toolOf(env, 'compress')
+  const stringified = JSON.stringify([
+    { startSeq: 1, endSeq: 3, summary: 'Authentication flow: JWT access tokens with 15 minute expiry, refresh tokens in Redis, login in src/auth/login.ts.' },
+    { startSeq: 4, endSeq: 5, summary: 'Rate limiting: sliding window at 10 requests per minute per IP, enforced in src/auth/limiter.ts with Redis counters.' },
+  ])
+  const result = await compress.execute({ content: stringified } as never, fakeExec(session))
+  const text = (result as { text: string }).text
+  assert.match(text, /Compressed 2 block/, `the stringified content lands as two blocks (${text.slice(0, 120)})`)
+  // A string that is NOT a JSON array still fails with the caller's own guidance.
+  const bad = await compress.execute({ content: 'not json' } as never, fakeExec(session))
+  assert.match((bad as { text: string }).text, /missing content|content/, 'a malformed string is reported, not thrown')
+})
+
+/**
  * The kernel's 50-character summary floor is waived for ONE shape of call: every
  * entry a discard. Junk fragments are exactly where a floor does the least good
  * (there is nothing to be substantive about, and padding it into a paragraph is
@@ -1011,15 +1037,17 @@ test('M3: compress reports a clear error when neither form carries content', asy
   assert.equal(rebuildBlockLedger(session.snapshotEvents()).length, 0, 'no block lands without content')
 })
 
-test('M3: compress schema gate rejects a range entry missing summary (required field)', async () => {
+test('M3: compress rejects a range entry missing summary, naming the field', async () => {
   // Live-session failure: the model kept sending `content: [{startSeq, endSeq, topic}]`
-  // — no summary. The items schema declared no `required` fields, so the call
-  // passed schema validation and only failed deep inside the kernel with
-  // "Summary is empty", which does not name the missing field — the model
-  // retried the identical broken call in a loop. startSeq/endSeq/summary are
-  // now `required: true` on the items properties, so the same call is rejected
-  // at the schema gate with the exact field path (same pattern as decompress's
-  // required blockId / search_context's required query).
+  // — no summary. The call used to fail deep inside the kernel with "Summary is
+  // empty", which does not name the missing field, and the model retried the
+  // identical broken call in a loop. The fix is a field-path error, produced by
+  // `validateContentItems` — the items-level check that runs on BOTH forms after
+  // the envelope peel — rather than by `required: true` on the declaration:
+  // `content` is now a `oneOf` of array-or-JSON-text, and the host's schema
+  // subset has no `type: [array, string]`, so a `required` inside the array
+  // branch would answer a broken array with the generic `must match exactly one
+  // oneOf branch (matched 0)` instead of the field name.
   const env = makeEnv()
   const session = buildTextSession(12)
   const compress = toolOf(env, 'compress')
@@ -1043,10 +1071,11 @@ test('M3: compress schema gate rejects a range entry missing summary (required f
 
 const SUMMARY_SAMPLE = 'Authentication summary with enough technical detail to satisfy the kernel threshold: JWT, Redis refresh tokens, login flow, rate limiting, bcrypt.'
 
-test('M3: compress schema gate rejects a topic-only entry, naming the missing seq fields', async () => {
+test('M3: compress rejects a topic-only entry, naming the missing seq fields', async () => {
   // The other half of the live failure mode: a `{ topic }`-only entry omits
-  // startSeq/endSeq too. The gate must name every missing field, not fall
-  // through to the kernel's field-less `invalid seq "undefined"`.
+  // startSeq/endSeq too. The rejection must name every missing field, not fall
+  // through to the kernel's field-less `invalid seq "undefined"` (same
+  // enforcement point as the summary case above).
   const env = makeEnv()
   const session = buildTextSession(12)
   const compress = toolOf(env, 'compress')

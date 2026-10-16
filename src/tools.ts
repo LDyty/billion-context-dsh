@@ -136,32 +136,42 @@ export const compressParameters = {
   // wrapped shape before `handleCompress` can see it. The tool description
   // still tells the model content is mandatory.
   //
-  // The items fields are the opposite case: startSeq/endSeq/summary MUST be
-  // `required: true`. Without that, a model call that omits `summary` (only
-  // startSeq/endSeq/topic present) passed schema validation and failed late
-  // inside the kernel with "Summary is empty" — and live sessions showed the
-  // model retrying the identical broken call in a loop. With the fields
-  // required, the same call is rejected at the schema gate with
-  // `missing required property "content[0].summary"`, which tells the model
-  // exactly which field to add (same pattern as decompress's required
-  // blockId / search_context's required query).
+  // The items fields need a precise MISSING-FIELD message (a call that omits
+  // `summary` used to fail late inside the kernel with "Summary is empty", which
+  // sent live sessions into a retry loop; the fix is
+  // `missing required property "content[0].summary"`). That message now comes
+  // from `validateContentItems` — which runs on BOTH forms after the envelope
+  // peel — and NOT from `required: true` on the declaration: `content` has to
+  // stay a `oneOf` of array-or-JSON-text (below), the enforced JSON Schema
+  // subset has no `type: [array, string]`, and a `required` inside the array
+  // branch therefore answers a broken array with the generic
+  // `must match exactly one oneOf branch (matched 0)` — losing the field name
+  // exactly when the model needs it.
   arguments: { type: 'json', description: 'Tolerated wrapped-arguments form (model-generated); unwrapped in handleCompress. Prefer passing content directly.' },
   topic: { type: 'string' as const, description: 'Fallback topic for entries without their own.' },
   content: {
-    type: 'array' as const,
-    description: 'One or more ranges to compress, each with startSeq/endSeq boundaries (surface seqs) and a dense summary. Required — pass it directly, not wrapped in an arguments key.',
-    items: {
-      type: 'object' as const,
-      properties: {
+    // The canonical array, plus the SAME array serialized as JSON text. The host
+    // validates arguments against this declaration BEFORE the handler runs, and
+    // deepseek-flash emitted the stringified form live (2026-10-16:
+    // `{"content": "[{\"startSeq\": 38721, \"endSeq\": 38763, \"summary\": …}]"}`)
+    // — the gate answered `invalid arguments: "content" must be an array` and the
+    // fold was lost. `handleCompress` parses the string back (unwrapCompressArgs),
+    // so declaring it here makes the tolerance reachable; the array form stays
+    // first and the description keeps telling the model to use it.
+    oneOf: [
+      {
+        type: 'array' as const,
+        description: 'One or more ranges to compress, each with startSeq/endSeq boundaries (surface seqs) and a dense summary. Required — pass it directly, not wrapped in an arguments key.',
+        items: {
+          type: 'object' as const,
+          properties: {
         startSeq: {
-          required: true,
           oneOf: [
             { type: 'integer' as const, description: 'First surface seq of the range.' },
             { type: 'string' as const, description: 'Seq as text; a trailing #callId fragment is ignored. A drilldown mN ref ("m00306") or a kernel block id ("b1", as acp_status lists) is also accepted — a block id resolves to that block\'s checkpoint seq, which makes the fold a tier 2/3 distillation.' },
           ],
         },
         endSeq: {
-          required: true,
           oneOf: [
             { type: 'integer' as const, description: 'Inclusive last surface seq of the range.' },
             { type: 'string' as const, description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3).' },
@@ -169,7 +179,6 @@ export const compressParameters = {
         },
         summary: {
           type: 'string' as const,
-          required: true,
           description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
         },
         topic: { type: 'string' as const, description: 'Short label (3-5 words) for this range.' },
@@ -186,9 +195,15 @@ export const compressParameters = {
           items: { type: 'string' as const },
           description: 'Optional: acceptance readings that are already green before this compression (e.g. "t0-fastpath 8/8", "closedloop 414/414"). Stored structurally on the compaction/summary event and recovered by verifiedReadingsOf, so later steps need not re-run the checks.',
         },
+          },
+          additionalProperties: false,
+        },
       },
-      additionalProperties: false,
-    },
+      {
+        type: 'string' as const,
+        description: 'Tolerated wrapped form: the SAME content array serialized as JSON text (what a model channel sometimes emits). It is parsed back before validation — prefer passing the array directly.',
+      },
+    ],
   },
 } as const
 
@@ -306,23 +321,33 @@ interface CompressArgs {
   /** Tolerated wrapped-arguments form (model-generated double-nesting). */
   arguments?: string | { content?: CompressArgs['content'] }
   topic?: string
-  content?: Array<{
-    startSeq: number | string
-    endSeq: number | string
-    summary: string
-    topic?: string
-    verifiedReadings?: string[]
-  }>
+  /**
+   * The canonical array, or the same array SERIALIZED as JSON text — a shape
+   * DeepSeek-flash emitted live on 2026-10-16 (`{"content": "[{\"startSeq\":…}]"}`),
+   * which the host's schema gate rejects before the handler runs unless the
+   * declaration admits it. `unwrapCompressArgs` parses it back.
+   */
+  content?: CompressContent | string
 }
 
+type CompressContent = Array<{
+  startSeq: number | string
+  endSeq: number | string
+  summary: string
+  topic?: string
+  verifiedReadings?: string[]
+}>
+
 /**
- * Unwrap the tolerated wrapped-arguments forms back to the canonical shape:
- * `{ arguments: "{\"content\": [...]}" }` or `{ arguments: { content: [...] } }`
- * → `{ content: [...] }`. The direct `{ content: [...] }` form passes through
- * untouched. Returns null when no form carries content (caller raises).
+ * Unwrap the tolerated forms back to the canonical shape:
+ * `{ arguments: "{\"content\": [...]}" }`, `{ arguments: { content: [...] } }`,
+ * or a `content` that is itself the array serialized as JSON text
+ * (`{ content: "[{\"startSeq\": …}]" }`) → `{ content: [...] }`. The direct
+ * `{ content: [...] }` form passes through untouched. Returns null when no form
+ * carries a usable content (caller raises the guidance message).
  */
-function unwrapCompressArgs(args: CompressArgs): CompressArgs | null {
-  if (args.content !== undefined) return args
+function unwrapCompressArgs(args: CompressArgs): CompressContent | null {
+  if (args.content !== undefined) return parseWrappedContent(args.content) ?? (Array.isArray(args.content) ? args.content : null)
   if (args.arguments === undefined) return null
   let inner: unknown = args.arguments
   if (typeof inner === 'string') {
@@ -335,7 +360,22 @@ function unwrapCompressArgs(args: CompressArgs): CompressArgs | null {
   if (typeof inner !== 'object' || inner === null || Array.isArray(inner)) return null
   const content = (inner as { content?: unknown }).content
   if (content === undefined) return null
-  return { ...args, content: content as CompressArgs['content'] }
+  return parseWrappedContent(content as CompressArgs['content']) ?? (Array.isArray(content) ? content as CompressContent : null)
+}
+
+/**
+ * A `content` that arrived as JSON TEXT decodes to the array it represents;
+ * anything else (a real array, a malformed string, a foreign type) is returned
+ * as-is so the normal validation reports it with the caller's own wording.
+ */
+function parseWrappedContent(content: CompressArgs['content']): CompressContent | undefined {
+  if (typeof content !== 'string') return undefined
+  try {
+    const parsed: unknown = JSON.parse(content)
+    return Array.isArray(parsed) ? parsed as CompressContent : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -378,7 +418,7 @@ function unwrapEnvelope<T extends object>(args: T): T {
  * An empty/whitespace-only summary counts as missing (the kernel would
  * reject it anyway — fail early with the field name instead).
  */
-function validateContentItems(content: NonNullable<CompressArgs['content']>): void {
+function validateContentItems(content: CompressContent): void {
   const violations: string[] = []
   content.forEach((item, index) => {
     const path = `content[${index}]`
@@ -633,19 +673,21 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // reasoning is already on the record (`reasoningForToolCall`).
   const thinking = reasoningForToolCall(session.snapshotEvents(), exec.callId)
 
-  // Tolerate the wrapped-arguments forms some models emit (double-nested
-  // `{ arguments: "..." }`), which the old DSH validator surfaced as
-  // `"arguments" must be an object` and sent the model into a retry loop.
-  const unwrapped = unwrapCompressArgs(args)
-  if (unwrapped === null) {
+  // Tolerate the wrapped forms some models emit: double-nested `{ arguments:
+  // "…" }` (which the old DSH validator surfaced as `"arguments" must be an
+  // object` and sent the model into a retry loop) and a `content` that arrived
+  // as the array SERIALIZED as JSON text (deepseek-flash, live 2026-10-16:
+  // `{"content": "[{\"startSeq\": 38721, …}]"}`, rejected by the schema gate as
+  // `invalid arguments: "content" must be an array`). Both unwrap to the array.
+  const content = unwrapCompressArgs(args)
+  if (content === null) {
     return {
       text: 'compress: missing content — pass the content array directly: compress({ content: [{ startSeq, endSeq, summary }] })',
     }
   }
-  args = unwrapped
   // Items-level required check AFTER the envelope peel (see
   // validateContentItems for why the schema gate alone cannot do this).
-  validateContentItems(args.content!)
+  validateContentItems(content)
 
   const ranges: Array<
     ResolvedSurfaceRange & {
@@ -682,7 +724,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // carrier branch below): facts for the model, not failures.
   const splitNotes: string[] = []
   const carrierSpans = env.carrierSpans ?? 'split'
-  for (const range of args.content!) {
+  for (const range of content) {
     const startSeq = parseBoundary(range.startSeq, byRef, session)
     const endSeq = parseBoundary(range.endSeq, byRef, session)
     let resolved: ResolvedSurfaceRange
