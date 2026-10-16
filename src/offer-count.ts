@@ -40,6 +40,9 @@ const SESSION_LIMIT = 50
 
 const histories = new Map<string, OfferedBuild[]>()
 
+/** The counts the LAST build produced, per session — the read face for acp_status. */
+const lastCounts = new Map<string, Map<number, number>>()
+
 /** Insert/refresh one session's history, evicting the least recently written session. */
 function putHistory(sessionId: string, history: OfferedBuild[]): void {
   histories.delete(sessionId)
@@ -74,7 +77,20 @@ export function noteOfferedRows(
   history.push(rows.map((row) => ({ start: row.start, end: row.end })))
   if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT)
   putHistory(sessionId, history)
+  lastCounts.delete(sessionId)
+  lastCounts.set(sessionId, counts)
   return counts
+}
+
+/**
+ * The counts the last build produced, keyed by the row's start seq.
+ *
+ * The nudge table prints these inline; `acp_status` is the other place a model
+ * reads compressible ranges, so it needs the same numbers or the signal is
+ * invisible to anyone who consults status instead of the nudge.
+ */
+export function lastOfferedCountsOf(sessionId: string): ReadonlyMap<number, number> {
+  return lastCounts.get(sessionId) ?? new Map()
 }
 
 /**
@@ -104,6 +120,7 @@ export function noteFoldLanded(sessionId: string, shadowed: readonly number[]): 
 /** Drop one session's history (session disposal). */
 export function forgetOffers(sessionId: string): void {
   histories.delete(sessionId)
+  lastCounts.delete(sessionId)
 }
 
 /** The remembered build count for one session (tests and diagnostics). */

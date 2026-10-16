@@ -11,6 +11,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { forgetOffers, noteFoldLanded, noteOfferedRows, offeredBuildsOf } from '../src/offer-count.ts'
 import { RANGE_TABLE_OFFERED_MIN, rangeTable } from '../src/nudge.ts'
+import { makeTools } from '../src/tools.ts'
+import { AcpStateStore } from '../src/state.ts'
+import { createCore } from 'acp-kernel'
 import { buildTextSession, wholeSurfaceRangeView } from './helpers.ts'
 
 test('offer count: coverage counts, so a drifting edge does not reset it', () => {
@@ -68,4 +71,37 @@ test('offer count: building the table for the PANEL does not count as an offer',
   assert.equal(offeredBuildsOf(id), 0)
   const shown = rangeTable(session, view as never)
   assert.ok(!shown.includes('offered '), 'so the first real offer still says nothing')
+})
+
+/**
+ * `acp_status` is the OTHER place a model reads compressible ranges (the nudge
+ * table is the first). A signal that only exists in one of them is invisible to
+ * whoever consults the other, so the same counts have to appear in both — with
+ * the same threshold, and reachable without the console while the row is small.
+ */
+test('offer count: acp_status restates the re-offered rows', async () => {
+  const session = buildTextSession(24)
+  const view = wholeSurfaceRangeView(session)
+  const id = String(session.id)
+  forgetOffers(id)
+  for (let index = 0; index < 4; index += 1) rangeTable(session, view as never)
+  const env = { kernel: createCore({}), store: new AcpStateStore(), modelContextLimit: 128000, compressCallIdsToHide: new Set<string>() }
+  const status = makeTools(env).find((tool) => tool.name === 'acp_status')
+  assert.ok(status !== undefined, 'acp_status is registered')
+  const agent = {
+    id: session.id,
+    session,
+    options: { provider: 'test-provider', model: 'test-model' },
+    ctx: { tokenMeter: undefined },
+  } as never
+  const result = await status.execute({} as never, {
+    callId: 'call-status',
+    name: 'acp_status',
+    arguments: {},
+    signal: new AbortController().signal,
+    agent,
+  } as never)
+  const text = (result as { text: string }).text
+  assert.match(text, /Rows the table keeps offering/, 'the status report carries the same signal')
+  assert.match(text, /offered 4×/, 'with the count the nudge would print')
 })

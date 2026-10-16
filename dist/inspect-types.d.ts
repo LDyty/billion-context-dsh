@@ -37,6 +37,13 @@ export interface AcpInspectRow {
     /** `invalidated ÷ tokens` — requests needed to pay the rewrite back. */
     readonly breakEven: number;
     readonly expensive: boolean;
+    /**
+     * How many builds have offered a row covering this start, this one included
+     * (src/offer-count.ts). The nudge prints it from 3 up; the panel shows it too,
+     * because "the model keeps skipping this" is exactly what a human watching the
+     * table needs to know.
+     */
+    readonly offered: number;
 }
 /** The sweep printed under one row: everything that can ride along in one call. */
 export interface AcpInspectSweep {

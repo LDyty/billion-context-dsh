@@ -92,6 +92,9 @@ test('inspect: the snapshot serves the remembered table, map kinds and settings'
   }
   assert.equal(snapshot.surface.nodes, session.surface.nodes.length)
   assert.equal(snapshot.usage.window, 200000, 'the panel shows the configured window')
+  // The panel mirrors the nudge's `offered N×` column too (same counter).
+  assert.ok(snapshot.rows.every((row) => row.offered >= 1), 'every row carries its offer count')
+  assert.equal(snapshot.rows[0]!.offered, 1, 'and a first build reports 1')
 
   // The map's legend matches the engine's folding decision, not a second opinion.
   const kinds = new Map(snapshot.map.map((node) => [node.seq, node.kind]))

@@ -8154,6 +8154,7 @@ function nodeKindOf(event, isGuarded, isStaleFoldable) {
 var HISTORY_LIMIT = 200;
 var SESSION_LIMIT = 50;
 var histories = /* @__PURE__ */ new Map();
+var lastCounts = /* @__PURE__ */ new Map();
 function putHistory(sessionId, history) {
   histories.delete(sessionId);
   histories.set(sessionId, history);
@@ -8176,7 +8177,12 @@ function noteOfferedRows(sessionId, rows) {
   history.push(rows.map((row) => ({ start: row.start, end: row.end })));
   if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
   putHistory(sessionId, history);
+  lastCounts.delete(sessionId);
+  lastCounts.set(sessionId, counts);
   return counts;
+}
+function lastOfferedCountsOf(sessionId) {
+  return lastCounts.get(sessionId) ?? /* @__PURE__ */ new Map();
 }
 function noteFoldLanded(sessionId, shadowed) {
   const history = histories.get(sessionId);
@@ -8329,7 +8335,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row may carry 'offered N\xD7': that is how many times the table has put that span in front of you and you have not folded it, counted since the last fold that touched the area (it says nothing about wall-clock age). A high count on a span whose content is finished is a standing invitation to sweep it \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -8491,7 +8497,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       toolPct: row.range.toolPct,
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
-      expensive: row.expensive
+      expensive: row.expensive,
+      offered: offeredCounts.get(row.range.start) ?? 1
     })),
     sweeps
   );
@@ -9477,13 +9484,21 @@ async function handleStatus(env, rawArgs, exec) {
       lines.push("", `Checkpoint seqs (active blocks \u2014 compress a checkpoint seq to distill it; ${crossing}): ${checkpointRows.join(", ")}`);
     }
     const mediaOnSurface = surface.some((event) => {
-      const counts = attachmentsOfEvent(event);
-      return counts.images + counts.files > 0;
+      const counts2 = attachmentsOfEvent(event);
+      return counts2.images + counts2.files > 0;
     });
     if (mediaOnSurface) {
       lines.push(
         "",
         "Note: the pressure line is provider-anchored (images/files priced by the live route); the breakdown above is a text-only estimate. They can differ on media-heavy sessions."
+      );
+    }
+    const counts = lastOfferedCountsOf(String(session.id));
+    const reOffered = inspectCacheOf(String(session.id))?.rows.filter((row) => (counts.get(row.start) ?? 0) >= RANGE_TABLE_OFFERED_MIN).sort((left, right) => (counts.get(right.start) ?? 0) - (counts.get(left.start) ?? 0)).slice(0, 5) ?? [];
+    if (reOffered.length > 0) {
+      lines.push(
+        "",
+        `Rows the table keeps offering (nudge column \`offered N\xD7\`; these may simply be stale history you have already consumed): ` + reOffered.map((row) => `seq ${String(row.start)}..${String(row.end)} offered ${String(counts.get(row.start) ?? 0)}\xD7`).join(", ")
       );
     }
   }

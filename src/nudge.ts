@@ -420,6 +420,7 @@ export function rangeTable(
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
+      offered: offeredCounts.get(row.range.start) ?? 1,
     })),
     sweeps,
   )

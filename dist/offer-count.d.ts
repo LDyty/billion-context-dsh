@@ -36,6 +36,14 @@ export declare function noteOfferedRows(sessionId: string, rows: readonly {
     readonly end: number;
 }[]): Map<number, number>;
 /**
+ * The counts the last build produced, keyed by the row's start seq.
+ *
+ * The nudge table prints these inline; `acp_status` is the other place a model
+ * reads compressible ranges, so it needs the same numbers or the signal is
+ * invisible to anyone who consults status instead of the nudge.
+ */
+export declare function lastOfferedCountsOf(sessionId: string): ReadonlyMap<number, number>;
+/**
  * A durable fold landed: forget every remembered offer whose span it replaced.
  *
  * `shadowed` is a contiguous surface slice (the transaction's own `shadowedSeqs`),
