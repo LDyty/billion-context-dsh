@@ -102,6 +102,8 @@ test('inspect: the snapshot serves the remembered table, map kinds and settings'
       `row ${row.start}..${row.end} carries its reasoning share`)
     assert.ok(text.includes(`| reasoning ${row.reasoningPct}% |`),
       `row ${row.start}..${row.end} prints the same reasoning share as the panel`)
+    assert.ok(text.includes(`${String(row.messages)} messages (${row.rowMix})`),
+      `row ${row.start}..${row.end} prints the same row mix as the panel`)
   }
 
   // The map's legend matches the engine's folding decision, not a second opinion.
