@@ -173,18 +173,32 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
     const rows = text.split('\n')
     const baseLines = rows.filter((line) => /^\s+- seq /.test(line))
     const sweepLines = rows.filter((line) => line.includes('sweep from here'))
-    // One sweep per row at most: the row count is the cap (2026-10-16 policy —
-    // every row may carry its own sweep, because the choice is the sweep's SCOPE
-    // and two neighbouring rows legitimately print overlapping sweeps).
+    const repeatLines = rows.filter((line) => line.includes('sweep as above'))
+    // One sweep statement per row at most: the row count is the cap. A row whose
+    // best batch is byte-identical to an earlier row's prints the short pointer
+    // form instead of repeating the whole entry list (2026-10-16).
     assert.ok(sweepLines.length <= baseLines.length, 'never more sweeps than rows')
+    assert.ok(sweepLines.length + repeatLines.length <= baseLines.length, 'never more sweep statements than rows')
+    for (const line of repeatLines) {
+      assert.match(line, /the seq \d+ row's batch/, 'a repeat points at the row that printed the batch')
+      assert.match(line, /\(\d+ messages \/ \d+ summaries to write\)/, 'the repeat states its coverage')
+    }
     for (const line of sweepLines) {
       const entries = [...line.matchAll(/(\d+)\.\.(\d+)/g)].map((match) => ({ start: Number(match[1]), end: Number(match[2]) }))
       assert.ok(entries.length > 1, 'a printed sweep lists more than the base row')
-      // Every entry carries its size and flavour, and the sweep names its work.
-      const labels = [...line.matchAll(/(\d+)\.\.(\d+)\(~([\d.]+K?|\d+) (tool|text|tool \d+%)\)/g)]
-      assert.ok(labels.length >= 1 && labels.length <= entries.length, 'entries carry "~size kind" labels')
+      // Every entry carries the SAME three figures the row above it carries:
+      // the row mix, the token size, and the character partition (2026-10-16).
+      const labels = [...line.matchAll(
+        /(\d+)\.\.(\d+)\((\d+) messages \(([^)]*)\), ~(\d+) tokens \[tool (\d+)% \| reasoning (\d+)% \| text (\d+)%\]\)/g,
+      )]
+      assert.ok(labels.length >= 1 && labels.length <= entries.length, 'entries carry the full label')
       for (const label of labels) {
-        assert.equal(label[4], 'text', 'a text-only fixture reports text segments')
+        const [, start, end, messages, mix, tokens, tool, reasoning, text] = label
+        assert.ok(Number(messages) >= 1, `entry ${start}..${end} states its message count`)
+        assert.ok(!mix.includes('%'), 'the row mix is a count list, not a percentage')
+        assert.ok(Number(tokens) > 0, `entry ${start}..${end} states its token size`)
+        assert.equal(Number(tool) + Number(reasoning) + Number(text), 100, 'the partition sums to 100')
+        assert.equal(reasoning, '0', 'a text-only fixture reports no scratchpad')
       }
       for (let at = 1; at < entries.length; at += 1) {
         assert.ok(entries[at]!.start > entries[at - 1]!.end, 'printed entries are disjoint')
@@ -264,7 +278,7 @@ test('batch proposal: live table geometry with nested rows keeps the contract', 
   }
 })
 
-test('sweep: entry labels report each segment flavour, not just the row above', () => {
+test('sweep: entry labels report each segment composition, not just the row above', () => {
   const session = buildTextSession(40)
   appendToolCall(session, 'tool run', 'c1', 1, 1)
   // A sweep pulls in whatever lowers payback, including the tool span sitting
@@ -279,10 +293,9 @@ test('sweep: entry labels report each segment flavour, not just the row above', 
   const text = rangeTable(session, viewOfPositions(session, [[0, 1], [40, 41]]) as never)
   const batchLine = text.split('\n').find((line) => line.includes('sweep from here'))
   assert.ok(batchLine, 'the text span and the tool span sweep together')
-  const kinds = [...batchLine.matchAll(/\(~[\d.]+K? (tool|text|tool \d+%)\)/g)].map((match) => match[1])
-  assert.ok(kinds.includes('text'), `text segments are labelled text (${batchLine})`)
-  assert.ok(
-    kinds.some((kind) => kind === 'tool' || kind.startsWith('tool ')),
-    `tool segments are labelled tool (${batchLine})`,
-  )
+  const toolShares = [...batchLine.matchAll(/\[tool (\d+)% \| reasoning (\d+)% \| text (\d+)%\]/g)]
+    .map((match) => Number(match[1]))
+  assert.ok(toolShares.length >= 2, `both segments carry a composition (${batchLine})`)
+  assert.ok(toolShares.includes(0), 'the text segment reads tool 0%')
+  assert.ok(toolShares.some((share) => share > 0), 'the tool segment reads its tool share')
 })

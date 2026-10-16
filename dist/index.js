@@ -6983,6 +6983,7 @@ var RANGE_TABLE_ALLOWED = {
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "offered"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
+  batchRepeat: /* @__PURE__ */ new Set(["anchor", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
   footer: /* @__PURE__ */ new Set()
 };
 var TOOLS_ALLOWED = {
@@ -7066,6 +7067,11 @@ var DEFAULT_PROMPTS = {
     line: "  - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
     batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
+    // Printed instead of a byte-identical repeat of the line above: neighbouring
+    // base rows converge on the SAME best batch (a sweep may pull in older spans
+    // than its own row), and printing the full entry list once per row cost ~1.2K
+    // characters per nudge for the same proposal.
+    batchRepeat: "      sweep as above (the seq {anchor} row's batch) \u2014 all {count} spans in ONE call ({coverage}) \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
   },
   tools: {
@@ -8523,8 +8529,7 @@ function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
 function batchEntryLabel(entry) {
-  const kind = entry.toolPct >= 100 ? "tool" : entry.toolPct <= 0 ? "text" : `tool ${entry.toolPct}%`;
-  return `${entry.start}..${entry.end}(~${compactTokens(entry.tokens)} ${kind})`;
+  return `${entry.start}..${entry.end}(${entry.count} messages (${entry.rowMix}), ~${entry.tokens} tokens [tool ${entry.toolPct}% | reasoning ${entry.reasoningPct}% | text ${entry.textPct}%])`;
 }
 function selectRangeTableRanges(all, bands = RANGE_TABLE_LIMIT) {
   const ordered = [...all].sort((a, b) => a.start - b.start);
@@ -8568,6 +8573,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
   const proposalOfAt = /* @__PURE__ */ new Map();
+  const printedBatchAt = /* @__PURE__ */ new Map();
   const sweeps = [];
   for (const row of baseRows) {
     if (row.at < 0) continue;
@@ -8586,14 +8592,29 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       breakEven: proposal.breakEvenRequests,
       spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end }))
     });
-    proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
+    const rendered = renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E",
       coverage: `${messages} messages / ${proposal.entries.length} summaries to write`
-    }));
+    });
+    const batchKey = proposal.entries.map((entry) => `${entry.start}..${entry.end}`).join(",");
+    const anchor = printedBatchAt.get(batchKey);
+    if (anchor === void 0) {
+      printedBatchAt.set(batchKey, row.range.start);
+      proposalOfAt.set(row.at, rendered);
+    } else {
+      proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batchRepeat, {
+        anchor: String(anchor),
+        count: proposal.entries.length,
+        reclaimed: compactTokens(proposal.reclaimedTokens),
+        invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
+        breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E",
+        coverage: `${messages} messages / ${proposal.entries.length} summaries to write`
+      }));
+    }
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
     const rows = [

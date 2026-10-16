@@ -231,13 +231,19 @@ function compactTokens(tokens: number): string {
 
 /**
  * One batch entry, carrying the two facts the model needs to write its summary:
- * how big the segment is and what it is mostly made of. The table prints only six
- * rows, but a batch reaches into the whole offerable list, so without this the
- * model would be asked to summarise seqs it never saw a size or flavour for.
+ * how big the segment is and what it is made of. The table prints only six rows,
+ * but a batch reaches into the whole offerable list, so without this the model
+ * would be asked to summarise seqs it never saw a size or flavour for.
+ *
+ * The label carries the SAME three figures the row above it carries — the row
+ * mix (`3 messages (2 tool · 1 other)`), the token size, and the character
+ * partition (`[tool 8% | reasoning 65% | text 27%]`) — because a sweep entry is
+ * a fold target in its own right: the model writes one summary per entry, and
+ * "~4108" alone said nothing about how much of it was scratchpad.
  */
 function batchEntryLabel(entry: SeqCompressibleRange): string {
-  const kind = entry.toolPct >= 100 ? 'tool' : entry.toolPct <= 0 ? 'text' : `tool ${entry.toolPct}%`
-  return `${entry.start}..${entry.end}(~${compactTokens(entry.tokens)} ${kind})`
+  return `${entry.start}..${entry.end}(${entry.count} messages (${entry.rowMix}), `
+    + `~${entry.tokens} tokens [tool ${entry.toolPct}% | reasoning ${entry.reasoningPct}% | text ${entry.textPct}%])`
 }
 
 /**
@@ -343,13 +349,23 @@ export function rangeTable(
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
   })
-  // EVERY row carries its own sweep (2026-10-16). The sweeps deliberately
-  // overlap — two neighbouring rows pull in nearly the same spans and differ in
-  // how far back they start — so they are NOT merged or deduped: the choice the
-  // model is making is the SCOPE of the fold, and one shared line would hide it.
+  // EVERY row carries its own sweep (2026-10-16). Neighbouring rows can pull in
+  // DIFFERENT spans — that is the scope choice the model is making — so the
+  // proposals are computed per row and never merged.
+  //
+  // They are, however, DEDUPED at render time (2026-10-16, later): a greedy
+  // sweep may pull in spans OLDER than its own row, so several neighbouring rows
+  // often converge on the byte-identical best batch. Printing it once per row
+  // cost ~1.2K characters per nudge for one proposal (live: nudge seq 127 printed
+  // the same 5-span batch five times, under rows whose own spans were not even
+  // its first entry — "sweep from here" describing a batch that starts elsewhere).
+  // The first row to produce a batch prints it in full; later identical ones get
+  // the short pointer, which keeps the "you can sweep from this row too" signal
+  // without repeating the entry list.
   // Keyed by the row's position in the offerable list (two nested rows can share
   // a start seq, and a start-keyed map printed one proposal under both rows).
   const proposalOfAt = new Map<number, string>()
+  const printedBatchAt = new Map<string, number>()
   // The same proposals, structured, for the inspector panel (src/inspect.ts).
   const sweeps: AcpInspectSweep[] = []
   for (const row of baseRows) {
@@ -371,14 +387,29 @@ export function rangeTable(
       breakEven: proposal.breakEvenRequests,
       spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end })),
     })
-    proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
+    const rendered = renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
       coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
-    }))
+    })
+    const batchKey = proposal.entries.map((entry) => `${entry.start}..${entry.end}`).join(',')
+    const anchor = printedBatchAt.get(batchKey)
+    if (anchor === undefined) {
+      printedBatchAt.set(batchKey, row.range.start)
+      proposalOfAt.set(row.at, rendered)
+    } else {
+      proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batchRepeat, {
+        anchor: String(anchor),
+        count: proposal.entries.length,
+        reclaimed: compactTokens(proposal.reclaimedTokens),
+        invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
+        breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
+        coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
+      }))
+    }
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
     const rows = [

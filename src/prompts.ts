@@ -52,6 +52,8 @@ export interface RangeTablePrompts {
   cost: string
   /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {invalidated} {breakEven} {coverage} */
   batch: string
+  /** 与上一行的清扫提议完全相同时的替代行(省掉整份重复的条目表)。占位符:{anchor} {count} {reclaimed} {invalidated} {breakEven} {coverage} */
+  batchRepeat: string
   /** 表尾调用语法。无占位符 */
   footer: string
 }
@@ -97,6 +99,7 @@ const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string>
     line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'offered']),
   cost: new Set(['reclaimed', 'invalidated', 'breakEven', 'flag']),
   batch: new Set(['entries', 'count', 'reclaimed', 'invalidated', 'breakEven', 'coverage']),
+  batchRepeat: new Set(['anchor', 'count', 'reclaimed', 'invalidated', 'breakEven', 'coverage']),
   footer: new Set(),
 }
 const TOOLS_ALLOWED: { [K in keyof ToolPrompts]: ReadonlySet<string> } = {
@@ -216,6 +219,11 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
     line: '  - seq {start}..{end} — {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}',
     cost: '      fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
     batch: '      sweep from here — all {count} spans in ONE call ({coverage}): {entries} · reclaims ~{reclaimed} · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
+    // Printed instead of a byte-identical repeat of the line above: neighbouring
+    // base rows converge on the SAME best batch (a sweep may pull in older spans
+    // than its own row), and printing the full entry list once per row cost ~1.2K
+    // characters per nudge for the same proposal.
+    batchRepeat: '      sweep as above (the seq {anchor} row\'s batch) — all {count} spans in ONE call ({coverage}) · reclaims ~{reclaimed} · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'
       + 'Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\n'
       + 'Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.',
