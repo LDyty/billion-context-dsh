@@ -82,6 +82,8 @@ export interface ToolEnvironment extends KernelConfigInput {
    * degrade the command to advice text.
    */
   readonly settingsCommand?: SettingsCommandSurface
+  /** Cache-miss ÷ cache-hit price ratio (AcpConfig.cacheMissPriceRatio): a billing fact the panel shows. */
+  readonly cacheMissPriceRatio?: number
 }
 
 interface TextOutput {

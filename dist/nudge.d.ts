@@ -19,6 +19,8 @@ export interface NudgeEnvironment extends KernelConfigInput {
     readonly store: AcpStateStore;
     /** Resolved prompt templates (optional: falls back to DEFAULT_RESOLVED). */
     readonly prompts?: ResolvedPrompts;
+    /** Cache-miss ÷ cache-hit price ratio (see AcpConfig.cacheMissPriceRatio). */
+    readonly cacheMissPriceRatio?: number;
 }
 export interface NudgeOutcome {
     readonly message: UserMessage;
@@ -144,6 +146,8 @@ export interface RangeTableContext {
     readonly tokens: number;
     /** Sustainable input budget: window minus the route's output reservation. */
     readonly limit: number;
+    /** Cache-miss ÷ cache-hit price ratio, printed as a fact (SETTING_DEFAULTS.cacheMissPriceRatio). */
+    readonly missHitRatio: number;
 }
 /**
  * The rows the table prints: the LARGEST {@link RANGE_TABLE_ROWS_PER_AGE_REGION}

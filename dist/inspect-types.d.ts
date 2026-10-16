@@ -127,6 +127,8 @@ export interface AcpInspectSettings {
     readonly nudgeMinContextLimitPct: number;
     readonly nudgeMaxContextLimitPct: number;
     readonly nudgeEmergencyThresholdPct: number;
+    /** Cache-miss ÷ cache-hit price ratio the nudge prints (AcpConfig.cacheMissPriceRatio). */
+    readonly cacheMissPriceRatio: number;
     readonly preset?: string;
 }
 /** The whole payload one panel read returns. */

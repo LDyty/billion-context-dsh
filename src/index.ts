@@ -190,6 +190,14 @@ export interface AcpConfig {
    */
   readonly nudgeEmergencyThresholdPct?: number
   /**
+   * Billing ratio the provider charges for an uncached token against a cached
+   * one (DeepSeek-style prompt caching: a cache MISS costs this many times a
+   * HIT). Engine default 50. It is a FACT the nudge prints and the panel shows,
+   * so the model can weigh a fold's one-time prefix rewrite in money rather than
+   * in tokens; the table's own payback figures stay token-denominated.
+   */
+  readonly cacheMissPriceRatio?: number
+  /**
    * Named bundle for the three nudge thresholds — how eagerly the model is
    * asked to compress, in one word. One of 'preserve' | 'relaxed' | 'balanced'
    * | 'efficient' | 'aggressive' (see src/presets.ts). It fills ONLY the nudge
@@ -295,6 +303,9 @@ const DEFAULT_CONFIG: AcpConfig = {
   // same-name keys.
   nudgeMaxContextLimitPct: 0.7,
   nudgeEmergencyThresholdPct: 0.85,
+  // DeepSeek-style prompt caching: an uncached (miss) token costs 50× a cached
+  // one. Printed as a fact next to the context figures (owner ruling, 2026-10-16).
+  cacheMissPriceRatio: 50,
 }
 
 export function resolveAcpConfig(config: Partial<AcpConfig> = {}): AcpConfig {
@@ -793,6 +804,7 @@ export class AcpCompactionEngine extends CompactionEngine {
       get nudgeMinContextLimitPct() { return engine.readSettingsSource().nudgeMinContextLimitPct },
       get nudgeMaxContextLimitPct() { return engine.readSettingsSource().nudgeMaxContextLimitPct },
       get nudgeEmergencyThresholdPct() { return engine.readSettingsSource().nudgeEmergencyThresholdPct },
+      get cacheMissPriceRatio() { return engine.readSettingsSource().cacheMissPriceRatio },
       coreOverrides: this.config.coreOverrides,
       carrierSpans: this.config.carrierSpans,
       // Display-only: which named preset produced the thresholds above (if any),

@@ -205,16 +205,21 @@ test('M4/prompts 4c: the table header carries the pressure pair the decision use
   const table = rangeTable(session, wholeSurfaceRangeView(session), DEFAULT_PROMPTS, undefined, {
     tokens: 344_508,
     limit: 744_000,
+    missHitRatio: 50,
   })
   assert.ok(
-    table.includes('Context: 344.5K / 744K tokens used (46%)'),
+    table.includes('Context: 344.5K / 744K tokens used (46%) · cache-miss/cache-hit price ratio 50×'),
     `the used/window pair and the share are printed (${table.split('\n')[1] ?? ''})`,
   )
   // Facts only (owner ruling): no argument about cost, cache price or attention
   // is smuggled into the model-facing line — it gets the numbers and decides.
   const contextLine = table.split('\n').find((line) => line.startsWith('Context:')) ?? ''
-  assert.equal(contextLine, 'Context: 344.5K / 744K tokens used (46%)', 'the line is exactly the two numbers and the share')
-  for (const banned of ['cache', 'cost', 'attention', 'compress', 'sweep']) {
+  assert.equal(
+    contextLine,
+    'Context: 344.5K / 744K tokens used (46%) · cache-miss/cache-hit price ratio 50×',
+    'the line is exactly the two numbers, the share and the billing ratio',
+  )
+  for (const banned of ['cost', 'attention', 'compress', 'sweep', 'worth', 'should']) {
     assert.ok(!contextLine.includes(banned), `the line carries no guidance (${banned})`)
   }
   // No window on record (panel rebuild, tests): no line at all, never a blank one.

@@ -79,6 +79,14 @@ export interface AcpConfig {
      */
     readonly nudgeEmergencyThresholdPct?: number;
     /**
+     * Billing ratio the provider charges for an uncached token against a cached
+     * one (DeepSeek-style prompt caching: a cache MISS costs this many times a
+     * HIT). Engine default 50. It is a FACT the nudge prints and the panel shows,
+     * so the model can weigh a fold's one-time prefix rewrite in money rather than
+     * in tokens; the table's own payback figures stay token-denominated.
+     */
+    readonly cacheMissPriceRatio?: number;
+    /**
      * Named bundle for the three nudge thresholds — how eagerly the model is
      * asked to compress, in one word. One of 'preserve' | 'relaxed' | 'balanced'
      * | 'efficient' | 'aggressive' (see src/presets.ts). It fills ONLY the nudge
@@ -183,6 +191,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeMaxContextLimitPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
+        cacheMissPriceRatio: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
         guidanceDelivery: import("@deepseek-ai/schemastery").default<"message" | "system", "message" | "system", "plain">;
     }>>, Schemastery.ObjectT<NoInfer<{
@@ -192,6 +201,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeMaxContextLimitPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
+        cacheMissPriceRatio: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
         guidanceDelivery: import("@deepseek-ai/schemastery").default<"message" | "system", "message" | "system", "plain">;
     }>>, "plain">;

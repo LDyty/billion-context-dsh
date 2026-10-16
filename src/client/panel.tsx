@@ -197,7 +197,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
       h('th', { title: '区间（seq（事件序号）起止，含首尾）：本行折叠时实际覆盖的那个区间。每个年龄区域印它最大的 3 个（按大小取，行仍按 seq 从老到新排）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
       h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
       h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
-      h('th', { title: 'invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数是年龄区域的属性，印在「年龄区域」那一格。' }, '代价'),
+      h('th', { title: `invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数是年龄区域的属性，印在「年龄区域」那一格。按计费算：作废量要乘「缓存未命中/命中」的单价倍数（默认 50×，在「参数」里可改），所以真实回本次数 = 这里的回本 × (倍数 − 1)。` }, '代价'),
       h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 回本倍数）；与 nudge（提醒文本）里那一行是同一组数字。' }, '清扫'),
       h('th', { title: '复制一条可直接粘贴的 compress（压缩）调用。' }, ''))),
     h('tbody', null, rows.map((row, rowIndex) => {
@@ -304,6 +304,7 @@ function Blocks(props: { blocks: AcpInspectSnapshot['blocks'] }): ReactElement {
 function Params(props: { snapshot: AcpInspectSnapshot }): ReactElement {
   const { settings, usage } = props.snapshot
   const line = `/acp-prune config set nudgeMaxContextLimitPct ${String(settings.nudgeMaxContextLimitPct)}`
+  const ratioLine = `/acp-prune config set cacheMissPriceRatio ${String(settings.cacheMissPriceRatio)}`
   const pct = (value: number): string => `${Math.round(value * 100)}%`
   return h('div', { className: 'acp-section' },
     h('h4', null, '参数（引擎实时读取的值）'),
@@ -311,9 +312,16 @@ function Params(props: { snapshot: AcpInspectSnapshot }): ReactElement {
       `窗口 ${compact(usage.window)} · nudge 下限 ${pct(settings.nudgeMinContextLimitPct)} · 上限 ${pct(settings.nudgeMaxContextLimitPct)}`
       + ` · 紧急 ${pct(settings.nudgeEmergencyThresholdPct)}`
       + (settings.preset === undefined ? '' : ` · 预设 ${settings.preset}`)),
+    // 计费比值：缓存未命中价 ÷ 缓存命中价。nudge 里作为事实印给模型，这里是同一个数，
+    // 顺带给出改它的命令。
+    h('div', { title: '缓存未命中 ÷ 缓存命中 的单价倍数：模型按这个比值把「折叠一次性重写」换算成钱（作废 ~X token × 这个倍数，对比之后每次请求省下的 ~Y token）。' },
+      `计费：缓存未命中 / 命中 = ${String(settings.cacheMissPriceRatio)}×（可设）`),
     h('div', { className: 'acp-row-head' },
       h('code', null, line),
       h(CopyButton, { text: line })),
+    h('div', { className: 'acp-row-head' },
+      h('code', null, ratioLine),
+      h(CopyButton, { text: ratioLine })),
   )
 }
 

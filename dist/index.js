@@ -6979,7 +6979,7 @@ var NUDGE_ALLOWED = {
 };
 var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
-  context: /* @__PURE__ */ new Set(["used", "window", "pct"]),
+  context: /* @__PURE__ */ new Set(["used", "window", "pct", "ratio"]),
   title: /* @__PURE__ */ new Set(["count"]),
   region: /* @__PURE__ */ new Set(["region", "age", "skipped"]),
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped"]),
@@ -7061,8 +7061,9 @@ var DEFAULT_PROMPTS = {
   rangeTable: {
     header: "Surface: {surface}",
     // Facts only, no persuasion (owner ruling, 2026-10-16): these numbers are the
-    // model's to weigh, so the line must not argue for compressing.
-    context: "Context: {used} / {window} tokens used ({pct}%)",
+    // model's to weigh, so the line must not argue for compressing. The price
+    // ratio is a fact too — the billing weight of one uncached token.
+    context: "Context: {used} / {window} tokens used ({pct}%) \xB7 cache-miss/cache-hit price ratio {ratio}\xD7",
     title: "Compressible ranges ({count} \u2014 up to 3 of each age region's largest intervals, oldest first; exact surface seqs \u2014 usable as-is):",
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: "[age region {region}{age} \xB7 skipped {skipped}\xD7]",
@@ -8364,6 +8365,7 @@ async function handleInspectRequest(host, request) {
           nudgeMinContextLimitPct: settings.nudgeMinContextLimitPct ?? host.kernelNudgeMinContextLimitPct,
           nudgeMaxContextLimitPct: settings.nudgeMaxContextLimitPct,
           nudgeEmergencyThresholdPct: settings.nudgeEmergencyThresholdPct,
+          cacheMissPriceRatio: settings.cacheMissPriceRatio,
           ...host.preset === void 0 ? {} : { preset: host.preset }
         }
       })
@@ -8828,7 +8830,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     ...context === void 0 || context.limit <= 0 ? [] : [renderTemplate(prompts.rangeTable.context, {
       used: compactTokens(context.tokens),
       window: windowTokens(context.limit),
-      pct: Math.round(context.tokens / context.limit * 100)
+      pct: Math.round(context.tokens / context.limit * 100),
+      ratio: context.missHitRatio
     })],
     renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
@@ -8921,7 +8924,13 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
     mediaPriceOf,
     // The pressure pair the same step just measured (see rememberPressure above):
     // the model gets the number the decision used, not a second opinion.
-    { tokens: tokenCount, limit: env.modelContextLimit }
+    {
+      tokens: tokenCount,
+      limit: env.modelContextLimit,
+      // 50 mirrors SETTING_DEFAULTS.cacheMissPriceRatio — a hand-built env (tests)
+      // may omit it, production always resolves the setting.
+      missHitRatio: env.cacheMissPriceRatio ?? 50
+    }
   );
   const message = createUserMessage3({
     content: [{ type: "text", text }],
@@ -9951,13 +9960,15 @@ var SETTINGS_KEYS = [
   "nudgeMinContextLimitPct",
   "nudgeMaxContextLimitPct",
   "nudgeEmergencyThresholdPct",
-  "autoNudge"
+  "autoNudge",
+  "cacheMissPriceRatio"
 ];
 var SETTING_DEFAULTS = {
   autoModelContextLimit: true,
   nudgeMaxContextLimitPct: 0.7,
   nudgeEmergencyThresholdPct: 0.85,
-  autoNudge: true
+  autoNudge: true,
+  cacheMissPriceRatio: 50
 };
 function filterSettingsEntry(entry) {
   return {
@@ -9966,7 +9977,8 @@ function filterSettingsEntry(entry) {
     ...entry.nudgeMinContextLimitPct !== void 0 ? { nudgeMinContextLimitPct: entry.nudgeMinContextLimitPct } : {},
     ...entry.nudgeMaxContextLimitPct !== void 0 ? { nudgeMaxContextLimitPct: entry.nudgeMaxContextLimitPct } : {},
     ...entry.nudgeEmergencyThresholdPct !== void 0 ? { nudgeEmergencyThresholdPct: entry.nudgeEmergencyThresholdPct } : {},
-    ...entry.autoNudge !== void 0 ? { autoNudge: entry.autoNudge } : {}
+    ...entry.autoNudge !== void 0 ? { autoNudge: entry.autoNudge } : {},
+    ...entry.cacheMissPriceRatio !== void 0 ? { cacheMissPriceRatio: entry.cacheMissPriceRatio } : {}
   };
 }
 var VOLATILE_WRITE = /* @__PURE__ */ Symbol.for("cosmokit.volatile.write");
@@ -9992,7 +10004,8 @@ function resolveAcpSettings(input) {
     nudgeMinContextLimitPct: input.nudgeMinContextLimitPct,
     nudgeMaxContextLimitPct: input.nudgeMaxContextLimitPct ?? SETTING_DEFAULTS.nudgeMaxContextLimitPct,
     nudgeEmergencyThresholdPct: input.nudgeEmergencyThresholdPct ?? SETTING_DEFAULTS.nudgeEmergencyThresholdPct,
-    autoNudge: input.autoNudge ?? SETTING_DEFAULTS.autoNudge
+    autoNudge: input.autoNudge ?? SETTING_DEFAULTS.autoNudge,
+    cacheMissPriceRatio: input.cacheMissPriceRatio ?? SETTING_DEFAULTS.cacheMissPriceRatio
   };
 }
 var AcpSettingsSchema = z.object({
@@ -10001,7 +10014,8 @@ var AcpSettingsSchema = z.object({
   nudgeMinContextLimitPct: z.number().min(0).max(1),
   nudgeMaxContextLimitPct: z.number().min(0).max(1).default(SETTING_DEFAULTS.nudgeMaxContextLimitPct),
   nudgeEmergencyThresholdPct: z.number().min(0).max(1).default(SETTING_DEFAULTS.nudgeEmergencyThresholdPct),
-  autoNudge: z.boolean().default(SETTING_DEFAULTS.autoNudge)
+  autoNudge: z.boolean().default(SETTING_DEFAULTS.autoNudge),
+  cacheMissPriceRatio: z.number().step(1).min(1).default(SETTING_DEFAULTS.cacheMissPriceRatio)
 });
 function markVolatile(schema) {
   const capable = schema;
@@ -10014,6 +10028,7 @@ var AcpPluginConfigSchema = z.object({
   nudgeMaxContextLimitPct: markVolatile(z.number().min(0).max(1)),
   nudgeEmergencyThresholdPct: markVolatile(z.number().min(0).max(1)),
   autoNudge: markVolatile(z.boolean()),
+  cacheMissPriceRatio: markVolatile(z.number().step(1).min(1)),
   /**
    * Composition-layer policy for a plain range that crosses a live block's
    * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
@@ -10514,7 +10529,10 @@ var DEFAULT_CONFIG = {
   // against these defaults — `coreOverrides` merges last and beats them on
   // same-name keys.
   nudgeMaxContextLimitPct: 0.7,
-  nudgeEmergencyThresholdPct: 0.85
+  nudgeEmergencyThresholdPct: 0.85,
+  // DeepSeek-style prompt caching: an uncached (miss) token costs 50× a cached
+  // one. Printed as a fact next to the context figures (owner ruling, 2026-10-16).
+  cacheMissPriceRatio: 50
 };
 function resolveAcpConfig(config = {}) {
   const resolved = resolvePresetThresholds({ ...DEFAULT_CONFIG, ...config }, config);
@@ -10811,6 +10829,9 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
       },
       get nudgeEmergencyThresholdPct() {
         return engine.readSettingsSource().nudgeEmergencyThresholdPct;
+      },
+      get cacheMissPriceRatio() {
+        return engine.readSettingsSource().cacheMissPriceRatio;
       },
       coreOverrides: this.config.coreOverrides,
       carrierSpans: this.config.carrierSpans,

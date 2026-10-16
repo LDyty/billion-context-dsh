@@ -103,7 +103,7 @@ const NUDGE_ALLOWED: { [K in keyof NudgePrompts]: ReadonlySet<string> } = {
 }
 const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string> } = {
   header: new Set(['surface']),
-  context: new Set(['used', 'window', 'pct']),
+  context: new Set(['used', 'window', 'pct', 'ratio']),
   title: new Set(['count']),
   region: new Set(['region', 'age', 'skipped']),
   line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'skipped']),
@@ -221,8 +221,9 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
   rangeTable: {
     header: 'Surface: {surface}',
     // Facts only, no persuasion (owner ruling, 2026-10-16): these numbers are the
-    // model's to weigh, so the line must not argue for compressing.
-    context: 'Context: {used} / {window} tokens used ({pct}%)',
+    // model's to weigh, so the line must not argue for compressing. The price
+    // ratio is a fact too — the billing weight of one uncached token.
+    context: 'Context: {used} / {window} tokens used ({pct}%) · cache-miss/cache-hit price ratio {ratio}×',
     title: 'Compressible ranges ({count} — up to 3 of each age region\'s largest intervals, oldest first; exact surface seqs — usable as-is):',
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: '[age region {region}{age} · skipped {skipped}×]',

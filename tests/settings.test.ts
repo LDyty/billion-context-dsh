@@ -710,10 +710,10 @@ test('M6: a settings service speaking neither API degrades gracefully (issue #17
 
 // ── Issue #193: the forms line registers and hot-applies ──────────────────────
 
-test('M6: static Config schema exposes the six volatile knobs plus non-volatile switches, no defaults (issue #193)', () => {
+test('M6: static Config schema exposes the seven volatile knobs plus non-volatile switches, no defaults (issue #193)', () => {
   // The loader validates our composition row against this schema AND
   // SettingsForms builds its form from it — the field set IS the public
-  // settings contract. A seventh VOLATILE key or a dropped .volatile() would
+  // settings contract. An eighth VOLATILE key or a dropped .volatile() would
   // silently change what hosts expose; a non-volatile key is a composition
   // switch (accepted by the loader, absent from the form by design) — see
   // src/settings.ts, which lists both classes explicitly.
@@ -725,6 +725,7 @@ test('M6: static Config schema exposes the six volatile knobs plus non-volatile 
     'nudgeMaxContextLimitPct',
     'nudgeEmergencyThresholdPct',
     'autoNudge',
+    'cacheMissPriceRatio',
   ]
   const compositionKeys = ['carrierSpans', 'guidanceDelivery']
   assert.deepEqual(Object.keys(AcpPluginConfigSchema.dict), [...settingsKeys, ...compositionKeys])

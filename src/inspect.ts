@@ -133,6 +133,7 @@ export interface InspectRouteHost {
     readonly nudgeMinContextLimitPct?: number
     readonly nudgeMaxContextLimitPct: number
     readonly nudgeEmergencyThresholdPct: number
+    readonly cacheMissPriceRatio: number
   }
   readonly preset?: string
   /** Kernel fallback for an absent `nudgeMinContextLimitPct` (the floor it reads). */
@@ -185,6 +186,7 @@ export async function handleInspectRequest(host: InspectRouteHost, request: Requ
           nudgeMinContextLimitPct: settings.nudgeMinContextLimitPct ?? host.kernelNudgeMinContextLimitPct,
           nudgeMaxContextLimitPct: settings.nudgeMaxContextLimitPct,
           nudgeEmergencyThresholdPct: settings.nudgeEmergencyThresholdPct,
+          cacheMissPriceRatio: settings.cacheMissPriceRatio,
           ...(host.preset === undefined ? {} : { preset: host.preset }),
         },
       }),

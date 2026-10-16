@@ -44,6 +44,7 @@ export const SETTINGS_KEYS = [
   'nudgeMaxContextLimitPct',
   'nudgeEmergencyThresholdPct',
   'autoNudge',
+  'cacheMissPriceRatio',
 ] as const
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[number]
@@ -58,6 +59,13 @@ export interface AcpSettings {
   readonly nudgeMaxContextLimitPct: number
   readonly nudgeEmergencyThresholdPct: number
   readonly autoNudge: boolean
+  /**
+   * What one cache-MISS token costs relative to one cache-HIT token. 50 = the
+   * provider bills an uncached token 50× a cached one. Printed as a fact in the
+   * nudge's context line and shown in the panel; it does not (yet) rescale the
+   * table's payback figures, which are token-denominated.
+   */
+  readonly cacheMissPriceRatio: number
 }
 
 /** Input shape (everything optional — omitted keys fall back to defaults). */
@@ -73,6 +81,7 @@ export const SETTING_DEFAULTS = {
   nudgeMaxContextLimitPct: 0.7,
   nudgeEmergencyThresholdPct: 0.85,
   autoNudge: true,
+  cacheMissPriceRatio: 50,
 } as const
 
 /**
@@ -87,6 +96,7 @@ export interface AcpSettingsCompositionEntry {
   readonly nudgeMaxContextLimitPct?: number
   readonly nudgeEmergencyThresholdPct?: number
   readonly autoNudge?: boolean
+  readonly cacheMissPriceRatio?: number
 }
 
 /**
@@ -105,6 +115,7 @@ export function filterSettingsEntry(entry: AcpSettingsCompositionEntry): AcpSett
     ...(entry.nudgeMaxContextLimitPct !== undefined ? { nudgeMaxContextLimitPct: entry.nudgeMaxContextLimitPct } : {}),
     ...(entry.nudgeEmergencyThresholdPct !== undefined ? { nudgeEmergencyThresholdPct: entry.nudgeEmergencyThresholdPct } : {}),
     ...(entry.autoNudge !== undefined ? { autoNudge: entry.autoNudge } : {}),
+    ...(entry.cacheMissPriceRatio !== undefined ? { cacheMissPriceRatio: entry.cacheMissPriceRatio } : {}),
   }
 }
 
@@ -152,6 +163,7 @@ export function resolveAcpSettings(input: AcpSettingsInput): AcpSettings {
     nudgeMaxContextLimitPct: input.nudgeMaxContextLimitPct ?? SETTING_DEFAULTS.nudgeMaxContextLimitPct,
     nudgeEmergencyThresholdPct: input.nudgeEmergencyThresholdPct ?? SETTING_DEFAULTS.nudgeEmergencyThresholdPct,
     autoNudge: input.autoNudge ?? SETTING_DEFAULTS.autoNudge,
+    cacheMissPriceRatio: input.cacheMissPriceRatio ?? SETTING_DEFAULTS.cacheMissPriceRatio,
   }
 }
 
@@ -168,6 +180,7 @@ export const AcpSettingsSchema = z.object({
   nudgeMaxContextLimitPct: z.number().min(0).max(1).default(SETTING_DEFAULTS.nudgeMaxContextLimitPct),
   nudgeEmergencyThresholdPct: z.number().min(0).max(1).default(SETTING_DEFAULTS.nudgeEmergencyThresholdPct),
   autoNudge: z.boolean().default(SETTING_DEFAULTS.autoNudge),
+  cacheMissPriceRatio: z.number().step(1).min(1).default(SETTING_DEFAULTS.cacheMissPriceRatio),
 })
 
 /**
@@ -209,6 +222,7 @@ export const AcpPluginConfigSchema = z.object({
   nudgeMaxContextLimitPct: markVolatile(z.number().min(0).max(1)),
   nudgeEmergencyThresholdPct: markVolatile(z.number().min(0).max(1)),
   autoNudge: markVolatile(z.boolean()),
+  cacheMissPriceRatio: markVolatile(z.number().step(1).min(1)),
   /**
    * Composition-layer policy for a plain range that crosses a live block's
    * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is

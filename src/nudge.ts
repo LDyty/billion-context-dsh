@@ -71,6 +71,8 @@ export interface NudgeEnvironment extends KernelConfigInput {
   readonly store: AcpStateStore
   /** Resolved prompt templates (optional: falls back to DEFAULT_RESOLVED). */
   readonly prompts?: ResolvedPrompts
+  /** Cache-miss ÷ cache-hit price ratio (see AcpConfig.cacheMissPriceRatio). */
+  readonly cacheMissPriceRatio?: number
 }
 
 export interface NudgeOutcome {
@@ -323,6 +325,8 @@ export interface RangeTableContext {
   readonly tokens: number
   /** Sustainable input budget: window minus the route's output reservation. */
   readonly limit: number
+  /** Cache-miss ÷ cache-hit price ratio, printed as a fact (SETTING_DEFAULTS.cacheMissPriceRatio). */
+  readonly missHitRatio: number
 }
 
 /**
@@ -569,6 +573,7 @@ export function rangeTable(
         used: compactTokens(context.tokens),
         window: windowTokens(context.limit),
         pct: Math.round((context.tokens / context.limit) * 100),
+        ratio: context.missHitRatio,
       })]),
     renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
@@ -777,7 +782,13 @@ export function buildNudge(
     mediaPriceOf,
     // The pressure pair the same step just measured (see rememberPressure above):
     // the model gets the number the decision used, not a second opinion.
-    { tokens: tokenCount, limit: env.modelContextLimit },
+    {
+      tokens: tokenCount,
+      limit: env.modelContextLimit,
+      // 50 mirrors SETTING_DEFAULTS.cacheMissPriceRatio — a hand-built env (tests)
+      // may omit it, production always resolves the setting.
+      missHitRatio: env.cacheMissPriceRatio ?? 50,
+    },
   )
   const message = createUserMessage({
     content: [{ type: 'text', text }],

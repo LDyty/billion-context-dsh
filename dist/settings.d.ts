@@ -34,7 +34,7 @@ import z from '@deepseek-ai/schemastery';
  */
 export declare const ACP_SETTINGS_NAMESPACE = "compaction-acp";
 /** The six knobs exposed to the runtime settings layer. Order defines /acp-prune config listing order. */
-export declare const SETTINGS_KEYS: readonly ['modelContextLimit', 'autoModelContextLimit', 'nudgeMinContextLimitPct', 'nudgeMaxContextLimitPct', 'nudgeEmergencyThresholdPct', 'autoNudge'];
+export declare const SETTINGS_KEYS: readonly ['modelContextLimit', 'autoModelContextLimit', 'nudgeMinContextLimitPct', 'nudgeMaxContextLimitPct', 'nudgeEmergencyThresholdPct', 'autoNudge', 'cacheMissPriceRatio'];
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 /** Resolved shape of one settings snapshot — what every consumer read returns. */
 export interface AcpSettings {
@@ -46,6 +46,13 @@ export interface AcpSettings {
     readonly nudgeMaxContextLimitPct: number;
     readonly nudgeEmergencyThresholdPct: number;
     readonly autoNudge: boolean;
+    /**
+     * What one cache-MISS token costs relative to one cache-HIT token. 50 = the
+     * provider bills an uncached token 50× a cached one. Printed as a fact in the
+     * nudge's context line and shown in the panel; it does not (yet) rescale the
+     * table's payback figures, which are token-denominated.
+     */
+    readonly cacheMissPriceRatio: number;
 }
 /** Input shape (everything optional — omitted keys fall back to defaults). */
 export type AcpSettingsInput = Partial<AcpSettings>;
@@ -59,6 +66,7 @@ export declare const SETTING_DEFAULTS: {
     readonly nudgeMaxContextLimitPct: 0.7;
     readonly nudgeEmergencyThresholdPct: 0.85;
     readonly autoNudge: true;
+    readonly cacheMissPriceRatio: 50;
 };
 /**
  * The subset of `AcpConfig` the settings layer may see. Declared structurally
@@ -72,6 +80,7 @@ export interface AcpSettingsCompositionEntry {
     readonly nudgeMaxContextLimitPct?: number;
     readonly nudgeEmergencyThresholdPct?: number;
     readonly autoNudge?: boolean;
+    readonly cacheMissPriceRatio?: number;
 }
 /**
  * Filter a composition-row config down to the settings-known scalar keys.
@@ -116,6 +125,7 @@ export declare const AcpSettingsSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeMaxContextLimitPct: z<number, number, "defined">;
     nudgeEmergencyThresholdPct: z<number, number, "defined">;
     autoNudge: z<boolean, boolean, "defined">;
+    cacheMissPriceRatio: z<number, number, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     modelContextLimit: z<number, number, "plain">;
     autoModelContextLimit: z<boolean, boolean, "defined">;
@@ -123,6 +133,7 @@ export declare const AcpSettingsSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeMaxContextLimitPct: z<number, number, "defined">;
     nudgeEmergencyThresholdPct: z<number, number, "defined">;
     autoNudge: z<boolean, boolean, "defined">;
+    cacheMissPriceRatio: z<number, number, "defined">;
 }>>, "plain">;
 /**
  * The engine's static config schema — the class-level `Config` the host
@@ -145,6 +156,7 @@ export declare const AcpPluginConfigSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeMaxContextLimitPct: z<number, number, "plain">;
     nudgeEmergencyThresholdPct: z<number, number, "plain">;
     autoNudge: z<boolean, boolean, "plain">;
+    cacheMissPriceRatio: z<number, number, "plain">;
     /**
      * Composition-layer policy for a plain range that crosses a live block's
      * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
@@ -168,6 +180,7 @@ export declare const AcpPluginConfigSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeMaxContextLimitPct: z<number, number, "plain">;
     nudgeEmergencyThresholdPct: z<number, number, "plain">;
     autoNudge: z<boolean, boolean, "plain">;
+    cacheMissPriceRatio: z<number, number, "plain">;
     /**
      * Composition-layer policy for a plain range that crosses a live block's
      * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is

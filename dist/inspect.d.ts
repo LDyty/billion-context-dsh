@@ -79,6 +79,7 @@ export interface InspectRouteHost {
         readonly nudgeMinContextLimitPct?: number;
         readonly nudgeMaxContextLimitPct: number;
         readonly nudgeEmergencyThresholdPct: number;
+        readonly cacheMissPriceRatio: number;
     };
     readonly preset?: string;
     /** Kernel fallback for an absent `nudgeMinContextLimitPct` (the floor it reads). */
