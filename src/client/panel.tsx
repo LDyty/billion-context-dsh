@@ -140,7 +140,8 @@ function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
       h('th', { title: '这三列都按字符算，加起来正好 100%：tool（工具结果 + 工具调用参数）· 推理（草稿）· 正文（用户消息、助手正文、注入行）' }, '正文'),
       h('th', null, '作废'), h('th', null, '回本'),
       h('th', { title: '这一行被摆到模型面前多少次（含本次）；越高说明它反复没被采纳' }, '被报价'),
-      h('th', null, '清扫'), h('th', null, ''))),
+      h('th', { title: '从本行起、只往新的方向、不封顶（N条→回收量 @回本×）；与 nudge 里那一行是同一组数字' }, '清扫'),
+      h('th', null, ''))),
     h('tbody', null, rows.map((row) => {
       const sweep = sweepOf(row.start)
       const stale = staleOf(row)

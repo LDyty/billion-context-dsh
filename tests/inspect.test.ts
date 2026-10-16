@@ -194,6 +194,77 @@ test('inspect: a session the engine never built a table for still answers (empty
   assert.ok(snapshot.map.length > 0, 'the live map is still served')
 })
 
+test('inspect: the panel mirrors each row\'s sweep (same entries/reclaims/payback), including "no sweep"', () => {
+  // The panel's 清扫 column is built from the SAME remembered sweep objects the
+  // nudge printed, so the two surfaces cannot drift: every row that printed a
+  // sweep line has a snapshot sweep with the identical entry count, reclaim, and
+  // payback, and a row that printed nothing has none.
+  const session = buildTextSession(24)
+  const spans: [number, number][] = [[0, 2], [4, 6], [8, 10], [12, 14], [16, 18]]
+  const nodes = [...session.surface.nodes]
+  const view = {
+    ranges: spans.map(([,], index) => ({ startRef: `s${index}`, endRef: `e${index}` })),
+    refs: {
+      byRef: Object.fromEntries(spans.flatMap(([from, to], index) => [
+        [`s${index}`, String(nodes[from]!)],
+        [`e${index}`, String(nodes[to]!)],
+      ])),
+    },
+  }
+  const text = rangeTable(session, view as never)
+  const snapshot = buildInspectSnapshot({
+    sessionId: String(session.id),
+    session,
+    cache: inspectCacheOf(String(session.id)),
+    blocks: [],
+    settings: {
+      modelContextLimit: 200000,
+      nudgeMinContextLimitPct: 0.7,
+      nudgeMaxContextLimitPct: 0.85,
+      nudgeEmergencyThresholdPct: 0.95,
+    },
+  })
+
+  // The nudge names sweeps by the seq they start at; the rows carry the same
+  // starts. Pair them up through the printed text.
+  const lines = text.split('\n')
+  let withSweep = 0
+  let withoutSweep = 0
+  for (const [index, line] of lines.entries()) {
+    const rowMatch = /^\s+- seq (\d+)\.\.(\d+) —/.exec(line)
+    if (rowMatch === null) continue
+    const start = Number(rowMatch[1])
+    const sweepLine = lines[index + 2] ?? ''
+    const sweep = snapshot.sweeps.find((entry) => entry.rowStart === start)
+    if (sweepLine.includes('sweep from here')) {
+      withSweep += 1
+      assert.ok(sweep, `row ${start} printed a sweep, so the panel has one too`)
+      const entries = Number(/all (\d+) spans/.exec(sweepLine)![1])
+      assert.equal(sweep!.entries, entries, `row ${start}: the panel lists the same entry count`)
+      assert.equal(sweep!.spans.length, entries, 'and one span per entry (copy-paste ready)')
+      assert.ok(sweepLine.includes(`reclaims ~${compactSweepTokens(sweep!.reclaims)}`), `row ${start}: same reclaim`)
+      assert.ok(
+        sweepLine.includes(`pays back in ~${sweep!.breakEven.toFixed(1)} request(s)`),
+        `row ${start}: same payback`,
+      )
+      // Forward-only: the sweep starts at the row it is printed under and never
+      // reaches back before it (the 2026-10-16 owner rule).
+      assert.ok(sweep!.spans.every((span) => span.start >= start), `row ${start}: the sweep never starts earlier`)
+      assert.equal(sweep!.spans[0]!.start, start, `row ${start}: the sweep starts AT its own row`)
+    } else {
+      withoutSweep += 1
+      assert.equal(sweep, undefined, `row ${start} printed no sweep, so the panel has none`)
+    }
+  }
+  assert.ok(withSweep >= 1, 'the fixture prints at least one sweep')
+  assert.ok(withoutSweep >= 1, 'and at least one row has nothing newer to absorb')
+})
+
+/** Mirror of the nudge's `compactTokens` for the reclaim column. */
+function compactSweepTokens(tokens: number): string {
+  return tokens >= 10_000 ? `${(tokens / 1000).toFixed(1)}K` : String(Math.round(tokens))
+}
+
 test('inspect: the panel says WHERE its denominator came from', () => {
   const session = buildTextSession(12)
   const settings = {
