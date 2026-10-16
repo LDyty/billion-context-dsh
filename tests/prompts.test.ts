@@ -194,7 +194,7 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
 Compressible ranges (1 — up to 3 of each age region, the cheapest to fold, printed oldest first; exact surface seqs — usable as-is):
 [age region 1 (oldest) · skipped 0×]
     - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens [tool 0% | reasoning 0% | text 100%] · cheapest+largest+oldest
-        fold cost: reclaims ~7283 · re-sends 5204 tok newer uncached once · pays back in ~38.0 request(s)
+        fold cost: reclaims ~7283 · re-sends 5204 tok newer uncached once · pays back in ~38.7 request(s)
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
 A sweep folds in ONE call with ONE shared summary — name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The sweep's exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.

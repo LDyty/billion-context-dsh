@@ -8026,7 +8026,7 @@ function billingPaybackRequests(invalidatedTokens, reclaimedTokens, missHitRatio
   const newer = Math.max(0, invalidatedTokens - reclaimedTokens);
   const perRequest = reclaimedTokens - summaryTokens;
   if (perRequest <= 0) return Number.POSITIVE_INFINITY;
-  const oneTime = newer * Math.max(0, missHitRatio - 1) + summaryTokens * missHitRatio - reclaimedTokens;
+  const oneTime = (newer + summaryTokens) * missHitRatio - reclaimedTokens;
   return oneTime <= 0 ? 0 : oneTime / perRequest;
 }
 function foldCostsOfRanges(session, ranges, mediaPriceOf) {
