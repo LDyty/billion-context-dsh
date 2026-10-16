@@ -6980,6 +6980,7 @@ var NUDGE_ALLOWED = {
 var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
   title: /* @__PURE__ */ new Set(["count"]),
+  region: /* @__PURE__ */ new Set(["region", "age", "skipped"]),
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["count", "reclaimed", "invalidated", "breakEven", "coverage", "rowMix", "toolPct", "reasoningPct", "textPct"]),
@@ -7059,18 +7060,20 @@ var DEFAULT_PROMPTS = {
   rangeTable: {
     header: "Surface: {surface}",
     title: "Compressible ranges ({count} \u2014 up to 3 of each age region's largest intervals, oldest first; exact surface seqs \u2014 usable as-is):",
+    // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
+    region: "[age region {region}{age} \xB7 skipped {skipped}\xD7]",
     // Two figures, two units, each printed where it belongs: the row MIX rides
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
     // summing to 100).
-    line: "  - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{skipped}",
-    cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
+    line: "    - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}",
+    cost: "        fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
     // No entry labels: a sweep can reach seventy spans, so the line states the
     // batch's totals — including the summed character partition and row mix,
     // the same two figures every row carries — and points at acp_status for the
     // list the model must fetch anyway before compressing.
-    batch: '      sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s)) \xB7 full list: acp_status scope:"uncompressed", view:"ranges"',
-    footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
+    batch: "        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
+    footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSweep entries are not printed: the exact spans of any sweep come from acp_status({ scope: "uncompressed", view: "ranges" }).\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.'
   },
   tools: {
     // Short, STABLE contracts. The rules these used to carry (timing, the
@@ -7126,7 +7129,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets a SHORT HONEST summary rather than an invented one \u2014 say what it was and that nothing was kept. The summary floor (50 characters) is judged PER ENTRY against the SIZE of the span being folded: a span under ~500 tokens may take a single sentence, while a larger span \u2014 and any block-ref distillation \u2014 still owes a real summary. A call that mixes junk slivers with real content therefore keeps each entry's own rule; there is no whole-call switch to game. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age region that start did NOT fall into was counted once; when that same call folded a CONTIGUOUS RUN of more than one compressible range (a sweep \u2014 consecutive offers with nothing compressible left unfolded in between), every age region those other spans reached into gave that count back \u2014 a fold that went through an age region did not pass it over, while a batch of unrelated scattered segments counts as the pass-overs it made. So a climbing number marks an age region your folds keep starting somewhere else AND never fold through, and the smallest number is the age region you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on an age region whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets a SHORT HONEST summary rather than an invented one \u2014 say what it was and that nothing was kept. The summary floor (50 characters) is judged PER ENTRY against the SIZE of the span being folded: a span under ~500 tokens may take a single sentence, while a larger span \u2014 and any block-ref distillation \u2014 still owes a real summary. A call that mixes junk slivers with real content therefore keeps each entry's own rule; there is no whole-call switch to game. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. Each age region's header line carries that region's 'skipped N\xD7': every time YOU chose a fold start, each age region that start did NOT fall into was counted once; when that same call folded a CONTIGUOUS RUN of more than one compressible range (a sweep \u2014 consecutive offers with nothing compressible left unfolded in between), every age region those other spans reached into gave that count back \u2014 a fold that went through an age region did not pass it over, while a batch of unrelated scattered segments counts as the pass-overs it made. So a climbing number marks an age region your folds keep starting somewhere else AND never fold through, and the smallest number is the age region you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on an age region whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -8742,8 +8745,18 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       textPct: composition.textPct
     }));
   }
+  let previousAgeRegion = 0;
   const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion }) => {
-    const rows = [
+    const rows = [];
+    if (ageRegion !== previousAgeRegion) {
+      previousAgeRegion = ageRegion;
+      rows.push(renderTemplate(prompts.rangeTable.region, {
+        region: ageRegion,
+        age: ageRegion === 1 ? " (oldest)" : ageRegion === RANGE_TABLE_AGE_REGIONS ? " (newest)" : "",
+        skipped: ageRegionSkips[ageRegion - 1] ?? 0
+      }));
+    }
+    rows.push(
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
         end: range.end,
@@ -8755,10 +8768,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
-        // "This age region keeps being passed over": how many model choices picked a
-        // fold start outside this age region (src/age-region-skips.ts). Independent of the
-        // seq range — the number belongs to the age region slot, not the content,
-        // so every row of one region prints the same count.
+        // Kept in the placeholder set for custom templates; the default prints the
+        // count on the region layer instead (it is the region's number, not a row's).
         skipped: skippedLabel(ageRegionSkips[ageRegion - 1] ?? 0)
       }),
       renderTemplate(prompts.rangeTable.cost, {
@@ -8767,7 +8778,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         breakEven: Number.isFinite(cost.breakEvenRequests) ? cost.breakEvenRequests.toFixed(1) : "\u221E",
         flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : ""
       })
-    ];
+    );
     const batch = proposalOfAt.get(at);
     if (batch !== void 0) rows.push(batch);
     return rows;

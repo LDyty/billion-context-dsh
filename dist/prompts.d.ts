@@ -42,7 +42,12 @@ export interface RangeTablePrompts {
     header: string;
     /** 标题。占位符:{count}(表格行数) */
     title: string;
-    /** 每行。占位符:{start} {end} {count} {tokens} {skipped} */
+    /**
+     * 年龄区域头（每个区域印一次，区间就挂在它下面）。
+     * 占位符:{region} {age} {skipped}
+     */
+    region: string;
+    /** 每行。占位符:{start} {end} {count} {tokens} */
     line: string;
     /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
     cost: string;

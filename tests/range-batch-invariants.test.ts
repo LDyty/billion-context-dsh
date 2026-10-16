@@ -195,8 +195,14 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
       assert.equal(Number(partition![1]) + Number(partition![2]) + Number(partition![3]), 100, 'and it sums to 100')
       assert.equal(partition![2], '0', 'a text-only fixture reports no scratchpad')
       assert.match(line, /rewrites ~\S+ tok of the prefix \(pays back in ~[\d.∞]+ request\(s\)\)/, 'the rewrite arithmetic survives')
-      assert.ok(line.includes('full list: acp_status scope:"uncompressed", view:"ranges"'), 'and the list has a named source')
     }
+    // The list's source is named ONCE for the whole table (owner ruling,
+    // 2026-10-16): printing it on every sweep line was the same sentence
+    // seventeen times over.
+    assert.ok(
+      text.includes('Sweep entries are not printed: the exact spans of any sweep come from acp_status'),
+      'the table names one source for every sweep list',
+    )
   }
 })
 

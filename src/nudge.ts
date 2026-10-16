@@ -465,8 +465,21 @@ export function rangeTable(
       textPct: composition.textPct,
     }))
   }
+  let previousAgeRegion = 0
   const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion }) => {
-    const rows = [
+    const rows: string[] = []
+    // The age-region layer, printed once per region: its name and number, and the
+    // pass-over count that belongs to the REGION (not to any one interval), with
+    // the region's intervals nested one level under it.
+    if (ageRegion !== previousAgeRegion) {
+      previousAgeRegion = ageRegion
+      rows.push(renderTemplate(prompts.rangeTable.region, {
+        region: ageRegion,
+        age: ageRegion === 1 ? ' (oldest)' : ageRegion === RANGE_TABLE_AGE_REGIONS ? ' (newest)' : '',
+        skipped: ageRegionSkips[ageRegion - 1] ?? 0,
+      }))
+    }
+    rows.push(
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
         end: range.end,
@@ -478,10 +491,8 @@ export function rangeTable(
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
-        // "This age region keeps being passed over": how many model choices picked a
-        // fold start outside this age region (src/age-region-skips.ts). Independent of the
-        // seq range — the number belongs to the age region slot, not the content,
-        // so every row of one region prints the same count.
+        // Kept in the placeholder set for custom templates; the default prints the
+        // count on the region layer instead (it is the region's number, not a row's).
         skipped: skippedLabel(ageRegionSkips[ageRegion - 1] ?? 0),
       }),
       renderTemplate(prompts.rangeTable.cost, {
@@ -490,7 +501,7 @@ export function rangeTable(
         breakEven: Number.isFinite(cost.breakEvenRequests) ? cost.breakEvenRequests.toFixed(1) : '∞',
         flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : '',
       }),
-    ]
+    )
     const batch = proposalOfAt.get(at)
     if (batch !== undefined) rows.push(batch)
     return rows
