@@ -48,6 +48,20 @@ export const ACP_PANEL_CSS = `
 .acp-row-head { display: flex; justify-content: space-between; gap: 8px; }
 .acp-warn { color: #ffb454; }
 .acp-sweep { opacity: .85; font-size: 11px; }
+/* Range table, compact form: composition as a meter instead of three columns,
+   the row mix as a sub-line under the range, cost as one cell with an offer
+   badge. Detail is hover-only, so the table stays scannable. */
+.acp-ranges td { vertical-align: top; }
+.acp-ranges .acp-band { opacity: .6; text-align: left; }
+.acp-ranges .acp-range { text-align: left; }
+.acp-sub { display: block; font-size: 10px; opacity: .55; }
+.acp-mix { display: inline-flex; width: 56px; height: 8px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, currentColor 10%, transparent); vertical-align: middle; }
+.acp-mix > i { display: block; height: 100%; background: currentColor; }
+.acp-mix-tool { opacity: .55; }
+.acp-mix-reason { opacity: .3; }
+.acp-mix-text { opacity: .12; }
+.acp-cost-rate { margin-left: 5px; font-size: 11px; }
+.acp-badge { margin-left: 5px; padding: 0 5px; border-radius: 7px; font-size: 10px; background: color-mix(in srgb, currentColor 14%, transparent); }
 .acp-blocks { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
 .acp-block { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 6px; padding: 6px 8px; }
 .acp-block > summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; }

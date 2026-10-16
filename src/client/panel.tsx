@@ -113,7 +113,23 @@ function ContextMap(props: { map: readonly AcpInspectNode[] }): ReactElement {
   )
 }
 
-function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
+/**
+ * The three-segment character partition as a hairline meter: tool machinery,
+ * reasoning scratchpad, the rest — the same three numbers the nudge row prints,
+ * drawn instead of tabulated so the table can lose three columns. One ink at
+ * three opacities keeps it theme-neutral (the panel's only colour is the ⚠
+ * amber); the tooltip carries the exact percentages.
+ */
+function MixBar(props: { toolPct: number; reasoningPct: number; textPct: number; title: string }): ReactElement {
+  return h('span', { className: 'acp-mix', title: props.title },
+    h('i', { className: 'acp-mix-tool', style: { width: `${String(props.toolPct)}%` } }),
+    h('i', { className: 'acp-mix-reason', style: { width: `${String(props.reasoningPct)}%` } }),
+    h('i', { className: 'acp-mix-text', style: { width: `${String(props.textPct)}%` } }),
+  )
+}
+
+/** Exported for the offline preview (`scratch-panel-preview.mjs`) and future tests. */
+export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
   const { rows, sweeps, map } = props.snapshot
   if (rows.length === 0) return h('div', { className: 'acp-empty' }, '还没有可压范围（等下一次 nudge 生成）')
   const sweepOf = (start: number): AcpInspectSnapshot['sweeps'][number] | undefined =>
@@ -131,31 +147,37 @@ function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
         `${String(staleCount)}/${String(rows.length)} 行已过期（这些 seq 已不在表面上——压过或表面已移动）。`
         + '下次 nudge 或打开面板时会自动重建。')
       : null,
-    h('table', { className: 'acp-table' },
+    // Seven columns, not twelve: the composition became a meter, the row mix a
+    // sub-line under the range, 作废/回本/被报价 one cost cell, and the sweep
+    // line keeps its own cell. Detail lives in tooltips — the panel should read
+    // as a table a human scans, not as the nudge's full text laid out.
+    h('table', { className: 'acp-table acp-ranges' },
     h('thead', null, h('tr', null,
-      h('th', null, '段位'), h('th', null, '范围'),
-      h('th', { title: '条数，附按条数的行类型构成（tool = 工具结果或带 tool-call 的助手行；other = 注入行/摘要等）' }, '条数'),
-      h('th', null, '大小'), h('th', null, 'tool'),
-      h('th', { title: '这一行里有多少字符是助手的推理草稿（thinking）——按字符算，不是按条数' }, '推理'),
-      h('th', { title: '这三列都按字符算，加起来正好 100%：tool（工具结果 + 工具调用参数）· 推理（草稿）· 正文（用户消息、助手正文、注入行）' }, '正文'),
-      h('th', null, '作废'), h('th', null, '回本'),
-      h('th', { title: '这一行被摆到模型面前多少次（含本次）；越高说明它反复没被采纳' }, '被报价'),
-      h('th', { title: '从本行起、只往新的方向、不封顶（N条→回收量 @回本×）；与 nudge 里那一行是同一组数字' }, '清扫'),
+      h('th', null, '段位'), h('th', null, '范围'), h('th', null, '大小'),
+      h('th', { title: '按字符算的三档构成（和为 100%）：tool（工具结果 + 工具调用参数）· 推理（草稿）· 正文（用户消息、助手正文、注入行）' }, '构成'),
+      h('th', { title: '作废 = 折叠会让下一发重发多少 prefix；× = 回本需要几次请求；⚠ = 回本 ≥ 6；右侧徽标是「被报价次数」（≥3 才显示）' }, '代价'),
+      h('th', { title: '从本行起、只往新的方向、不封顶（N段→回收量 @回本×）；与 nudge 里那一行是同一组数字' }, '清扫'),
       h('th', null, ''))),
     h('tbody', null, rows.map((row) => {
       const sweep = sweepOf(row.start)
       const stale = staleOf(row)
       return h('tr', { key: `${row.start}-${row.end}`, className: stale ? 'acp-stale' : undefined },
-        h('td', null, `${row.band}${row.band === 1 ? '（最老）' : ''}`),
-        h('td', null, `${row.start}..${row.end}${stale ? '（已过期）' : ''}`),
-        h('td', null, `${String(row.messages)}（${row.rowMix}）`),
+        h('td', { className: 'acp-band' }, row.band === 1 ? '1 最老' : String(row.band)),
+        h('td', { className: 'acp-range' },
+          h('span', null, `${String(row.start)}..${String(row.end)}${stale ? ' （已过期）' : ''}`),
+          h('span', { className: 'acp-sub' }, `${String(row.messages)} 条 · ${row.rowMix}`)),
         h('td', null, `~${compact(row.tokens)}`),
-        h('td', null, `${row.toolPct}%`),
-        h('td', { className: row.reasoningPct >= 30 ? 'acp-warn' : 'acp-muted' }, `${row.reasoningPct}%`),
-        h('td', { className: 'acp-muted' }, `${row.textPct}%`),
-        h('td', null, `~${compact(row.invalidated)}`),
-        h('td', { className: row.expensive ? 'acp-warn' : undefined }, `${row.breakEven.toFixed(1)}×`),
-        h('td', { className: row.offered >= 3 ? 'acp-warn' : 'acp-muted' }, `${String(row.offered)}×`),
+        h('td', null, h(MixBar, {
+          toolPct: row.toolPct,
+          reasoningPct: row.reasoningPct,
+          textPct: row.textPct,
+          title: `[tool ${String(row.toolPct)}% | reasoning ${String(row.reasoningPct)}% | text ${String(row.textPct)}%]`,
+        })),
+        h('td', null,
+          h('span', null, `~${compact(row.invalidated)}`),
+          h('span', { className: row.expensive ? 'acp-warn acp-cost-rate' : 'acp-muted acp-cost-rate' },
+            `${row.expensive ? '⚠ ' : ''}${row.breakEven.toFixed(1)}×`),
+          row.offered >= 3 ? h('span', { className: 'acp-badge', title: '这一行被摆到模型面前多少次（含本次）；越高说明它反复没被采纳' }, `${String(row.offered)}×`) : null),
         h('td', {
           className: 'acp-sweep',
           // Same figures the nudge's sweep line carries: the panel is a view of
