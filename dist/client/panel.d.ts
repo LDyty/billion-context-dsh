@@ -10,6 +10,11 @@
  * can never fold something the model did not have a chance to judge.
  */
 import type { ReactElement } from 'react';
+import type { AcpInspectSnapshot } from '../inspect-types.ts';
+/** Exported for the offline preview (`scratch-panel-preview.mjs`) and future tests. */
+export declare function RangeTable(props: {
+    snapshot: AcpInspectSnapshot;
+}): ReactElement;
 /** The whole panel body for one session. */
 export declare function AcpInspectorPanel(props: {
     sessionId?: string;

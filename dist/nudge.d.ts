@@ -81,10 +81,16 @@ export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
 export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
  * How many times a row must have been offered before the count is printed.
- * Appearing twice is normal (the next build happens minutes later); a row that
- * keeps coming back is the fact worth showing.
+ *
+ * The owner's call (2026-10-16) is ONE — the count is printed on every row.
+ * It used to start at 3 ("appearing twice is normal"), which left the model
+ * unable to see that a band had already been offered once or twice: the field
+ * was absent exactly when the streak began, so a row that climbed to 20× read
+ * as an unexplained sudden appearance. A stable field is also self-explaining —
+ * every row carries `offered N×`, so the number needs no legend. The cost is
+ * ~14 characters per row.
  */
-export declare const RANGE_TABLE_OFFERED_MIN = 3;
+export declare const RANGE_TABLE_OFFERED_MIN = 1;
 /**
  * Pick the rows the nudge range table prints: **one per age band**.
  *

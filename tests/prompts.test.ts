@@ -188,7 +188,7 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
     rangeTable(paged, wholeSurfaceRangeView(paged)),
     `\nSurface: 12 nodes, seqs 1..12
 Compressible ranges (1, one per age band — oldest first; exact surface seqs — usable as-is):
-  - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens [tool 0% | reasoning 0% | text 100%]
+  - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens [tool 0% | reasoning 0% | text 100%] · offered 1×
       fold cost: reclaims ~7283 · rewrites ~12.5K tok of the cached prefix (pays back in ~1.7 request(s))
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
@@ -474,7 +474,10 @@ test('M4/prompts 10: empty guidance removes the line cleanly (frame + newline + 
   // B6：默认 frame 不再内嵌哲学段（哲学住系统提示）
   const frame = 'Efficiency nudge: compress consumed ranges early to keep context lean — not an overflow warning. A stronger alert appears only if the context is actually full.'
   const text = buildNudgeText(fakeDecision(7, false), false, session, wholeSurfaceRangeView(session), prompts)
-  assert.equal(text, `${frame}\n${rangeTable(session, wholeSurfaceRangeView(session))}`)
+  // Each build increments the offer counter, so the SECOND build's table reads
+  // one higher than the text's — compare the shape, not the running count.
+  const stripOffers = (value: string): string => value.replace(/ · offered \d+×/g, '')
+  assert.equal(stripOffers(text), `${frame}\n${stripOffers(rangeTable(session, wholeSurfaceRangeView(session)))}`)
   assert.ok(!text.includes('HOW TO COMPRESS'))
   assert.ok(!text.includes('Compress all ranges'))
 })

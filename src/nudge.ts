@@ -41,7 +41,7 @@ import { mediaPriceViaMeter } from './host-tokens.ts'
 import { sessionEventsOf } from './session-events.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { rememberBreakdown, rememberPressure, rememberRangeTable } from './inspect.ts'
-import { noteOfferedRows } from './offer-count.ts'
+import { lastOfferedCountsOf, noteOfferedRows } from './offer-count.ts'
 import type { AcpInspectSweep } from './inspect-types.ts'
 import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompts.ts'
 
@@ -207,10 +207,16 @@ export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
 
 /**
  * How many times a row must have been offered before the count is printed.
- * Appearing twice is normal (the next build happens minutes later); a row that
- * keeps coming back is the fact worth showing.
+ *
+ * The owner's call (2026-10-16) is ONE — the count is printed on every row.
+ * It used to start at 3 ("appearing twice is normal"), which left the model
+ * unable to see that a band had already been offered once or twice: the field
+ * was absent exactly when the streak began, so a row that climbed to 20× read
+ * as an unexplained sudden appearance. A stable field is also self-explaining —
+ * every row carries `offered N×`, so the number needs no legend. The cost is
+ * ~14 characters per row.
  */
-export const RANGE_TABLE_OFFERED_MIN = 3
+export const RANGE_TABLE_OFFERED_MIN = 1
 
 /** The row suffix naming how often this start has been offered (`''` below the floor). */
 function offeredLabel(count: number): string {
@@ -314,9 +320,13 @@ export function rangeTable(
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
   // How often each of these starts has been offered before (see src/offer-count.ts).
   // The inspector's on-demand rebuild passes `recordOffers: false`: the panel
-  // shows the table, it does not count as one of the model's chances to act.
+  // shows the table, it does not count as one of the model's chances to act —
+  // but it must still SHOW the counts the last real build produced (that is the
+  // whole point of the column), so it reads them instead of starting empty.
+  // Starting empty cached `offered: 1` for every row on any panel rebuild,
+  // wiping the signal the panel exists to display.
   const offeredCounts = opts.recordOffers === false
-    ? new Map<number, number>()
+    ? lastOfferedCountsOf(String(session.id))
     : noteOfferedRows(String(session.id), shown.map((range) => ({ start: range.start, end: range.end })))
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.

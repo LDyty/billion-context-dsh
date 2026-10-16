@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { forgetOffers, noteFoldLanded, noteOfferedRows, offeredBuildsOf } from '../src/offer-count.ts'
 import { RANGE_TABLE_OFFERED_MIN, rangeTable } from '../src/nudge.ts'
+import { inspectCacheOf } from '../src/inspect.ts'
 import { makeTools } from '../src/tools.ts'
 import { AcpStateStore } from '../src/state.ts'
 import { createCore } from 'acp-kernel'
@@ -26,6 +27,26 @@ test('offer count: coverage counts, so a drifting edge does not reset it', () =>
   // Build 3 offers a row that does NOT cover 10 any more (it starts later).
   assert.deepEqual([...noteOfferedRows('s1', [{ start: 21, end: 30 }])], [[21, 1]])
   assert.equal(offeredBuildsOf('s1'), 3)
+})
+
+test('offer count: a panel rebuild SHOWS the last real counts and does not add one', () => {
+  // The panel's on-demand rebuild passes `recordOffers: false` (opening a panel
+  // is not one of the model's chances to act), but it must still display the
+  // counts the last real build produced. An empty map here cached `offered: 1`
+  // for every row on any rebuild — the column the panel exists to show, wiped
+  // by the act of looking at it.
+  const id = 'offer-panel'
+  forgetOffers(id)
+  const session = buildTextSession(24, id)
+  rangeTable(session, wholeSurfaceRangeView(session) as never)   // the model's first offer
+  rangeTable(session, wholeSurfaceRangeView(session) as never)   // and a second one
+  const before = inspectCacheOf(id)?.rows.map((row) => row.offered)
+  assert.ok((before?.[0] ?? 0) >= 2, `two real builds are on the record (${String(before?.[0])})`)
+
+  rangeTable(session, wholeSurfaceRangeView(session) as never, undefined, undefined, { recordOffers: false })
+  const after = inspectCacheOf(id)?.rows.map((row) => row.offered)
+  assert.deepEqual(after, before, 'the rebuild neither counts itself nor blanks the counts')
+  assert.equal(offeredBuildsOf(id), 2, 'and the remembered history is untouched')
 })
 
 test('offer count: a landed fold forgets the offers it replaced', () => {
@@ -47,17 +68,20 @@ test('offer count: a fold elsewhere does not wipe an unrelated history', () => {
   assert.deepEqual([...noteOfferedRows('s3', [{ start: 1, end: 10 }])], [[1, 2]], 'so 1..10 keeps its count')
 })
 
-test('offer count: the table prints the count only after the floor', () => {
+test('offer count: every row prints its count, from the first offer on', () => {
   const session = buildTextSession(24)
   const view = wholeSurfaceRangeView(session)
   const id = String(session.id)
   forgetOffers(id)
   const first = rangeTable(session, view as never)
   const second = rangeTable(session, view as never)
-  assert.ok(!first.includes('offered '), 'the first offer says nothing')
-  assert.ok(!second.includes('offered '), 'and neither does the second (a repeat is normal)')
+  // The floor is 1 (owner's call, 2026-10-16): the model must be able to see a
+  // band that has been offered once or twice, not only one that already reached
+  // the old floor of three — the streak has to be visible while it starts.
+  assert.match(first, / · offered 1×/, 'the first offer says 1×')
+  assert.match(second, / · offered 2×/, 'the second says 2×')
   const third = rangeTable(session, view as never)
-  assert.match(third, / · offered 3×/, `the third prints the count (floor ${String(RANGE_TABLE_OFFERED_MIN)})`)
+  assert.match(third, / · offered 3×/, `the third prints 3× (floor ${String(RANGE_TABLE_OFFERED_MIN)})`)
 })
 
 test('offer count: building the table for the PANEL does not count as an offer', () => {
@@ -70,7 +94,7 @@ test('offer count: building the table for the PANEL does not count as an offer',
   for (let index = 0; index < 5; index += 1) rangeTable(session, view as never, undefined, undefined, { recordOffers: false })
   assert.equal(offeredBuildsOf(id), 0)
   const shown = rangeTable(session, view as never)
-  assert.ok(!shown.includes('offered '), 'so the first real offer still says nothing')
+  assert.match(shown, / · offered 1×/, 'so the first real offer still reads 1×')
 })
 
 /**

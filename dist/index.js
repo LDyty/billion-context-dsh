@@ -8527,7 +8527,7 @@ function meterMediaPriceResolver(agent, session) {
 var RANGE_TABLE_LIMIT = 6;
 var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
-var RANGE_TABLE_OFFERED_MIN = 3;
+var RANGE_TABLE_OFFERED_MIN = 1;
 function offeredLabel(count) {
   return count >= RANGE_TABLE_OFFERED_MIN ? ` \xB7 offered ${String(count)}\xD7` : "";
 }
@@ -8569,7 +8569,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   const shown = selectRangeTableRanges(ranges);
   if (shown.length === 0) return "";
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf);
-  const offeredCounts = opts.recordOffers === false ? /* @__PURE__ */ new Map() : noteOfferedRows(String(session.id), shown.map((range) => ({ start: range.start, end: range.end })));
+  const offeredCounts = opts.recordOffers === false ? lastOfferedCountsOf(String(session.id)) : noteOfferedRows(String(session.id), shown.map((range) => ({ start: range.start, end: range.end })));
   const baseRows = shown.map((range) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
