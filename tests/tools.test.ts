@@ -398,55 +398,6 @@ test('M3: `endSeq: "sweep"` folds the whole forward run in one call with a share
   assert.ok(summaries.every((entry) => entry.includes(shared)), 'and every block carries the SAME summary')
 })
 
-/**
- * The two sentinels differ in WHICH run they expand (owner ruling, 2026-10-17):
- * `"sweep"` is live (whatever is compressible at call time), `"table-sweep"` is
- * exactly the list the last table build printed — the geometry its cost numbers
- * describe — and it refuses with a teaching note when no table exists yet.
- */
-test('M3: `endSeq: "table-sweep"` folds the last printed table run, and needs a table', async () => {
-  const env = makeEnv()
-  const session = buildTextSession(24)
-  const compress = toolOf(env, 'compress')
-  const shared = 'Sweep of consumed output — nothing kept; decompress for the raw logs if this task ever needs them.'
-  // No table on record yet: the sentinel refuses with guidance instead of guessing.
-  const before = await compress.execute({
-    content: [{ startSeq: 1, endSeq: 'table-sweep', summary: shared }],
-  } as never, fakeExec(session))
-  assert.match((before as { text: string }).text, /no range table on record/, 'a missing table is named')
-
-  // Build a table (the nudge/panel path records its offerable geometry), read the
-  // sweep the first row advertises, then fold exactly that run by sentinel.
-  // Two disjoint offerable spans, so the table prints a real sweep: the first
-  // row's run is exactly these two.
-  const nodes = [...session.surface.nodes]
-  const view = {
-    ranges: [{ startRef: 's1', endRef: 'e1' }, { startRef: 's2', endRef: 'e2' }],
-    refs: {
-      byRef: {
-        s1: String(nodes[0]!), e1: String(nodes[2]!),
-        s2: String(nodes[6]!), e2: String(nodes[8]!),
-      },
-    },
-  }
-  const table = rangeTable(session, view)
-  const firstRow = /- seq (\d+)\.\.(\d+) —/.exec(table)
-  assert.ok(firstRow !== null, 'the table printed at least one row')
-  const sweepLine = table.split('\n').find((line) => line.includes('sweep from here'))
-  const expected = sweepLine === undefined ? 0 : Number(/all (\d+) spans/.exec(sweepLine)![1])
-  assert.ok(expected >= 2, `the table offers a sweep (${String(expected)})`)
-  const result = await compress.execute({
-    content: [{ startSeq: Number(firstRow![1]), endSeq: 'table-sweep', summary: shared }],
-  } as never, fakeExec(session))
-  const text = (result as { text: string }).text
-  assert.match(text, /the spans the last table printed/, 'the note says which geometry was used')
-  assert.equal(
-    [...text.matchAll(/block [0-9a-f]+: seqs/g)].length,
-    expected,
-    'one block per span the table advertised',
-  )
-})
-
 test('M3: compress accepts multiple disjoint ranges in one call, each its own block', async () => {
   const env = makeEnv()
   const session = buildTextSession(12)

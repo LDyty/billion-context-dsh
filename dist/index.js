@@ -7082,7 +7082,7 @@ var DEFAULT_PROMPTS = {
     // list the model must fetch anyway before compressing.
     batch: '        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s)) \xB7 one call: endSeq:"sweep"',
     footer: `Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
-A sweep folds in ONE call with ONE shared summary \u2014 name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). "sweep" runs from that start to the newest compressible span AT CALL TIME; write "table-sweep" instead to fold exactly the spans this table printed (the cost numbers above describe that run). The sweep's spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
+A sweep folds in ONE call with ONE shared summary \u2014 name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The sweep's exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
 Before you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`
   },
@@ -8591,9 +8591,6 @@ function noteAgeRegions(sessionId, ageRegions) {
 function noteOfferableSpans(sessionId, spans) {
   touch(offerable, sessionId, spans.map((span) => ({ start: span.start, end: span.end })));
 }
-function offerableSpansOf(sessionId) {
-  return offerable.get(sessionId) ?? [];
-}
 function noteAgeRegionChoice(sessionId, folded) {
   const ageRegions = regions.get(sessionId);
   if (ageRegions === void 0 || ageRegions.length === 0) return;
@@ -9262,7 +9259,7 @@ var compressParameters = {
             endSeq: {
               oneOf: [
                 { type: "integer", description: "Inclusive last surface seq of the range." },
-                { type: "string", description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") \u2014 for a multi-block condense name the LAST block id (tier 3). Or "sweep" (live: from startSeq to the newest compressible span at call time) / "table-sweep" (exactly the spans the last printed table offered): one call, every span sharing your summary.' }
+                { type: "string", description: `Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") \u2014 for a multi-block condense name the LAST block id (tier 3). Or the literal "sweep": fold the whole forward sweep that starts at startSeq in ONE call, every span sharing your summary (see the table's sweep lines).` }
               ]
             },
             summary: {
@@ -9395,74 +9392,39 @@ function unwrapEnvelope(args) {
   return { ...args, ...inner };
 }
 var SWEEP_END = "sweep";
-var SWEEP_TABLE_END = "table-sweep";
 function isSweepEnd(value) {
-  return sweepKindOf(value) !== void 0;
-}
-function sweepKindOf(value) {
-  if (typeof value !== "string") return void 0;
-  const text = value.trim().toLowerCase();
-  if (text === SWEEP_END) return "live";
-  if (text === SWEEP_TABLE_END) return "table";
-  return void 0;
+  return typeof value === "string" && value.trim().toLowerCase() === SWEEP_END;
 }
 function isPlainSeq(value) {
   if (typeof value === "number") return Number.isInteger(value);
   return typeof value === "string" && /^\d+$/.test(value.trim());
 }
-function forwardRunFrom(spans, start) {
-  let base = spans.findIndex((span) => span.start <= start && start <= span.end);
-  if (base < 0) base = spans.findIndex((span) => span.start >= start);
-  if (base < 0) return void 0;
-  const run = [spans[base]];
-  for (let at = base + 1; at < spans.length; at += 1) {
-    const candidate = spans[at];
-    if (candidate.start <= run[run.length - 1].end) continue;
-    run.push(candidate);
-  }
-  return run;
-}
 function expandSweepEntries(session, turn, mediaPriceOf, content) {
   if (!content.some((item) => isSweepEnd(item.endSeq))) return { content, notes: [] };
   const view = { ranges: turn.nudge?.compressibleRanges ?? [], refs: turn.state.messageRefs };
-  let liveSpans;
+  const offerable2 = buildCompressibleSeqRanges(session, view, mediaPriceOf === void 0 ? {} : { mediaPriceOf });
+  const costs = foldCostsOfRanges(session, offerable2, mediaPriceOf);
   const notes = [];
   const out = [];
   for (const item of content) {
-    const kind = sweepKindOf(item.endSeq);
-    if (kind === void 0) {
+    if (!isSweepEnd(item.endSeq)) {
       out.push(item);
       continue;
     }
     const start = Number(String(item.startSeq).trim());
-    const label = kind === "table" ? SWEEP_TABLE_END : SWEEP_END;
-    let spans;
-    if (kind === "table") {
-      const remembered = offerableSpansOf(String(session.id));
-      if (remembered.length === 0) {
-        notes.push(
-          `  seqs ${String(item.startSeq)}..${label} \u2014 no range table on record for this session yet: read a nudge table (or acp_status) first, or use endSeq:"sweep" for the live run.`
-        );
-        continue;
-      }
-      spans = remembered;
-    } else {
-      liveSpans ??= buildCompressibleSeqRanges(session, view, mediaPriceOf === void 0 ? {} : { mediaPriceOf });
-      spans = liveSpans;
-    }
-    const run = forwardRunFrom(spans, start);
-    if (run === void 0 || run.length < 2) {
+    let base = offerable2.findIndex((span) => span.start <= start && start <= span.end);
+    if (base < 0) base = offerable2.findIndex((span) => span.start >= start);
+    const sweep = base < 0 ? void 0 : sweepFromBaseRange(offerable2, costs, base);
+    if (sweep === void 0) {
       notes.push(
-        `  seqs ${String(item.startSeq)}..${label} \u2014 nothing to sweep from there: no offerable span starts at or after it ${kind === "table" ? "in the table this session last built" : "right now"} (the seq is already compressed, or the surface moved on). Run acp_status for current seqs, or fold a single range explicitly.`
+        `  seqs ${String(item.startSeq)}..sweep \u2014 nothing to sweep from there: no offerable span starts at or after it (the seq is already compressed, or the table has moved on). Run acp_status for current seqs, or fold a single range explicitly.`
       );
       continue;
     }
-    const first = run[0];
-    const last = run[run.length - 1];
     notes.push(
-      `  seqs ${String(item.startSeq)}..${label} expanded to ${String(run.length)} ranges (${String(first.start)}..${String(last.end)}${kind === "table" ? ", the spans the last table printed" : ", live run to the newest compressible span"}), one shared summary each`
+      `  seqs ${String(sweep.entries[0].start)}..sweep expanded to ${String(sweep.entries.length)} ranges (${String(sweep.entries[0].start)}..${String(sweep.entries[sweep.entries.length - 1].end)}), one shared summary each`
     );
-    for (const entry of run) {
+    for (const entry of sweep.entries) {
       out.push({ ...item, startSeq: entry.start, endSeq: entry.end });
     }
   }

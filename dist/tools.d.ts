@@ -93,7 +93,7 @@ export declare const compressParameters: {
                             readonly description: 'Inclusive last surface seq of the range.';
                         }, {
                             readonly type: 'string';
-                            readonly description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3). Or "sweep" (live: from startSeq to the newest compressible span at call time) / "table-sweep" (exactly the spans the last printed table offered): one call, every span sharing your summary.';
+                            readonly description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3). Or the literal "sweep": fold the whole forward sweep that starts at startSeq in ONE call, every span sharing your summary (see the table\'s sweep lines).';
                         }];
                     };
                     readonly summary: {
