@@ -169,7 +169,9 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
     h('table', { className: 'acp-table acp-ranges' },
     h('thead', null, h('tr', null,
       h('th', { title: 'band（年龄区）：可压内容按年龄等分成 6 段，1 最老、6 最新；折叠的起点落在哪一段，这一行就属于哪一段。' }, '段位'),
-      h('th', { title: 'seq（事件序号）区间，含首尾。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '范围'),
+      // 列名不叫「范围」：这个说法会和整张表的「可压范围」撞车，读者分不清是
+      // 「这一行要折的那一段」还是「所有可压的段」。一行就是一段 seq 区间。
+      h('th', { title: '区间（seq（事件序号）起止，含首尾）：这一行折叠时实际覆盖的那一段。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
       h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
       h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
       h('th', { title: 'invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数见那一格自己的提示。' }, '代价'),
