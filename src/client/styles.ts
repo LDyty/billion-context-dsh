@@ -10,9 +10,16 @@
 export const ACP_PANEL_STYLE_ID = 'billion-context-dsh/panel.css'
 
 export const ACP_PANEL_CSS = `
-/* 面板整体自己滚：内容（18 行区间表 + 已压块 + 参数）已经高过视口，宿主那块
-   tab 面板不提供滚动，所以这里给一个 78vh 的滚动框，整块内容都能滚到底。 */
-.acp-panel { display: flex; flex-direction: column; gap: 14px; padding: 0 14px 20px; font-size: 12px; line-height: 1.5; max-height: 78vh; overflow-y: auto; overscroll-behavior: contain; }
+/* 面板整体自己滚，学 dsh-context 的 .lc-root：宿主那层是「定高 + overflow: hidden」
+   的容器，插件根必须 height:100% 自己滚——用 max-height:78vh 时面板比面板体高就被
+   宿主裁掉，底部那块黑的和滚不完的滚动条就是这么来的（dsh-context 的注释原话：
+   "the supported shell wraps the tab in a definite-height body whose overflow:hidden
+   would otherwise clip a grown root"）。scrollbar-gutter 让滚动条出现时内容不抖，
+   scrollbar-width: thin 跟宿主一致。 */
+.acp-panel { display: flex; flex-direction: column; gap: 14px; padding: 0 14px 20px; font-size: 12px; line-height: 1.5; height: 100%; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-gutter: stable; }
+/* 右侧栏/浮窗形态：宿主给这两种容器加了标记属性，dsh-context 用它调内边距，我们照做。 */
+[data-sidebar-right-open] .acp-panel,
+[data-sidebar-right-float-host] .acp-panel { padding: 0 12px 16px; }
 /* 顶部留白交给第一个子元素：面板自身的 padding-top 会让吸顶表头停在内容框顶、
    露出下面那条 12px 的缝（实测 th.top=80、panel.top=68），改成 margin 就没有缝。 */
 .acp-panel > *:first-child { margin-top: 12px; }
@@ -30,9 +37,12 @@ export const ACP_PANEL_CSS = `
 .acp-tip {
   position: fixed; z-index: 2147483000; pointer-events: none;
   max-width: 300px; padding: 7px 9px; border-radius: 7px;
-  background: color-mix(in srgb, CanvasText 92%, Canvas);
-  color: Canvas; white-space: pre-line; font-size: 11px; line-height: 1.45;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+  /* 宿主设计变量优先（和 dsh-context 的 .lc-tip 同一套 token），没有变量时回落到
+     Canvas/CanvasText——皮肤换成什么配色，浮层都跟着走。 */
+  background: var(--dsw-alias-bg-layer-2, color-mix(in srgb, CanvasText 92%, Canvas));
+  border: 1px solid var(--dsw-alias-border-l1, transparent);
+  color: var(--dsw-alias-label-primary, Canvas); white-space: pre-line; font-size: 11px; line-height: 1.45;
+  box-shadow: var(--dsw-shadow-lv3, 0 6px 18px rgba(0, 0, 0, .28));
   opacity: 0; animation: acp-tip-in .09s ease-out forwards;
 }
 @keyframes acp-tip-in { to { opacity: 1; } }
@@ -73,11 +83,11 @@ export const ACP_PANEL_CSS = `
 /* 表头不做吸顶：sticky th / sticky thead / border-collapse:separate 三种写法在
    Chrome 里都盖不住后画的 tbody（实测行文字压在列名上，z-index 无效），所以表头
    跟着内容滚，只保留面板外层的单条滚动条（见 .acp-panel）。 */
-.acp-blocks { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
+.acp-blocks { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; scrollbar-width: thin; }
 .acp-block { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 6px; padding: 6px 8px; }
 .acp-block > summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
 .acp-block > summary::-webkit-details-marker { display: none; }
-.acp-block pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 11px; opacity: .9; max-height: 240px; overflow: auto; }
+.acp-block pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 11px; opacity: .9; max-height: 240px; overflow: auto; scrollbar-width: thin; }
 .acp-why { border-left: 2px solid color-mix(in srgb, currentColor 30%, transparent); padding-left: 8px; }
 .acp-copy { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: transparent; color: inherit; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
 .acp-copy:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
