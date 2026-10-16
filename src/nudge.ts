@@ -357,6 +357,10 @@ export function rangeTable(
       reclaims: proposal.reclaimedTokens,
       invalidates: proposal.invalidatedTokens,
       breakEven: proposal.breakEvenRequests,
+      rowMix: composition.rowMix,
+      toolPct: composition.toolPct,
+      reasoningPct: composition.reasoningPct,
+      textPct: composition.textPct,
       spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end })),
     })
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {

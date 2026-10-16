@@ -156,7 +156,17 @@ function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
         h('td', null, `~${compact(row.invalidated)}`),
         h('td', { className: row.expensive ? 'acp-warn' : undefined }, `${row.breakEven.toFixed(1)}×`),
         h('td', { className: row.offered >= 3 ? 'acp-warn' : 'acp-muted' }, `${String(row.offered)}×`),
-        h('td', { className: 'acp-sweep' }, sweep === undefined
+        h('td', {
+          className: 'acp-sweep',
+          // Same figures the nudge's sweep line carries: the panel is a view of
+          // one remembered build, never a second opinion.
+          title: sweep === undefined
+            ? '这一行后面没有可加的段'
+            : `${String(sweep.entries)} 段 · ${String(sweep.messages)} 条消息 / ${String(sweep.entries)} 份摘要 · `
+              + `~${compact(sweep.reclaims)} tok 合计 (${sweep.rowMix}) `
+              + `[tool ${String(sweep.toolPct)}% | reasoning ${String(sweep.reasoningPct)}% | text ${String(sweep.textPct)}%] · `
+              + `from 本行，只往新算，不封顶`,
+        }, sweep === undefined
           ? '—'
           : `${sweep.entries}条→${compact(sweep.reclaims)} @${sweep.breakEven.toFixed(1)}×`),
         h('td', null, h(CopyButton, {

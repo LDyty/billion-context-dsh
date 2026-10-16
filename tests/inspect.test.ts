@@ -249,6 +249,14 @@ test('inspect: the panel mirrors each row\'s sweep (same entries/reclaims/paybac
         sweepLine.includes(`pays back in ~${sweep!.breakEven.toFixed(1)} request(s)`),
         `row ${start}: same payback`,
       )
+      // The panel carries the sweep's AGGREGATE composition too, and it is the
+      // same three figures the printed line shows (one build, one ruler).
+      assert.ok(sweepLine.includes(`(${sweep!.rowMix})`), `row ${start}: same sweep row mix`)
+      assert.ok(
+        sweepLine.includes(`[tool ${String(sweep!.toolPct)}% | reasoning ${String(sweep!.reasoningPct)}% | text ${String(sweep!.textPct)}%]`),
+        `row ${start}: same sweep partition`,
+      )
+      assert.equal(sweep!.toolPct + sweep!.reasoningPct + sweep!.textPct, 100, 'the sweep partition sums to 100')
       // Forward-only: the sweep starts at the row it is printed under and never
       // reaches back before it (the 2026-10-16 owner rule).
       assert.ok(sweep!.spans.every((span) => span.start >= start), `row ${start}: the sweep never starts earlier`)

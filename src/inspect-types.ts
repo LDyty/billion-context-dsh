@@ -75,6 +75,16 @@ export interface AcpInspectSweep {
   readonly reclaims: number
   readonly invalidates: number
   readonly breakEven: number
+  /**
+   * The sweep's AGGREGATE composition — the same figures its printed line
+   * carries (summed from raw mass, so the three shares sum to 100). Percentages
+   * come from the SAME build that printed the nudge line; the panel never
+   * recomputes them.
+   */
+  readonly rowMix: string
+  readonly toolPct: number
+  readonly reasoningPct: number
+  readonly textPct: number
   /** The entries themselves, in surface order — what a copy-paste call needs. */
   readonly spans: readonly { readonly start: number; readonly end: number }[]
 }
