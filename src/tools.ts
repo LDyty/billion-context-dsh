@@ -386,6 +386,14 @@ type CompressContent = Array<{
   summary: string
   topic?: string
   verifiedReadings?: string[]
+  /**
+   * Host-internal tag (never sent to the kernel): which of the model's content
+   * entries produced this item. A sweep expands ONE entry into many spans and a
+   * carrier split turns ONE entry into several runs — both must stay recognisable
+   * as ONE group, so their shared summary can be stored once (see
+   * applySharedSummaryPointers).
+   */
+  sharedSummaryKey?: number
 }>
 
 /**
@@ -511,9 +519,11 @@ function expandSweepEntries(
   const costs = foldCostsOfRanges(session, offerable, mediaPriceOf)
   const notes: string[] = []
   const out: CompressContent = []
-  for (const item of content) {
+  for (const [entryIndex, item] of content.entries()) {
     if (!isSweepEnd(item.endSeq)) {
-      out.push(item)
+      // Nothing to expand: keep the entry, tagged with its own index so a carrier
+      // split of that same entry later groups with it.
+      out.push({ ...item, sharedSummaryKey: entryIndex })
       continue
     }
     const start = Number(String(item.startSeq).trim())
@@ -534,10 +544,13 @@ function expandSweepEntries(
     }
     notes.push(
       `  seqs ${String(sweep.entries[0]!.start)}..sweep expanded to ${String(sweep.entries.length)} ranges `
-      + `(${String(sweep.entries[0]!.start)}..${String(sweep.entries[sweep.entries.length - 1]!.end)}), one shared summary each`,
+      + `(${String(sweep.entries[0]!.start)}..${String(sweep.entries[sweep.entries.length - 1]!.end)}) — `
+      + 'your summary is kept in FULL on the first block; the other parts point at it',
     )
     for (const entry of sweep.entries) {
-      out.push({ ...item, startSeq: entry.start, endSeq: entry.end })
+      // Every expanded part keeps the ORIGINAL entry's key, so the group survives
+      // the per-range pipeline (guards, splits, rejects) that follows.
+      out.push({ ...item, startSeq: entry.start, endSeq: entry.end, sharedSummaryKey: entryIndex })
     }
   }
   return { content: out, notes }
@@ -838,6 +851,8 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
       topic?: string
       /** B3：本段压缩时已绿的验收读数（结构化落盘）。 */
       verifiedReadings?: string[]
+      /** Host-internal group key (see `CompressContent.sharedSummaryKey`); never sent. */
+      sharedSummaryKey?: number
     }
   > = []
   // Ranges whose whole span was already shadowed by earlier compressions.
@@ -863,7 +878,10 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // carrier branch below): facts for the model, not failures.
   const splitNotes: string[] = []
   const carrierSpans = env.carrierSpans ?? 'split'
-  for (const range of expanded) {
+  for (const [entryIndex, range] of expanded.entries()) {
+    /** Which of the model's entries this range descends from (a sweep's parts and
+     *  a split's runs share the key; see applySharedSummaryPointers). */
+    const sharedSummaryKey = range.sharedSummaryKey ?? entryIndex
     const startSeq = parseBoundary(range.startSeq, byRef, session)
     const endSeq = parseBoundary(range.endSeq, byRef, session)
     let resolved: ResolvedSurfaceRange
@@ -995,6 +1013,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
             startRef: subStartRef,
             endRef: subEndRef,
             summary: range.summary,
+            sharedSummaryKey,
             ...(range.topic === undefined ? {} : { topic: range.topic }),
             ...(Array.isArray(range.verifiedReadings) && range.verifiedReadings.length > 0
               ? { verifiedReadings: range.verifiedReadings.map(String) }
@@ -1043,6 +1062,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
       endSeq,
       startRef,
       endRef,
+      sharedSummaryKey,
       // B3：把该段声明的已绿验收读数带上（缺位=不写键）
       ...(Array.isArray(range.verifiedReadings) && range.verifiedReadings.length > 0
         ? { verifiedReadings: range.verifiedReadings.map(String) }
@@ -1050,6 +1070,28 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
       summary: range.summary,
       ...(range.topic ?? args.topic) === undefined ? {} : { topic: range.topic ?? args.topic },
     })
+  }
+
+  // ONE summary, MANY blocks (owner ruling, 2026-10-17): a sweep expands one entry
+  // into N spans and a carrier split turns one entry into N runs, and every one of
+  // them used to store the model's summary verbatim — measured live, a 12-part
+  // sweep carried twelve copies of the same 923-token text (~10K tokens of pure
+  // duplication on the surface). So the FULL text lands on the FIRST block of the
+  // group and the rest carry a pointer that a reader can follow: the parts sit next
+  // to each other on the surface, so "this call's first block" needs no block id.
+  const groupsOfEntry = new Map<number, typeof ranges>()
+  for (const range of ranges) {
+    const key = range.sharedSummaryKey ?? -1
+    const list = groupsOfEntry.get(key)
+    if (list === undefined) groupsOfEntry.set(key, [range])
+    else list.push(range)
+  }
+  for (const group of groupsOfEntry.values()) {
+    if (group.length < 2) continue
+    for (const [index, range] of group.entries()) {
+      if (index === 0) continue
+      range.summary = `[shared summary — part ${String(index + 1)}/${String(group.length)} of this compress call; the full text is on its first block]`
+    }
   }
 
   // The summary floor, applied ENTRY BY ENTRY (see summaryFloorRefusal): this is

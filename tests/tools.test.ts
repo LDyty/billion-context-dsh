@@ -394,8 +394,19 @@ test('M3: `endSeq: "sweep"` folds the whole forward run in one call with a share
   assert.equal(blocks, Number(expanded![1]), 'one block per expanded span')
   const summaries = rebuildBlockLedger(session.snapshotEvents()).map((entry) => entry.summary)
   assert.equal(summaries.length, blocks, 'every block is in the ledger')
-  // The stored summary carries the host's frame prefix, so compare by content.
-  assert.ok(summaries.every((entry) => entry.includes(shared)), 'and every block carries the SAME summary')
+  // ONE shared summary, stored ONCE (owner ruling, 2026-10-17): the full text lands
+  // on the first block, every later part points at it instead of repeating ~1K
+  // tokens per block. The stored text carries the host's frame prefix, so the
+  // comparison is by content.
+  assert.ok(summaries[0]!.includes(shared), 'the first block carries the full summary')
+  assert.ok(
+    summaries.slice(1).every((entry) => entry.includes('shared summary — part')),
+    'and the other parts carry a pointer instead of a duplicate',
+  )
+  assert.ok(
+    summaries.slice(1).every((entry) => !entry.includes(shared)),
+    'no duplicate of the full text',
+  )
 })
 
 test('M3: compress accepts multiple disjoint ranges in one call, each its own block', async () => {

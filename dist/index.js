@@ -7082,7 +7082,7 @@ var DEFAULT_PROMPTS = {
     // list the model must fetch anyway before compressing.
     batch: '        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s)) \xB7 one call: endSeq:"sweep"',
     footer: `Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
-A sweep folds in ONE call with ONE shared summary \u2014 name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The sweep's exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
+A sweep folds in ONE call with ONE shared summary \u2014 name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The text is stored ONCE (on the first block of that call); the other parts carry a pointer to it. The sweep's exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
 Before you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`
   },
@@ -9406,9 +9406,9 @@ function expandSweepEntries(session, turn, mediaPriceOf, content) {
   const costs = foldCostsOfRanges(session, offerable2, mediaPriceOf);
   const notes = [];
   const out = [];
-  for (const item of content) {
+  for (const [entryIndex, item] of content.entries()) {
     if (!isSweepEnd(item.endSeq)) {
-      out.push(item);
+      out.push({ ...item, sharedSummaryKey: entryIndex });
       continue;
     }
     const start = Number(String(item.startSeq).trim());
@@ -9422,10 +9422,10 @@ function expandSweepEntries(session, turn, mediaPriceOf, content) {
       continue;
     }
     notes.push(
-      `  seqs ${String(sweep.entries[0].start)}..sweep expanded to ${String(sweep.entries.length)} ranges (${String(sweep.entries[0].start)}..${String(sweep.entries[sweep.entries.length - 1].end)}), one shared summary each`
+      `  seqs ${String(sweep.entries[0].start)}..sweep expanded to ${String(sweep.entries.length)} ranges (${String(sweep.entries[0].start)}..${String(sweep.entries[sweep.entries.length - 1].end)}) \u2014 your summary is kept in FULL on the first block; the other parts point at it`
     );
     for (const entry of sweep.entries) {
-      out.push({ ...item, startSeq: entry.start, endSeq: entry.end });
+      out.push({ ...item, startSeq: entry.start, endSeq: entry.end, sharedSummaryKey: entryIndex });
     }
   }
   return { content: out, notes };
@@ -9565,7 +9565,8 @@ async function handleCompress(env, args, exec) {
   const guardedSeqs = guardedSurfaceSeqsOf(session);
   const splitNotes = [];
   const carrierSpans = env.carrierSpans ?? "split";
-  for (const range of expanded) {
+  for (const [entryIndex, range] of expanded.entries()) {
+    const sharedSummaryKey = range.sharedSummaryKey ?? entryIndex;
     const startSeq = parseBoundary2(range.startSeq, byRef, session);
     const endSeq = parseBoundary2(range.endSeq, byRef, session);
     let resolved;
@@ -9632,6 +9633,7 @@ async function handleCompress(env, args, exec) {
             startRef: subStartRef,
             endRef: subEndRef,
             summary: range.summary,
+            sharedSummaryKey,
             ...range.topic === void 0 ? {} : { topic: range.topic },
             ...Array.isArray(range.verifiedReadings) && range.verifiedReadings.length > 0 ? { verifiedReadings: range.verifiedReadings.map(String) } : {}
           });
@@ -9667,11 +9669,26 @@ async function handleCompress(env, args, exec) {
       endSeq,
       startRef,
       endRef,
+      sharedSummaryKey,
       // B3：把该段声明的已绿验收读数带上（缺位=不写键）
       ...Array.isArray(range.verifiedReadings) && range.verifiedReadings.length > 0 ? { verifiedReadings: range.verifiedReadings.map(String) } : {},
       summary: range.summary,
       ...(range.topic ?? args.topic) === void 0 ? {} : { topic: range.topic ?? args.topic }
     });
+  }
+  const groupsOfEntry = /* @__PURE__ */ new Map();
+  for (const range of ranges) {
+    const key = range.sharedSummaryKey ?? -1;
+    const list = groupsOfEntry.get(key);
+    if (list === void 0) groupsOfEntry.set(key, [range]);
+    else list.push(range);
+  }
+  for (const group of groupsOfEntry.values()) {
+    if (group.length < 2) continue;
+    for (const [index, range] of group.entries()) {
+      if (index === 0) continue;
+      range.summary = `[shared summary \u2014 part ${String(index + 1)}/${String(group.length)} of this compress call; the full text is on its first block]`;
+    }
   }
   const floorNotes = [];
   const foldable = ranges.filter((range) => {
