@@ -40,7 +40,14 @@ export interface AcpInspectRow {
   readonly end: number
   readonly messages: number
   readonly tokens: number
+  /** Share of MESSAGES that are tool messages (kernel toolPct parity). */
   readonly toolPct: number
+  /**
+   * Share of the row's CHARACTERS held by assistant reasoning (`thinking`).
+   * The other caliber is deliberate: a reasoning-model session keeps most of
+   * its reclaimable mass in scratchpad, which `toolPct` cannot show.
+   */
+  readonly reasoningPct: number
   /** Tokens the next request re-sends uncached once because of this fold. */
   readonly invalidated: number
   /** `invalidated ÷ tokens` — requests needed to pay the rewrite back. */

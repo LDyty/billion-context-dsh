@@ -85,7 +85,10 @@ const nudgeTableOf = (requests) => {
 const nudgeTableChecks = (result) => {
   const table = nudgeTableOf(result.requests)
   if (!table) return [['nudge range table present', false, 'no nudge with a range table found']]
-  const rows = table.split('\n').filter((line) => /seq \d+\.\.\d+/.test(line) && /\[tool \d+% \| text \d+%\]/.test(line))
+  // Row shape since 2026-10-16: [tool X% | reasoning Y% | text Z%] — the middle
+  // figure is the character share held by assistant reasoning (scratchpad),
+  // which the row-count tool share can never show.
+  const rows = table.split('\n').filter((line) => /seq \d+\.\.\d+/.test(line) && /\[tool \d+% \| reasoning \d+% \| text \d+%\]/.test(line))
   // Ordering is AGE-first since the 2026-10-16 range-table rework: one row per
   // equal-weight age band, so the rows run oldest → newest by start seq (a
   // size-ranked table would leave older scattered content unoffered forever).
@@ -96,7 +99,7 @@ const nudgeTableChecks = (result) => {
   const ascending = starts.length >= 1 && starts.every((value, i) => i === 0 || value >= starts[i - 1])
   return [
     ['nudge range table header (one row per age band)', table.includes('Compressible ranges') && table.includes('one per age band'), ''],
-    ['nudge range rows carry [tool X% | text Y%] share', rows.length >= 1, `rows=${rows.length}`],
+    ['nudge range rows carry [tool X% | reasoning Y% | text Z%] share', rows.length >= 1, `rows=${rows.length}`],
     ['nudge range rows oldest-first (non-decreasing start seq)', ascending, `starts=${starts.join(',')}`]
   ]
 }

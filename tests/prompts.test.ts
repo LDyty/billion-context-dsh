@@ -20,7 +20,9 @@ import {
   renderTemplate,
   resolvePrompts,
 } from '../src/prompts.ts'
-import { buildTextSession, wholeSurfaceRangeView } from './helpers.ts'
+import { Session } from '@deepseek-ai/dsh-session'
+import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
+import { appendAssistant, appendToolResult, appendTurn, appendUser, buildTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
 import AcpCompactionEngine, { AcpCompactionEngine as Named } from '../src/index.ts'
 
 function fakeAgent(session: import('@deepseek-ai/dsh-session').Session): Agent {
@@ -186,11 +188,63 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
     rangeTable(paged, wholeSurfaceRangeView(paged)),
     `\nSurface: 12 nodes, seqs 1..12
 Compressible ranges (1, one per age band — oldest first; exact surface seqs — usable as-is):
-  - seq 1..7 — 7 messages, ~7283 tokens [tool 0% | text 100%]
+  - seq 1..7 — 7 messages, ~7283 tokens [tool 0% | reasoning 0% | text 100%]
       fold cost: reclaims ~7283 · rewrites ~12.5K tok of the cached prefix (pays back in ~1.7 request(s))
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
 Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`,
+  )
+})
+
+test('M4/prompts 4b: a range row reports how much of its mass is reasoning (scratchpad visibility)', () => {
+  // The composition column used to be rows-only ([tool X% | text Y%], kernel
+  // toolPct parity), which hides the single biggest reclaimable block in a
+  // reasoning-model session: the audit of the long daily session found
+  // reasoning at 61.3% of the visible assistant characters (37.8% of the whole
+  // surface) against 5.0% prose. The row now reports the reasoning share of the
+  // span's CHARACTERS; the tool share keeps its kernel-parity row caliber.
+  const session = Session.create('range-reasoning-share')
+  appendTurn(session, 1)
+  appendUser(session, longText('q0', 0))
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    stream: [],
+    message: createAssistantMessage({
+      content: [
+        { type: 'thinking', thinking: 'Scratchpad: weigh option A against option B. '.repeat(80) },
+        { type: 'tool-call', id: 'call-share-1', name: 'bash', arguments: '{"command":"ls"}' },
+      ],
+      provider: 'test-provider',
+      model: 'test-model',
+    }),
+  }, { surfaceOp: 'append' })
+  appendToolResult(session, longText('out', 1), 'call-share-1')
+  appendUser(session, longText('q1', 2))
+  appendAssistant(session, longText('a1', 3), 1, 3)
+  appendUser(session, longText('q2', 4))
+  appendAssistant(session, longText('a2', 5), 1, 5)
+  appendUser(session, longText('q3', 6))
+  appendAssistant(session, longText('a3', 7), 1, 7)
+  appendUser(session, longText('q4', 8))
+  appendAssistant(session, longText('a4', 9), 1, 9)
+
+  const table = rangeTable(session, wholeSurfaceRangeView(session))
+  const rows = table.split('\n').filter((line) => /^\s+- seq /.test(line))
+  assert.ok(rows.length > 0, `the reasoning-bearing span is offered (got ${rows.length} rows)`)
+  const shares = rows
+    .map((line) => /reasoning (\d+)%/.exec(line))
+    .filter((match) => match !== null)
+    .map((match) => Number(match![1]))
+  assert.ok(shares.some((share) => share > 0), `some row reports the reasoning share (got ${shares.join(', ')})`)
+
+  // Control: a plain text-only surface reports reasoning 0%, so the column is a
+  // measurement, not decoration.
+  const plain = buildTextSession(12)
+  const plainTable = rangeTable(plain, wholeSurfaceRangeView(plain))
+  assert.ok(
+    plainTable.includes('[tool 0% | reasoning 0% | text 100%]'),
+    'a prose-only span reports no reasoning mass',
   )
 })
 

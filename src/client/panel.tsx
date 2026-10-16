@@ -134,7 +134,9 @@ function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
     h('table', { className: 'acp-table' },
     h('thead', null, h('tr', null,
       h('th', null, '段位'), h('th', null, '范围'), h('th', null, '条数'),
-      h('th', null, '大小'), h('th', null, 'tool'), h('th', null, '作废'), h('th', null, '回本'),
+      h('th', null, '大小'), h('th', null, 'tool'),
+      h('th', { title: '这一行里有多少字符是助手的推理草稿（thinking）——按字符算，不是按条数' }, '推理'),
+      h('th', null, '作废'), h('th', null, '回本'),
       h('th', { title: '这一行被摆到模型面前多少次（含本次）；越高说明它反复没被采纳' }, '被报价'),
       h('th', null, '清扫'), h('th', null, ''))),
     h('tbody', null, rows.map((row) => {
@@ -146,6 +148,7 @@ function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
         h('td', null, String(row.messages)),
         h('td', null, `~${compact(row.tokens)}`),
         h('td', null, `${row.toolPct}%`),
+        h('td', { className: row.reasoningPct >= 30 ? 'acp-warn' : 'acp-muted' }, `${row.reasoningPct}%`),
         h('td', null, `~${compact(row.invalidated)}`),
         h('td', { className: row.expensive ? 'acp-warn' : undefined }, `${row.breakEven.toFixed(1)}×`),
         h('td', { className: row.offered >= 3 ? 'acp-warn' : 'acp-muted' }, `${String(row.offered)}×`),

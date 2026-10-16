@@ -6980,7 +6980,7 @@ var NUDGE_ALLOWED = {
 var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
   title: /* @__PURE__ */ new Set(["count"]),
-  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "media", "offered"]),
+  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "media", "offered"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
   footer: /* @__PURE__ */ new Set()
@@ -7059,7 +7059,7 @@ var DEFAULT_PROMPTS = {
   rangeTable: {
     header: "Surface: {surface}",
     title: "Compressible ranges ({count}, one per age band \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
-    line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}{offered}",
+    line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
     batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
@@ -7779,6 +7779,8 @@ function priceSurfaceSlice(session, nodes, from, to, mediaPriceOf) {
   let count = 0;
   let tokens = 0;
   let toolCount = 0;
+  let chars = 0;
+  let reasoningChars = 0;
   let images = 0;
   let files = 0;
   for (let index = from; index <= to; index += 1) {
@@ -7789,11 +7791,42 @@ function priceSurfaceSlice(session, nodes, from, to, mediaPriceOf) {
     const attachments = attachmentsOfEvent(event);
     tokens += surfaceNodeTokens(event, seq, attachments, mediaPriceOf);
     if (isToolEvent(event)) toolCount += 1;
+    const mass = characterMassOf(event);
+    chars += mass.total;
+    reasoningChars += mass.reasoning;
     images += attachments.images;
     files += attachments.files;
     count += 1;
   }
-  return { count, tokens, toolPct: count > 0 ? Math.round(toolCount / count * 100) : 0, images, files };
+  return {
+    count,
+    tokens,
+    toolPct: count > 0 ? Math.round(toolCount / count * 100) : 0,
+    reasoningPct: chars > 0 ? Math.round(reasoningChars / chars * 100) : 0,
+    images,
+    files
+  };
+}
+function characterMassOf(event) {
+  const blocks = event.data.content ?? event.data.message?.content;
+  let total = 0;
+  let reasoning = 0;
+  const walk = (value) => {
+    if (!Array.isArray(value)) return;
+    for (const block of value) {
+      if (block === null || typeof block !== "object") continue;
+      const entry = block;
+      if (typeof entry.text === "string") total += entry.text.length;
+      if (typeof entry.arguments === "string") total += entry.arguments.length;
+      if (typeof entry.thinking === "string") {
+        total += entry.thinking.length;
+        reasoning += entry.thinking.length;
+      }
+      walk(entry.content);
+    }
+  };
+  walk(blocks);
+  return { total, reasoning };
 }
 function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, staleFoldableSeqs = /* @__PURE__ */ new Set()) {
   const nodes = session.surface.nodes;
@@ -7856,6 +7889,7 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
           count: priced.count,
           tokens: priced.tokens,
           toolPct: priced.toolPct,
+          reasoningPct: priced.reasoningPct,
           images: priced.images,
           files: priced.files
         });
@@ -8532,6 +8566,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         count: range.count,
         tokens: range.tokens,
         toolPct: range.toolPct,
+        reasoningPct: range.reasoningPct,
         textPct: 100 - range.toolPct,
         media: mediaSuffixOf(range),
         // "This row keeps coming back": how many builds have put a row covering
@@ -8559,6 +8594,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       messages: row.range.count,
       tokens: row.range.tokens,
       toolPct: row.range.toolPct,
+      reasoningPct: row.range.reasoningPct,
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,

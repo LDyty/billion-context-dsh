@@ -388,6 +388,7 @@ export function rangeTable(
         count: range.count,
         tokens: range.tokens,
         toolPct: range.toolPct,
+        reasoningPct: range.reasoningPct,
         textPct: 100 - range.toolPct,
         media: mediaSuffixOf(range),
         // "This row keeps coming back": how many builds have put a row covering
@@ -417,6 +418,7 @@ export function rangeTable(
       messages: row.range.count,
       tokens: row.range.tokens,
       toolPct: row.range.toolPct,
+      reasoningPct: row.range.reasoningPct,
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,

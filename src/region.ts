@@ -768,6 +768,21 @@ export interface SeqCompressibleRange {
   readonly tokens: number
   /** Share of messages that are tool messages (tool-call or tool-result), 0-100 — kernel `toolPct` parity. */
   readonly toolPct: number
+  /**
+   * Share of the span's CHARACTERS that live in assistant reasoning
+   * (`thinking`/`reasoning` blocks), 0-100. A second caliber on purpose: the
+   * kernel-parity `toolPct` above counts ROWS, while this one answers the
+   * question the row cannot — "how much of this span is scratchpad?". Live
+   * audit of the long-running daily session: assistant rows held 61.6% of the
+   * visible characters, of which reasoning was 61.3% (37.8% of the whole
+   * surface) and the visible PROSE only 3.1%; over the whole session, reasoning
+   * was 65.1% of all assistant content and prose 4.4%. Reasoning is the densest
+   * reclaimable mass in a reasoning-model session, and because a fold's
+   * invalidation cost depends only on where the span STARTS (never on what it
+   * holds), a reasoning-dense span has a far better payback than a tool span
+   * that begins at the same place.
+   */
+  readonly reasoningPct: number
   /** Image blocks reachable inside the span (directly or through a tool result). */
   readonly images: number
   /** File blocks reachable inside the span. */
@@ -1471,10 +1486,12 @@ function priceSurfaceSlice(
   from: number,
   to: number,
   mediaPriceOf?: MediaPriceOf,
-): { count: number; tokens: number; toolPct: number; images: number; files: number } {
+): { count: number; tokens: number; toolPct: number; reasoningPct: number; images: number; files: number } {
   let count = 0
   let tokens = 0
   let toolCount = 0
+  let chars = 0
+  let reasoningChars = 0
   let images = 0
   let files = 0
   for (let index = from; index <= to; index += 1) {
@@ -1485,11 +1502,51 @@ function priceSurfaceSlice(
     const attachments = attachmentsOfEvent(event)
     tokens += surfaceNodeTokens(event, seq, attachments, mediaPriceOf)
     if (isToolEvent(event)) toolCount += 1
+    const mass = characterMassOf(event)
+    chars += mass.total
+    reasoningChars += mass.reasoning
     images += attachments.images
     files += attachments.files
     count += 1
   }
-  return { count, tokens, toolPct: count > 0 ? Math.round((toolCount / count) * 100) : 0, images, files }
+  return {
+    count,
+    tokens,
+    toolPct: count > 0 ? Math.round((toolCount / count) * 100) : 0,
+    reasoningPct: chars > 0 ? Math.round((reasoningChars / chars) * 100) : 0,
+    images,
+    files,
+  }
+}
+
+/**
+ * Character mass of one surface row: everything the prompt carries, split into
+ * reasoning and the rest. Text, thinking and tool-call argument strings are
+ * counted at any nesting depth (tool results nest their payload one level
+ * down); attachments and structural blocks contribute nothing, matching
+ * `extractText`'s contract.
+ */
+function characterMassOf(event: SessionEvent): { total: number; reasoning: number } {
+  const blocks = (event.data as { content?: unknown; message?: { content?: unknown } }).content
+    ?? (event.data as { message?: { content?: unknown } }).message?.content
+  let total = 0
+  let reasoning = 0
+  const walk = (value: unknown): void => {
+    if (!Array.isArray(value)) return
+    for (const block of value) {
+      if (block === null || typeof block !== 'object') continue
+      const entry = block as { type?: unknown; text?: unknown; thinking?: unknown; arguments?: unknown; content?: unknown }
+      if (typeof entry.text === 'string') total += entry.text.length
+      if (typeof entry.arguments === 'string') total += entry.arguments.length
+      if (typeof entry.thinking === 'string') {
+        total += entry.thinking.length
+        reasoning += entry.thinking.length
+      }
+      walk(entry.content)
+    }
+  }
+  walk(blocks)
+  return { total, reasoning }
 }
 
 function compressibleSegmentsOf(
@@ -1622,6 +1679,7 @@ export function buildCompressibleSeqRanges(
           count: priced.count,
           tokens: priced.tokens,
           toolPct: priced.toolPct,
+          reasoningPct: priced.reasoningPct,
           images: priced.images,
           files: priced.files,
         })

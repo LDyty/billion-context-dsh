@@ -225,6 +225,21 @@ export interface SeqCompressibleRange {
     readonly tokens: number;
     /** Share of messages that are tool messages (tool-call or tool-result), 0-100 — kernel `toolPct` parity. */
     readonly toolPct: number;
+    /**
+     * Share of the span's CHARACTERS that live in assistant reasoning
+     * (`thinking`/`reasoning` blocks), 0-100. A second caliber on purpose: the
+     * kernel-parity `toolPct` above counts ROWS, while this one answers the
+     * question the row cannot — "how much of this span is scratchpad?". Live
+     * audit of the long-running daily session: assistant rows held 61.6% of the
+     * visible characters, of which reasoning was 61.3% (37.8% of the whole
+     * surface) and the visible PROSE only 3.1%; over the whole session, reasoning
+     * was 65.1% of all assistant content and prose 4.4%. Reasoning is the densest
+     * reclaimable mass in a reasoning-model session, and because a fold's
+     * invalidation cost depends only on where the span STARTS (never on what it
+     * holds), a reasoning-dense span has a far better payback than a tool span
+     * that begins at the same place.
+     */
+    readonly reasoningPct: number;
     /** Image blocks reachable inside the span (directly or through a tool result). */
     readonly images: number;
     /** File blocks reachable inside the span. */
