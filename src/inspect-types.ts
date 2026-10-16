@@ -58,12 +58,13 @@ export interface AcpInspectRow {
   readonly breakEven: number
   readonly expensive: boolean
   /**
-   * How many builds have offered a row covering this start, this one included
-   * (src/offer-count.ts). The nudge prints it from 3 up; the panel shows it too,
-   * because "the model keeps skipping this" is exactly what a human watching the
-   * table needs to know.
+   * How many times this AGE BAND was passed over: every model choice of a fold
+   * start that did not land in this band (src/band-skips.ts). Keyed to the band
+   * slot, not to content — the panel shows the same number the nudge prints,
+   * because "the model keeps starting its folds somewhere else" is exactly what
+   * a human watching the table needs to know.
    */
-  readonly offered: number
+  readonly skipped: number
 }
 
 /** The sweep printed under one row: everything that can ride along in one call. */

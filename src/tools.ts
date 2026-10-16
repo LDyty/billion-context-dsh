@@ -16,8 +16,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { AcpStateStore } from './state.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
-import { RANGE_TABLE_OFFERED_MIN, resolveTokenCount } from './nudge.ts'
-import { lastOfferedCountsOf } from './offer-count.ts'
+import { resolveTokenCount } from './nudge.ts'
+import { lastBandSkipsOf, noteBandChoice } from './band-skips.ts'
 import { inspectCacheOf } from './inspect.ts'
 import { routeFor, type AcpWindow } from './window.ts'
 import {
@@ -960,6 +960,11 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     // compaction summary never sits between an assistant tool_calls block and
     // its tool response (strict providers reject that sequence).
     env.compressCallIdsToHide?.add(exec.callId)
+    // ONE model choice: this call committed to a fold START, and every age band
+    // that start does not fall into is counted as passed over (src/band-skips.ts).
+    // A sweep is deliberately ONE choice — the earliest seq it folds is the point
+    // the model committed to, not each of its entries.
+    if (ranges.length > 0) noteBandChoice(String(session.id), Math.min(...ranges.map((range) => range.startSeq)))
   }
 
   // Match freshly created kernel blocks to the requested ranges by their
@@ -1375,20 +1380,21 @@ async function handleStatus(env: ToolEnvironment, rawArgs: StatusArgs, exec: Too
         'Note: the pressure line is provider-anchored (images/files priced by the live route); the breakdown above is a text-only estimate. They can differ on media-heavy sessions.',
       )
     }
-    // The nudge table's `offered N×` suffix, restated here: acp_status is the
-    // other place a model reads compressible ranges, and "you have been shown
-    // this row N times and never folded it" is the one fact neither the seq
-    // order nor the fold cost can carry. Same numbers, same threshold.
-    const counts = lastOfferedCountsOf(String(session.id))
-    const reOffered = inspectCacheOf(String(session.id))?.rows
-      .filter((row) => (counts.get(row.start) ?? 0) >= RANGE_TABLE_OFFERED_MIN)
-      .sort((left, right) => (counts.get(right.start) ?? 0) - (counts.get(left.start) ?? 0))
-      .slice(0, 5) ?? []
-    if (reOffered.length > 0) {
+    // The nudge table's `skipped N×` suffix, restated here: acp_status is the
+    // other place a model reads compressible ranges, and "your folds keep
+    // starting somewhere else" is a fact neither seq order nor fold cost can
+    // carry. Same numbers, same band slots — keyed by BAND INDEX, not by seq.
+    const skips = lastBandSkipsOf(String(session.id))
+    const skippedBands = (inspectCacheOf(String(session.id))?.rows ?? [])
+      .map((row, index) => ({ row, skipped: skips[index] ?? 0 }))
+      .filter((entry) => entry.skipped > 0)
+      .sort((left, right) => right.skipped - left.skipped)
+      .slice(0, 5)
+    if (skippedBands.length > 0) {
       lines.push(
         '',
-        `Rows the table keeps offering (nudge column \`offered N×\`; these may simply be stale history you have already consumed): `
-        + reOffered.map((row) => `seq ${String(row.start)}..${String(row.end)} offered ${String(counts.get(row.start) ?? 0)}×`).join(', '),
+        `Bands your folds keep passing over (nudge column \`skipped N×\`; every choice of a fold start outside the band counts once): `
+        + skippedBands.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}×`).join(', '),
       )
     }
   }

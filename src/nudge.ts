@@ -41,7 +41,7 @@ import { mediaPriceViaMeter } from './host-tokens.ts'
 import { sessionEventsOf } from './session-events.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { rememberBreakdown, rememberPressure, rememberRangeTable } from './inspect.ts'
-import { lastOfferedCountsOf, noteOfferedRows } from './offer-count.ts'
+import { lastBandSkipsOf, noteBandRegions } from './band-skips.ts'
 import type { AcpInspectSweep } from './inspect-types.ts'
 import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompts.ts'
 
@@ -206,21 +206,13 @@ export const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6
 export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
 
 /**
- * How many times a row must have been offered before the count is printed.
- *
- * The owner's call (2026-10-16) is ONE — the count is printed on every row.
- * It used to start at 3 ("appearing twice is normal"), which left the model
- * unable to see that a band had already been offered once or twice: the field
- * was absent exactly when the streak began, so a row that climbed to 20× read
- * as an unexplained sudden appearance. A stable field is also self-explaining —
- * every row carries `offered N×`, so the number needs no legend. The cost is
- * ~14 characters per row.
+ * The row suffix naming how many times THIS BAND was passed over: the model has
+ * chosen a fold start outside it `count` times (src/band-skips.ts). Printed on
+ * every row, 0 included — a stable field needs no legend, and 0 is information
+ * ("every choice so far landed in this band").
  */
-export const RANGE_TABLE_OFFERED_MIN = 1
-
-/** The row suffix naming how often this start has been offered (`''` below the floor). */
-function offeredLabel(count: number): string {
-  return count >= RANGE_TABLE_OFFERED_MIN ? ` · offered ${String(count)}×` : ''
+function skippedLabel(count: number): string {
+  return ` · skipped ${String(count)}×`
 }
 
 /** Compact token count for a cost row: one decimal above 10K, whole numbers below. */
@@ -254,40 +246,55 @@ function compactTokens(tokens: number): string {
  * @param bands - how many bands to cut (defaults to the row cap).
  * @returns one base range per band, oldest first.
  */
-export function selectRangeTableRanges<T extends { start: number; end: number; tokens: number }>(
+export function partitionOfferableIntoBands<T extends { start: number; end: number; tokens: number }>(
   all: readonly T[],
   bands: number = RANGE_TABLE_LIMIT,
-): T[] {
+): T[][] {
   const ordered = [...all].sort((a, b) => a.start - b.start)
   if (ordered.length === 0) return []
   const count = Math.max(1, Math.min(bands, ordered.length))
   const total = ordered.reduce((sum, range) => sum + Math.max(0, range.tokens), 0)
   const target = total / count
-  const picks: T[] = []
+  const groups: T[][] = []
   let bucket: T[] = []
   let running = 0
   const close = (): void => {
     if (bucket.length === 0) return
-    // Largest span of the band: it is the row the model reads, and every
-    // neighbour the sweep pulls in is priced against it.
-    picks.push(bucket.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
+    groups.push(bucket)
     bucket = []
     running = 0
   }
   for (const [index, range] of ordered.entries()) {
     bucket.push(range)
     running += Math.max(0, range.tokens)
-    if (picks.length >= count - 1) continue
+    if (groups.length >= count - 1) continue
     // Close when the band is full, or when the spans left are exactly the bands
     // left — otherwise one heavy span swallows the whole tail into the last band
     // and the table collapses to fewer rows than asked for (measured on a
     // fixture with one 40K span ahead of five slivers: 6 bands → 4 rows).
     const spansLeft = ordered.length - index - 1
-    const bandsLeft = count - picks.length
+    const bandsLeft = count - groups.length
     if (running >= target || spansLeft <= bandsLeft - 1) close()
   }
   close()
-  return picks
+  return groups
+}
+
+/**
+ * The rows the table prints: **one per age band**, each the LARGEST span of its
+ * band (the row the model reads, and the one every neighbour in the sweep is
+ * priced against). See {@link partitionOfferableIntoBands} for the geometry.
+ *
+ * @param all - every offerable range, in any order.
+ * @param bands - how many bands to cut (defaults to the row cap).
+ * @returns one base range per band, oldest first.
+ */
+export function selectRangeTableRanges<T extends { start: number; end: number; tokens: number }>(
+  all: readonly T[],
+  bands: number = RANGE_TABLE_LIMIT,
+): T[] {
+  return partitionOfferableIntoBands(all, bands)
+    .map((group) => group.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
 }
 
 /**
@@ -304,36 +311,38 @@ export function rangeTable(
   kernelView: KernelRangeView,
   prompts: ResolvedPrompts = DEFAULT_RESOLVED,
   mediaPriceOf?: MediaPriceOf,
-  opts: { recordOffers?: boolean } = {},
 ): string {
   const ranges = buildCompressibleSeqRanges(
     session,
     kernelView,
     mediaPriceOf === undefined ? {} : { mediaPriceOf },
   )
-  const shown = selectRangeTableRanges(ranges)
+  // The bands are cut ONCE: their regions are what a later fold start is
+  // attributed against (src/band-skips.ts), and the printed rows are their
+  // largest spans. Panel rebuilds record the same regions as a nudge does —
+  // a build is never a choice, so there is nothing to skip counting.
+  const bandGroups = partitionOfferableIntoBands(ranges)
+  const shown = bandGroups.map((group) => group.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
   // 零范围:整块省略(保留现状的提前返回与 nudge 尾部 '\n')。
   if (shown.length === 0) return ''
   // Each row carries its own fold cost: reclaiming a span makes every node at
   // and after its start re-send uncached once, so the model needs that number to
   // weigh a cheap-but-tiny span against an expensive-but-satisfying one.
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
-  // How often each of these starts has been offered before (see src/offer-count.ts).
-  // The inspector's on-demand rebuild passes `recordOffers: false`: the panel
-  // shows the table, it does not count as one of the model's chances to act —
-  // but it must still SHOW the counts the last real build produced (that is the
-  // whole point of the column), so it reads them instead of starting empty.
-  // Starting empty cached `offered: 1` for every row on any panel rebuild,
-  // wiping the signal the panel exists to display.
-  const offeredCounts = opts.recordOffers === false
-    ? lastOfferedCountsOf(String(session.id))
-    : noteOfferedRows(String(session.id), shown.map((range) => ({ start: range.start, end: range.end })))
+  // Publish this build's band regions, then read the per-band pass-over counts
+  // (src/band-skips.ts): a band's number moves only when a fold CHOOSES a start
+  // outside it, never because the table was rebuilt or its span drifted.
+  noteBandRegions(String(session.id), bandGroups.map((group) => ({
+    start: group[0]!.start,
+    end: group[group.length - 1]!.end,
+  })))
+  const bandSkips = lastBandSkipsOf(String(session.id))
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
-  const baseRows = shown.map((range) => {
+  const baseRows = shown.map((range, band) => {
     const at = ranges.indexOf(range)
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
-    return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
+    return { range, at, band, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
   })
   // EVERY row carries its own sweep, and every sweep is printed in full
   // (2026-10-16): the six rows are six STARTING POINTS and each one runs forward
@@ -385,7 +394,7 @@ export function rangeTable(
       textPct: composition.textPct,
     }))
   }
-  const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, band }) => {
     const rows = [
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
@@ -398,10 +407,10 @@ export function rangeTable(
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
-        // "This row keeps coming back": how many builds have put a row covering
-        // this start in front of the model. Shown from the third appearance on —
-        // the first repeat is normal, a counter that keeps climbing is not.
-        offered: offeredLabel(offeredCounts.get(range.start) ?? 1),
+        // "This band keeps being passed over": how many model choices picked a
+        // fold start outside this band (src/band-skips.ts). Independent of the
+        // seq range — the number belongs to the band slot, not the content.
+        skipped: skippedLabel(bandSkips[band] ?? 0),
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
@@ -432,7 +441,7 @@ export function rangeTable(
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
-      offered: offeredCounts.get(row.range.start) ?? 1,
+      skipped: bandSkips[row.band] ?? 0,
     })),
     sweeps,
   )

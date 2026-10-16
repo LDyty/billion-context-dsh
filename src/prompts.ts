@@ -46,7 +46,7 @@ export interface RangeTablePrompts {
   header: string
   /** 标题。占位符:{count}(表格行数) */
   title: string
-  /** 每行。占位符:{start} {end} {count} {tokens} {offered} */
+  /** 每行。占位符:{start} {end} {count} {tokens} {skipped} */
   line: string
   /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
   cost: string
@@ -94,7 +94,7 @@ const NUDGE_ALLOWED: { [K in keyof NudgePrompts]: ReadonlySet<string> } = {
 const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string> } = {
   header: new Set(['surface']),
   title: new Set(['count']),
-    line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'offered']),
+    line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'skipped']),
   cost: new Set(['reclaimed', 'invalidated', 'breakEven', 'flag']),
   batch: new Set(['count', 'reclaimed', 'invalidated', 'breakEven', 'coverage', 'rowMix', 'toolPct', 'reasoningPct', 'textPct']),
   footer: new Set(),
@@ -213,7 +213,7 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
     // summing to 100).
-    line: '  - seq {start}..{end} — {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}',
+    line: '  - seq {start}..{end} — {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{skipped}',
     cost: '      fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
     // No entry labels: a sweep can reach seventy spans, so the line states the
     // batch's totals — including the summed character partition and row mix,
@@ -278,7 +278,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live — so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard — then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row may carry 'offered N×': that is how many times the table has put that span in front of you and you have not folded it, counted since the last fold that touched the area (it says nothing about wall-clock age). A high count on a span whose content is finished is a standing invitation to sweep it — the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs — the surface moves as messages land and compress; verify with acp_status.`,
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live — so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard — then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N×': every time YOU chose a fold start, each age band that start did NOT fall into was counted once — so a climbing number marks a band your folds keep starting somewhere else, and the smallest number is the band you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on a band whose content is finished is a standing invitation to start there — the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs — the surface moves as messages land and compress; verify with acp_status.`,
 }
 
 /** 模块级默认缓存:默认参/兜底直接引用,避免每次调用重跑校验。 */

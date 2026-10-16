@@ -59,7 +59,6 @@ import { allLogMessages, eventsToCoreMessages, isCheckpointNode, overflowMarkerS
 import { shadowedTokensViaMeter } from './host-tokens.ts'
 import { handleInspectRequest } from './inspect.ts'
 import { inspectCacheOf, invalidateInspectTable, rememberBreakdown, rememberPressure } from './inspect.ts'
-import { noteFoldLanded } from './offer-count.ts'
 import { acpGuidanceMessageToInject } from './guidance.ts'
 import { kernelConfigFor } from './config.ts'
 import {
@@ -564,7 +563,7 @@ export class AcpCompactionEngine extends CompactionEngine {
         rangeTable(session, {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs,
-        }, this.prompts, undefined, { recordOffers: false })
+        }, this.prompts)
         rememberPressure(sessionId, pressure, windowLimit, windowSource)
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
@@ -903,10 +902,10 @@ export class AcpCompactionEngine extends CompactionEngine {
         const sessionId = String(session.id)
         invalidateInspectTable(sessionId)
         this.inspectBuilds.delete(sessionId)
-        // The offer counter forgets the builds whose rows this fold replaced: the
-        // content they described is gone, so they must not keep counting toward
-        // whatever survives around them.
-        noteFoldLanded(sessionId, (event.data as { shadowedSeqs?: readonly number[] }).shadowedSeqs ?? [])
+        // The pass-over counters are NOT touched here: they belong to the age
+        // band SLOTS, not to content, so a fold that lands changes nothing about
+        // them (the model's choice was already counted when the compress landed,
+        // src/tools.ts). Only the panel's stale table is invalidated.
       }
       // An assistant message on a session that just overflowed means the retry
       // (or a later request) made progress: reset that agent's overflow budget

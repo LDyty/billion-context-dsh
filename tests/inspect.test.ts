@@ -92,9 +92,13 @@ test('inspect: the snapshot serves the remembered table, map kinds and settings'
   }
   assert.equal(snapshot.surface.nodes, session.surface.nodes.length)
   assert.equal(snapshot.usage.window, 200000, 'the panel shows the configured window')
-  // The panel mirrors the nudge's `offered N×` column too (same counter).
-  assert.ok(snapshot.rows.every((row) => row.offered >= 1), 'every row carries its offer count')
-  assert.equal(snapshot.rows[0]!.offered, 1, 'and a first build reports 1')
+  // The panel mirrors the nudge's `skipped N×` column too (same counter, same
+  // band slots). A build is not a choice, so a fresh session reads 0 on every
+  // band — and the printed row says the same thing.
+  assert.ok(snapshot.rows.every((row) => row.skipped === 0), 'a fresh build has passed over no band')
+  for (const row of snapshot.rows) {
+    assert.ok(text.includes(`· skipped ${String(row.skipped)}×`), `row ${row.start} prints the same count as the panel`)
+  }
   // …and the reasoning column: the panel prints the SAME character-based share
   // the nudge row prints (one remembered build, no recomputation).
   for (const row of snapshot.rows) {

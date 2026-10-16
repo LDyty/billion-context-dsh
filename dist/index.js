@@ -6980,7 +6980,7 @@ var NUDGE_ALLOWED = {
 var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
   title: /* @__PURE__ */ new Set(["count"]),
-  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "offered"]),
+  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["count", "reclaimed", "invalidated", "breakEven", "coverage", "rowMix", "toolPct", "reasoningPct", "textPct"]),
   footer: /* @__PURE__ */ new Set()
@@ -7063,7 +7063,7 @@ var DEFAULT_PROMPTS = {
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
     // summing to 100).
-    line: "  - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}",
+    line: "  - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{skipped}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
     // No entry labels: a sweep can reach seventy spans, so the line states the
     // batch's totals — including the summed character partition and row mix,
@@ -7126,7 +7126,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row may carry 'offered N\xD7': that is how many times the table has put that span in front of you and you have not folded it, counted since the last fold that touched the area (it says nothing about wall-clock age). A high count on a span whose content is finished is a standing invitation to sweep it \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age band that start did NOT fall into was counted once \u2014 so a climbing number marks a band your folds keep starting somewhere else, and the smallest number is the band you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on a band whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -8440,51 +8440,37 @@ function nodeKindOf(event, isGuarded, isStaleFoldable) {
   return isToolEvent(event) ? "tool" : "text";
 }
 
-// src/offer-count.ts
-var HISTORY_LIMIT = 200;
+// src/band-skips.ts
 var SESSION_LIMIT = 50;
-var histories = /* @__PURE__ */ new Map();
-var lastCounts = /* @__PURE__ */ new Map();
-function putHistory(sessionId, history) {
-  histories.delete(sessionId);
-  histories.set(sessionId, history);
-  while (histories.size > SESSION_LIMIT) {
-    const oldest = histories.keys().next();
+var regions = /* @__PURE__ */ new Map();
+var skips = /* @__PURE__ */ new Map();
+function touch(map, sessionId, value) {
+  map.delete(sessionId);
+  map.set(sessionId, value);
+  while (map.size > SESSION_LIMIT) {
+    const oldest = map.keys().next();
     if (oldest.done === true) break;
-    histories.delete(oldest.value);
+    map.delete(oldest.value);
+    skips.delete(oldest.value);
   }
 }
-function noteOfferedRows(sessionId, rows) {
-  const history = histories.get(sessionId) ?? [];
-  const counts = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    let previous = 0;
-    for (const build2 of history) {
-      if (build2.some((span) => span.start <= row.start && row.start <= span.end)) previous += 1;
-    }
-    counts.set(row.start, previous + 1);
-  }
-  history.push(rows.map((row) => ({ start: row.start, end: row.end })));
-  if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
-  putHistory(sessionId, history);
-  lastCounts.delete(sessionId);
-  lastCounts.set(sessionId, counts);
-  return counts;
+function noteBandRegions(sessionId, bands) {
+  touch(regions, sessionId, bands.map((band) => ({ start: band.start, end: band.end })));
+  if (!skips.has(sessionId)) touch(skips, sessionId, bands.map(() => 0));
+  else touch(skips, sessionId, skips.get(sessionId));
 }
-function lastOfferedCountsOf(sessionId) {
-  return lastCounts.get(sessionId) ?? /* @__PURE__ */ new Map();
+function noteBandChoice(sessionId, chosenSeq) {
+  const bands = regions.get(sessionId);
+  if (bands === void 0 || bands.length === 0) return;
+  const counters = skips.get(sessionId) ?? bands.map(() => 0);
+  const next = bands.map((band, index) => {
+    const inside = band.start <= chosenSeq && chosenSeq <= band.end;
+    return (counters[index] ?? 0) + (inside ? 0 : 1);
+  });
+  touch(skips, sessionId, next);
 }
-function noteFoldLanded(sessionId, shadowed) {
-  const history = histories.get(sessionId);
-  if (history === void 0 || shadowed.length === 0) return;
-  let low = Number.POSITIVE_INFINITY;
-  let high = Number.NEGATIVE_INFINITY;
-  for (const seq of shadowed) {
-    if (seq < low) low = seq;
-    if (seq > high) high = seq;
-  }
-  const kept = history.map((build2) => build2.filter((span) => span.end < low || span.start > high)).filter((build2) => build2.length > 0);
-  putHistory(sessionId, kept);
+function lastBandSkipsOf(sessionId) {
+  return skips.get(sessionId) ?? [];
 }
 
 // src/nudge.ts
@@ -8527,53 +8513,57 @@ function meterMediaPriceResolver(agent, session) {
 var RANGE_TABLE_LIMIT = 6;
 var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
-var RANGE_TABLE_OFFERED_MIN = 1;
-function offeredLabel(count) {
-  return count >= RANGE_TABLE_OFFERED_MIN ? ` \xB7 offered ${String(count)}\xD7` : "";
+function skippedLabel(count) {
+  return ` \xB7 skipped ${String(count)}\xD7`;
 }
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
-function selectRangeTableRanges(all, bands = RANGE_TABLE_LIMIT) {
+function partitionOfferableIntoBands(all, bands = RANGE_TABLE_LIMIT) {
   const ordered = [...all].sort((a, b) => a.start - b.start);
   if (ordered.length === 0) return [];
   const count = Math.max(1, Math.min(bands, ordered.length));
   const total = ordered.reduce((sum, range) => sum + Math.max(0, range.tokens), 0);
   const target = total / count;
-  const picks = [];
+  const groups = [];
   let bucket = [];
   let running = 0;
   const close = () => {
     if (bucket.length === 0) return;
-    picks.push(bucket.reduce((best, range) => range.tokens > best.tokens ? range : best));
+    groups.push(bucket);
     bucket = [];
     running = 0;
   };
   for (const [index, range] of ordered.entries()) {
     bucket.push(range);
     running += Math.max(0, range.tokens);
-    if (picks.length >= count - 1) continue;
+    if (groups.length >= count - 1) continue;
     const spansLeft = ordered.length - index - 1;
-    const bandsLeft = count - picks.length;
+    const bandsLeft = count - groups.length;
     if (running >= target || spansLeft <= bandsLeft - 1) close();
   }
   close();
-  return picks;
+  return groups;
 }
-function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, opts = {}) {
+function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
   const ranges = buildCompressibleSeqRanges(
     session,
     kernelView,
     mediaPriceOf === void 0 ? {} : { mediaPriceOf }
   );
-  const shown = selectRangeTableRanges(ranges);
+  const bandGroups = partitionOfferableIntoBands(ranges);
+  const shown = bandGroups.map((group) => group.reduce((best, range) => range.tokens > best.tokens ? range : best));
   if (shown.length === 0) return "";
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf);
-  const offeredCounts = opts.recordOffers === false ? lastOfferedCountsOf(String(session.id)) : noteOfferedRows(String(session.id), shown.map((range) => ({ start: range.start, end: range.end })));
-  const baseRows = shown.map((range) => {
+  noteBandRegions(String(session.id), bandGroups.map((group) => ({
+    start: group[0].start,
+    end: group[group.length - 1].end
+  })));
+  const bandSkips = lastBandSkipsOf(String(session.id));
+  const baseRows = shown.map((range, band) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
-    return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
+    return { range, at, band, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
   const proposalOfAt = /* @__PURE__ */ new Map();
   const sweeps = [];
@@ -8611,7 +8601,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       textPct: composition.textPct
     }));
   }
-  const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, band }) => {
     const rows = [
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
@@ -8624,10 +8614,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
-        // "This row keeps coming back": how many builds have put a row covering
-        // this start in front of the model. Shown from the third appearance on —
-        // the first repeat is normal, a counter that keeps climbing is not.
-        offered: offeredLabel(offeredCounts.get(range.start) ?? 1)
+        // "This band keeps being passed over": how many model choices picked a
+        // fold start outside this band (src/band-skips.ts). Independent of the
+        // seq range — the number belongs to the band slot, not the content.
+        skipped: skippedLabel(bandSkips[band] ?? 0)
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
@@ -8656,7 +8646,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
-      offered: offeredCounts.get(row.range.start) ?? 1
+      skipped: bandSkips[row.band] ?? 0
     })),
     sweeps
   );
@@ -9390,6 +9380,7 @@ async function handleCompress(env, args, exec) {
   env.store.set(session, applied.state);
   if (applied.result.blocksCreated > 0) {
     env.compressCallIdsToHide?.add(exec.callId);
+    if (ranges.length > 0) noteBandChoice(String(session.id), Math.min(...ranges.map((range) => range.startSeq)));
   }
   const previousIds = new Set(turn.state.blocks.map((block) => block.blockId));
   const newBlocks = applied.state.blocks.filter((block) => !previousIds.has(block.blockId));
@@ -9665,8 +9656,8 @@ async function handleStatus(env, rawArgs, exec) {
       lines.push("", `Checkpoint seqs (active blocks \u2014 compress a checkpoint seq to distill it; ${crossing}): ${checkpointRows.join(", ")}`);
     }
     const mediaOnSurface = surface.some((event) => {
-      const counts2 = attachmentsOfEvent(event);
-      return counts2.images + counts2.files > 0;
+      const counts = attachmentsOfEvent(event);
+      return counts.images + counts.files > 0;
     });
     if (mediaOnSurface) {
       lines.push(
@@ -9674,12 +9665,12 @@ async function handleStatus(env, rawArgs, exec) {
         "Note: the pressure line is provider-anchored (images/files priced by the live route); the breakdown above is a text-only estimate. They can differ on media-heavy sessions."
       );
     }
-    const counts = lastOfferedCountsOf(String(session.id));
-    const reOffered = inspectCacheOf(String(session.id))?.rows.filter((row) => (counts.get(row.start) ?? 0) >= RANGE_TABLE_OFFERED_MIN).sort((left, right) => (counts.get(right.start) ?? 0) - (counts.get(left.start) ?? 0)).slice(0, 5) ?? [];
-    if (reOffered.length > 0) {
+    const skips2 = lastBandSkipsOf(String(session.id));
+    const skippedBands = (inspectCacheOf(String(session.id))?.rows ?? []).map((row, index) => ({ row, skipped: skips2[index] ?? 0 })).filter((entry) => entry.skipped > 0).sort((left, right) => right.skipped - left.skipped).slice(0, 5);
+    if (skippedBands.length > 0) {
       lines.push(
         "",
-        `Rows the table keeps offering (nudge column \`offered N\xD7\`; these may simply be stale history you have already consumed): ` + reOffered.map((row) => `seq ${String(row.start)}..${String(row.end)} offered ${String(counts.get(row.start) ?? 0)}\xD7`).join(", ")
+        `Bands your folds keep passing over (nudge column \`skipped N\xD7\`; every choice of a fold start outside the band counts once): ` + skippedBands.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}\xD7`).join(", ")
       );
     }
   }
@@ -10480,7 +10471,7 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
         rangeTable(session, {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs
-        }, this.prompts, void 0, { recordOffers: false });
+        }, this.prompts);
         rememberPressure(sessionId, pressure, windowLimit, windowSource);
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
@@ -10682,7 +10673,6 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
         const sessionId = String(session.id);
         invalidateInspectTable(sessionId);
         this.inspectBuilds.delete(sessionId);
-        noteFoldLanded(sessionId, event.data.shadowedSeqs ?? []);
       }
       if (event.type === "assistant/message") {
         const overflowAgent = this.overflowSessions.get(session);

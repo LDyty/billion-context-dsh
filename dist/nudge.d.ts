@@ -80,18 +80,6 @@ export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
 /** Only print a batch when it beats its base row's break-even by this fraction. */
 export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
- * How many times a row must have been offered before the count is printed.
- *
- * The owner's call (2026-10-16) is ONE — the count is printed on every row.
- * It used to start at 3 ("appearing twice is normal"), which left the model
- * unable to see that a band had already been offered once or twice: the field
- * was absent exactly when the streak began, so a row that climbed to 20× read
- * as an unexplained sudden appearance. A stable field is also self-explaining —
- * every row carries `offered N×`, so the number needs no legend. The cost is
- * ~14 characters per row.
- */
-export declare const RANGE_TABLE_OFFERED_MIN = 1;
-/**
  * Pick the rows the nudge range table prints: **one per age band**.
  *
  * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
@@ -117,6 +105,20 @@ export declare const RANGE_TABLE_OFFERED_MIN = 1;
  * @param bands - how many bands to cut (defaults to the row cap).
  * @returns one base range per band, oldest first.
  */
+export declare function partitionOfferableIntoBands<T extends {
+    start: number;
+    end: number;
+    tokens: number;
+}>(all: readonly T[], bands?: number): T[][];
+/**
+ * The rows the table prints: **one per age band**, each the LARGEST span of its
+ * band (the row the model reads, and the one every neighbour in the sweep is
+ * priced against). See {@link partitionOfferableIntoBands} for the geometry.
+ *
+ * @param all - every offerable range, in any order.
+ * @param bands - how many bands to cut (defaults to the row cap).
+ * @returns one base range per band, oldest first.
+ */
 export declare function selectRangeTableRanges<T extends {
     start: number;
     end: number;
@@ -131,9 +133,7 @@ export declare function selectRangeTableRanges<T extends {
  * `UPSTREAM:` workaround for kernel ref-map drift; that drift is fixed upstream
  * (acp-kernel #207) and the workaround is gone (rule 11).
  */
-export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, opts?: {
-    recordOffers?: boolean;
-}): string;
+export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf): string;
 /**
  * Compute a SURFACE-ONLY context breakdown for display, aligned with
  * `acp_status` (kernel `buildStatusReport`/`renderOverview`).

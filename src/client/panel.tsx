@@ -155,7 +155,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
     h('thead', null, h('tr', null,
       h('th', null, '段位'), h('th', null, '范围'), h('th', null, '大小'),
       h('th', { title: '按字符算的三档构成（和为 100%）：tool（工具结果 + 工具调用参数）· 推理（草稿）· 正文（用户消息、助手正文、注入行）' }, '构成'),
-      h('th', { title: '作废 = 折叠会让下一发重发多少 prefix；⚠ N× = 回本需要几次请求（≥6 标黄）；「报价 N×」= 这一行被摆到模型面前几次（含本次），≥3 标黄' }, '代价'),
+      h('th', { title: '作废 = 折叠会让下一发重发多少 prefix；⚠ N× = 回本需要几次请求（≥6 标黄）；「未报价 N×」= 模型每次选折叠起点时，起点没落在本年龄区里的次数（爬得越高说明模型一直从别处开始）' }, '代价'),
       h('th', { title: '从本行起、只往新的方向、不封顶（N段→回收量 @回本×）；与 nudge 里那一行是同一组数字' }, '清扫'),
       h('th', null, ''))),
     h('tbody', null, rows.map((row) => {
@@ -177,14 +177,13 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
           h('span', null, `~${compact(row.invalidated)}`),
           h('span', { className: row.expensive ? 'acp-warn acp-cost-rate' : 'acp-muted acp-cost-rate' },
             `${row.expensive ? '⚠ ' : ''}${row.breakEven.toFixed(1)}×`),
-          // ALWAYS printed here even though the nudge only shows it from 3 up:
-          // the panel is read by a human watching for a row the model keeps
-          // skipping, and "1×" is information too (this build is the first
-          // offer). The label keeps it from reading as another multiplier.
+          // The band's pass-over count: how many model choices started a fold
+          // OUTSIDE this age band (src/band-skips.ts). Always printed, 0
+          // included — the label keeps it from reading as another multiplier.
           h('span', {
-            className: row.offered >= 3 ? 'acp-badge acp-warn' : 'acp-badge acp-muted',
-            title: '被报价次数：这一行被摆到模型面前几次（含本次）。≥3 次说明模型反复没采纳它——要么它其实还有用，要么该换个起点。',
-          }, `报价 ${String(row.offered)}×`)),
+            className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
+            title: '未报价次数：模型每次选折叠起点，起点没落在本年龄区里就 +1。爬得越高说明模型一直从别的区开始折；最小的那个数就是它反复选中的区。',
+          }, `未报价 ${String(row.skipped)}×`)),
         h('td', {
           className: 'acp-sweep',
           // Same figures the nudge's sweep line carries: the panel is a view of
