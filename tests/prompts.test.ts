@@ -210,14 +210,13 @@ test('M4/prompts 4c: the table header carries the pressure pair the decision use
     table.includes('Context: 344.5K / 744K tokens used (46%)'),
     `the used/window pair and the share are printed (${table.split('\n')[1] ?? ''})`,
   )
-  assert.ok(
-    table.includes('cheap per cached token, costly at scale, and long context dilutes attention'),
-    'and the line says what the number costs (money at any cache rate, attention)',
-  )
-  assert.ok(
-    table.includes('a fold re-sends the prefix uncached once, and the wider the sweep the faster that pays back'),
-    'and that the rewrite is a one-time cost a wide sweep pays back fastest',
-  )
+  // Facts only (owner ruling): no argument about cost, cache price or attention
+  // is smuggled into the model-facing line — it gets the numbers and decides.
+  const contextLine = table.split('\n').find((line) => line.startsWith('Context:')) ?? ''
+  assert.equal(contextLine, 'Context: 344.5K / 744K tokens used (46%)', 'the line is exactly the two numbers and the share')
+  for (const banned of ['cache', 'cost', 'attention', 'compress', 'sweep']) {
+    assert.ok(!contextLine.includes(banned), `the line carries no guidance (${banned})`)
+  }
   // No window on record (panel rebuild, tests): no line at all, never a blank one.
   const bare = rangeTable(session, wholeSurfaceRangeView(session))
   assert.ok(!bare.includes('Context:'), 'without a window the line is absent')

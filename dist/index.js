@@ -7060,7 +7060,9 @@ var DEFAULT_PROMPTS = {
   },
   rangeTable: {
     header: "Surface: {surface}",
-    context: "Context: {used} / {window} tokens used ({pct}%) \u2014 cheap per cached token, costly at scale, and long context dilutes attention; a fold re-sends the prefix uncached once, and the wider the sweep the faster that pays back",
+    // Facts only, no persuasion (owner ruling, 2026-10-16): these numbers are the
+    // model's to weigh, so the line must not argue for compressing.
+    context: "Context: {used} / {window} tokens used ({pct}%)",
     title: "Compressible ranges ({count} \u2014 up to 3 of each age region's largest intervals, oldest first; exact surface seqs \u2014 usable as-is):",
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: "[age region {region}{age} \xB7 skipped {skipped}\xD7]",
