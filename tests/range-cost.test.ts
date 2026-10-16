@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
 import { buildCompressibleSeqRanges, foldCostsOfRanges, shadowedSeqsOf } from '../src/region.ts'
-import { bestBatchProposal, bestSweepProposal } from '../src/region.ts'
+import { bestBatchProposal, sweepFromBaseRange } from '../src/region.ts'
 import {
   RANGE_TABLE_COST_WARN_BREAK_EVEN,
   rangeTable,
@@ -141,7 +141,7 @@ test('batch proposal: no extension, no proposal — and the improvement floor ga
   )
 })
 
-test('sweep proposal: it reaches wherever it must, and it always beats the row alone', () => {
+test('sweep proposal: it runs FORWARD from its row, uncapped, and always beats the row alone', () => {
   const session = buildTextSession(24)
   const spans: [number, number][] = [[0, 2], [4, 6], [8, 10], [12, 14], [16, 18]]
   const nodes = [...session.surface.nodes]
@@ -156,12 +156,15 @@ test('sweep proposal: it reaches wherever it must, and it always beats the row a
   }
   const ranges = buildCompressibleSeqRanges(session, view as never)
   const costs = foldCostsOfRanges(session, ranges)
-  // The sweep has NO direction limit and NO entry cap (2026-10-16): a fold's
-  // rewrite is pinned by its earliest entry, so reaching further back is allowed
-  // whenever it lowers payback. What must hold is the arithmetic.
+  // The owner's rule (2026-10-16): the six rows are six STARTING POINTS, each
+  // sweep runs FORWARD to the newest offerable span with NO entry cap, and it
+  // never reaches back before its own row. A fold's rewrite is pinned by the
+  // batch's earliest entry, so forward extension never grows the rewrite and
+  // every added newer span strictly lowers the payback — that is the whole
+  // selection rule, and what must hold is the arithmetic.
   let swept = 0
   for (let at = 0; at < ranges.length; at += 1) {
-    const sweep = bestSweepProposal(ranges, costs, at)
+    const sweep = sweepFromBaseRange(ranges, costs, at)
     if (sweep === undefined) continue
     swept += 1
     const earliest = sweep.entries.reduce((best, entry) => (entry.start < best.start ? entry : best))
@@ -170,9 +173,16 @@ test('sweep proposal: it reaches wherever it must, and it always beats the row a
       costs[ranges.findIndex((range) => range.start === earliest.start)]!.invalidatedTokens,
       'the rewrite is the one pinned by the sweep’s EARLIEST entry',
     )
+    assert.equal(earliest.start, ranges[at]!.start, 'the sweep starts at its own row, never before it')
     assert.ok(sweep.reclaimedTokens > ranges[at]!.tokens, 'a sweep reclaims more than its base row')
     assert.ok(sweep.breakEvenRequests < costs[at]!.breakEvenRequests, 'and pays back sooner')
     assert.ok(sweep.entries.some((entry) => entry.start === ranges[at]!.start), 'the base row is in its own sweep')
+    // Uncapped: everything newer that does not overlap is inside.
+    const newerDisjoint = ranges.slice(at + 1).filter((candidate) => candidate.start > ranges[at]!.end)
+    assert.ok(
+      sweep.entries.length >= 1 + newerDisjoint.length || sweep.entries.some((entry) => entry.start > ranges[at]!.end),
+      'newer spans ride along',
+    )
     for (let index = 1; index < sweep.entries.length; index += 1) {
       assert.ok(sweep.entries[index]!.start > sweep.entries[index - 1]!.end, 'sweep entries are disjoint')
     }

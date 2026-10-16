@@ -173,16 +173,10 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
     const rows = text.split('\n')
     const baseLines = rows.filter((line) => /^\s+- seq /.test(line))
     const sweepLines = rows.filter((line) => line.includes('sweep from here'))
-    const repeatLines = rows.filter((line) => line.includes('sweep as above'))
-    // One sweep statement per row at most: the row count is the cap. A row whose
-    // best batch is byte-identical to an earlier row's prints the short pointer
-    // form instead of repeating the whole entry list (2026-10-16).
+    // One sweep per row at most: the row count is the cap (2026-10-16 policy —
+    // every row carries its own forward sweep, because the choice is the sweep's
+    // SCOPE; a row with nothing newer to absorb prints no sweep at all).
     assert.ok(sweepLines.length <= baseLines.length, 'never more sweeps than rows')
-    assert.ok(sweepLines.length + repeatLines.length <= baseLines.length, 'never more sweep statements than rows')
-    for (const line of repeatLines) {
-      assert.match(line, /the seq \d+ row's batch/, 'a repeat points at the row that printed the batch')
-      assert.match(line, /\(\d+ messages \/ \d+ summaries to write\)/, 'the repeat states its coverage')
-    }
     for (const line of sweepLines) {
       const entries = [...line.matchAll(/(\d+)\.\.(\d+)/g)].map((match) => ({ start: Number(match[1]), end: Number(match[2]) }))
       assert.ok(entries.length > 1, 'a printed sweep lists more than the base row')

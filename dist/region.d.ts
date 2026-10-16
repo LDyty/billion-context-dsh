@@ -516,38 +516,35 @@ export declare function bestBatchProposal(ranges: readonly SeqCompressibleRange[
     minImprovement: number;
 }): RangeBatchProposal | undefined;
 /**
- * The whole SWEEP from one base range: keep pulling in every other offerable
- * span that lowers the batch's payback, with NO cap on how many end up inside.
+ * The whole sweep from one base range: the base range PLUS every later offerable
+ * span, uncapped and unconditional.
  *
- * Why no cap (the 2026-10-16 policy). A fold's rewrite is fixed by its EARLIEST
- * entry — everything at and after that point is re-sent once, no matter how many
- * entries ride along. So every extra entry is pure amortisation: on the live
- * surface, sweeping 42 spans from the oldest band reclaimed ~135K at payback
- * 1.27, while the same base's band-bounded batch (21 spans) reached only ~35K at
- * 6.76 and the base span alone sat at 58.3. Capping the sweep therefore does not
- * protect the cache; it only throws away the cheap half of the fold.
+ * Policy (2026-10-16, the owner's rule): the six printed rows are six STARTING
+ * POINTS. A row's sweep begins at that row and runs FORWARD — the model picks how
+ * far toward the newest content it wants to go — and nothing older than the row
+ * is ever pulled in.
  *
- * Two consequences are folded into the policy rather than hidden by a cap:
- *  - the sweeps of neighbouring base rows OVERLAP (they differ only in how far
- *    back they start), which is why every printed row carries its own proposal
- *    instead of one shared line — the model picks the SCOPE;
- *  - tiny spans are deliberately included. They are the content most likely to
- *    be dead weight, and adding one always lowers payback, so filtering them out
- *    would only make the sweep less accurate.
+ * Why forward-only needs no selection rule, no cap and no margin: a fold's
+ * rewrite is pinned by the batch's EARLIEST entry (everything at and after that
+ * point is re-sent once, no matter how many entries ride along). Extending
+ * forward therefore never grows the rewrite, and every added newer span strictly
+ * lowers the payback — reclaimed grows while the rewrite stands still. Extending
+ * BACKWARD is the asymmetric case: it moves the rewrite, which is why the earlier
+ * greedy form could print one batch under several neighbouring rows (and under
+ * rows it did not start at). The forward sweep has neither problem: each row's
+ * proposal is its own suffix of the offerable list.
  *
- * Disjointness is still enforced (the tool ignores an entry overlapping one it
- * already applied). Every added entry lowers payback by at least `stepMargin`
- * relative — 0 means "any gain at all", the shipped default.
+ * Overlaps still matter — the offerable list can hold NESTED spans (a kernel
+ * range containing a later one after a replacement), so a span that overlaps an
+ * entry already taken is skipped: whichever span the model folds first owns
+ * those seqs.
  *
  * @param ranges - every offerable range, in surface position order.
  * @param costs - fold costs aligned with `ranges`.
  * @param baseIndex - position of the base range in `ranges`.
- * @param opts - `stepMargin` (decimal, default 0).
- * @returns the sweep, or undefined when nothing can improve on the base row.
+ * @returns the sweep, or undefined when `baseIndex` names no offerable range.
  */
-export declare function bestSweepProposal(ranges: readonly SeqCompressibleRange[], costs: readonly RangeFoldCost[], baseIndex: number, opts?: {
-    stepMargin?: number;
-}): RangeBatchProposal | undefined;
+export declare function sweepFromBaseRange(ranges: readonly SeqCompressibleRange[], costs: readonly RangeFoldCost[], baseIndex: number): RangeBatchProposal | undefined;
 /** What folding one offered range costs the prompt cache. */
 export interface RangeFoldCost {
     /**

@@ -48,8 +48,6 @@ export interface RangeTablePrompts {
     cost: string;
     /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {invalidated} {breakEven} {coverage} */
     batch: string;
-    /** 与上一行的清扫提议完全相同时的替代行(省掉整份重复的条目表)。占位符:{anchor} {count} {reclaimed} {invalidated} {breakEven} {coverage} */
-    batchRepeat: string;
     /** 表尾调用语法。无占位符 */
     footer: string;
 }

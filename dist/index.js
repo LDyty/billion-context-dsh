@@ -6983,7 +6983,6 @@ var RANGE_TABLE_ALLOWED = {
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "offered"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
-  batchRepeat: /* @__PURE__ */ new Set(["anchor", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
   footer: /* @__PURE__ */ new Set()
 };
 var TOOLS_ALLOWED = {
@@ -7067,11 +7066,6 @@ var DEFAULT_PROMPTS = {
     line: "  - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
     batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
-    // Printed instead of a byte-identical repeat of the line above: neighbouring
-    // base rows converge on the SAME best batch (a sweep may pull in older spans
-    // than its own row), and printing the full entry list once per row cost ~1.2K
-    // characters per nudge for the same proposal.
-    batchRepeat: "      sweep as above (the seq {anchor} row's batch) \u2014 all {count} spans in ONE call ({coverage}) \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
   },
   tools: {
@@ -7950,52 +7944,25 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
   });
   return usable.sort((a, b) => a.start - b.start);
 }
-function bestSweepProposal(ranges, costs, baseIndex, opts = {}) {
-  const stepMargin = opts.stepMargin ?? 0;
-  const base = costs[baseIndex];
-  if (base === void 0) return void 0;
-  const first = ranges[baseIndex];
-  if (first === void 0) return void 0;
-  const taken = /* @__PURE__ */ new Set([baseIndex]);
-  let entriesFirst = baseIndex;
-  let reclaimed = first.tokens;
-  let payback = base.breakEvenRequests;
-  for (; ; ) {
-    let best;
-    for (let at = 0; at < ranges.length; at += 1) {
-      if (taken.has(at)) continue;
-      const candidate = ranges[at];
-      let overlaps = false;
-      for (const index of taken) {
-        const other = ranges[index];
-        if (!(candidate.start > other.end || candidate.end < other.start)) {
-          overlaps = true;
-          break;
-        }
-      }
-      if (overlaps) continue;
-      const nextFirst = Math.min(entriesFirst, at);
-      const nextReclaimed = reclaimed + candidate.tokens;
-      const nextPayback = costs[nextFirst].invalidatedTokens / nextReclaimed;
-      if (nextPayback >= payback * (1 - stepMargin)) continue;
-      if (best === void 0 || nextPayback < best.payback) {
-        best = { at, firstAt: nextFirst, reclaimed: nextReclaimed, payback: nextPayback };
-      }
-    }
-    if (best === void 0) break;
-    taken.add(best.at);
-    entriesFirst = best.firstAt;
-    reclaimed = best.reclaimed;
-    payback = best.payback;
+function sweepFromBaseRange(ranges, costs, baseIndex) {
+  const base = ranges[baseIndex];
+  const cost = costs[baseIndex];
+  if (base === void 0 || cost === void 0) return void 0;
+  const entries = [base];
+  for (let at = baseIndex + 1; at < ranges.length; at += 1) {
+    const candidate = ranges[at];
+    if (candidate.start <= entries[entries.length - 1].end) continue;
+    entries.push(candidate);
   }
-  if (taken.size === 1) return void 0;
+  if (entries.length === 1) return void 0;
+  const reclaimedTokens = entries.reduce((sum, entry) => sum + entry.tokens, 0);
   return {
     // Surface order: the line the model reads lists the spans in the order it
     // will fold them, and the disjointness invariant is checkable left to right.
-    entries: [...taken].map((index) => ranges[index]).sort((a, b) => a.start - b.start),
-    reclaimedTokens: reclaimed,
-    invalidatedTokens: costs[entriesFirst].invalidatedTokens,
-    breakEvenRequests: payback
+    entries,
+    reclaimedTokens,
+    invalidatedTokens: cost.invalidatedTokens,
+    breakEvenRequests: reclaimedTokens > 0 ? cost.invalidatedTokens / reclaimedTokens : Number.POSITIVE_INFINITY
   };
 }
 function foldCostsOfRanges(session, ranges, mediaPriceOf) {
@@ -8573,12 +8540,11 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
   const proposalOfAt = /* @__PURE__ */ new Map();
-  const printedBatchAt = /* @__PURE__ */ new Map();
   const sweeps = [];
   for (const row of baseRows) {
     if (row.at < 0) continue;
     if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break;
-    const proposal = bestSweepProposal(ranges, costs, row.at);
+    const proposal = sweepFromBaseRange(ranges, costs, row.at);
     if (proposal === void 0) continue;
     const labels = proposal.entries.map(batchEntryLabel);
     const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT ? labels.join(", ") : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(", ")} \u2026 +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep`;
@@ -8592,29 +8558,14 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       breakEven: proposal.breakEvenRequests,
       spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end }))
     });
-    const rendered = renderTemplate(prompts.rangeTable.batch, {
+    proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E",
       coverage: `${messages} messages / ${proposal.entries.length} summaries to write`
-    });
-    const batchKey = proposal.entries.map((entry) => `${entry.start}..${entry.end}`).join(",");
-    const anchor = printedBatchAt.get(batchKey);
-    if (anchor === void 0) {
-      printedBatchAt.set(batchKey, row.range.start);
-      proposalOfAt.set(row.at, rendered);
-    } else {
-      proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batchRepeat, {
-        anchor: String(anchor),
-        count: proposal.entries.length,
-        reclaimed: compactTokens(proposal.reclaimedTokens),
-        invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
-        breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E",
-        coverage: `${messages} messages / ${proposal.entries.length} summaries to write`
-      }));
-    }
+    }));
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
     const rows = [

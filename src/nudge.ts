@@ -26,7 +26,7 @@ import { allLogMessages, eventsToCoreMessages, isCheckpointNode, surfaceEventsOf
 import {
   buildCompressibleSeqRanges,
   findOpenTurn,
-  bestSweepProposal,
+  sweepFromBaseRange,
   foldCostsOfRanges,
   summarySeqOfKernelBlock,
   surfaceSummary,
@@ -349,29 +349,21 @@ export function rangeTable(
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
     return { range, at, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
   })
-  // EVERY row carries its own sweep (2026-10-16). Neighbouring rows can pull in
-  // DIFFERENT spans — that is the scope choice the model is making — so the
-  // proposals are computed per row and never merged.
-  //
-  // They are, however, DEDUPED at render time (2026-10-16, later): a greedy
-  // sweep may pull in spans OLDER than its own row, so several neighbouring rows
-  // often converge on the byte-identical best batch. Printing it once per row
-  // cost ~1.2K characters per nudge for one proposal (live: nudge seq 127 printed
-  // the same 5-span batch five times, under rows whose own spans were not even
-  // its first entry — "sweep from here" describing a batch that starts elsewhere).
-  // The first row to produce a batch prints it in full; later identical ones get
-  // the short pointer, which keeps the "you can sweep from this row too" signal
-  // without repeating the entry list.
+  // EVERY row carries its own sweep, and every sweep is printed in full
+  // (2026-10-16): the six rows are six STARTING POINTS and each one runs forward
+  // uncapped to the newest offerable span, so the model is choosing the SCOPE of
+  // its fold. Two rows cannot share a proposal — row N's sweep is the suffix of
+  // row N+1's from a different start — which is exactly the choice the repeated
+  // lines express.
   // Keyed by the row's position in the offerable list (two nested rows can share
   // a start seq, and a start-keyed map printed one proposal under both rows).
   const proposalOfAt = new Map<number, string>()
-  const printedBatchAt = new Map<string, number>()
   // The same proposals, structured, for the inspector panel (src/inspect.ts).
   const sweeps: AcpInspectSweep[] = []
   for (const row of baseRows) {
     if (row.at < 0) continue
     if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break
-    const proposal = bestSweepProposal(ranges, costs, row.at)
+    const proposal = sweepFromBaseRange(ranges, costs, row.at)
     if (proposal === undefined) continue
     const labels = proposal.entries.map(batchEntryLabel)
     const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT
@@ -387,29 +379,14 @@ export function rangeTable(
       breakEven: proposal.breakEvenRequests,
       spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end })),
     })
-    const rendered = renderTemplate(prompts.rangeTable.batch, {
+    proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       entries,
       count: proposal.entries.length,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
       coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
-    })
-    const batchKey = proposal.entries.map((entry) => `${entry.start}..${entry.end}`).join(',')
-    const anchor = printedBatchAt.get(batchKey)
-    if (anchor === undefined) {
-      printedBatchAt.set(batchKey, row.range.start)
-      proposalOfAt.set(row.at, rendered)
-    } else {
-      proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batchRepeat, {
-        anchor: String(anchor),
-        count: proposal.entries.length,
-        reclaimed: compactTokens(proposal.reclaimedTokens),
-        invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
-        breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
-        coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
-      }))
-    }
+    }))
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {
     const rows = [
