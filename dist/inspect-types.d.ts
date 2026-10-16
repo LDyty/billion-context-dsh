@@ -60,9 +60,19 @@ export interface AcpInspectRow {
         readonly user: number;
         readonly other: number;
     };
-    /** Tokens the next request re-sends uncached once because of this fold. */
+    /** Tokens the fold moves: the folded content plus everything newer (see `newer`). */
     readonly invalidated: number;
-    /** `invalidated ÷ tokens` — requests needed to pay the rewrite back. */
+    /**
+     * Tokens NEWER than this span, re-sent uncached once after the fold — the term
+     * that dominates the billing payback.
+     */
+    readonly newer: number;
+    /**
+     * Requests before this fold pays for itself at the provider's CACHE PRICING
+     * (see `billingPaybackRequests` in src/region.ts): the newer tail and the
+     * summary are charged at the cache-miss price, what the fold reclaims is saved
+     * at the cache-hit price. 0 = profitable on the first request.
+     */
     readonly breakEven: number;
     readonly expensive: boolean;
     /**
@@ -82,7 +92,11 @@ export interface AcpInspectSweep {
     readonly messages: number;
     readonly reclaims: number;
     readonly invalidates: number;
+    /** Tokens newer than the sweep's start: re-sent uncached once (see the row field). */
+    readonly newerTokens: number;
+    /** Billing payback in requests (see the row field); the ⚠ line is this vs its threshold. */
     readonly breakEven: number;
+    readonly expensive: boolean;
     /**
      * The sweep's AGGREGATE composition — the same figures its printed line
      * carries (summed from raw mass, so the three shares sum to 100). Percentages

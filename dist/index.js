@@ -6983,8 +6983,8 @@ var RANGE_TABLE_ALLOWED = {
   title: /* @__PURE__ */ new Set(["count"]),
   region: /* @__PURE__ */ new Set(["region", "age", "skipped"]),
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped"]),
-  cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
-  batch: /* @__PURE__ */ new Set(["count", "reclaimed", "invalidated", "breakEven", "coverage", "rowMix", "toolPct", "reasoningPct", "textPct"]),
+  cost: /* @__PURE__ */ new Set(["reclaimed", "newer", "invalidated", "breakEven", "flag"]),
+  batch: /* @__PURE__ */ new Set(["count", "reclaimed", "newer", "invalidated", "breakEven", "coverage", "rowMix", "toolPct", "reasoningPct", "textPct"]),
   footer: /* @__PURE__ */ new Set()
 };
 var TOOLS_ALLOWED = {
@@ -7072,12 +7072,15 @@ var DEFAULT_PROMPTS = {
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
     // summing to 100).
     line: "    - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}",
-    cost: "        fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
+    // Billing caliber (owner ruling, 2026-10-17): the payback is in REQUESTS at the
+    // provider's cache pricing — the newer tail (re-sent uncached once) is what
+    // dominates it, so it is printed next to what the fold reclaims.
+    cost: "        fold cost: reclaims ~{reclaimed} \xB7 re-sends {newer} newer uncached once \xB7 pays back in ~{breakEven} request(s){flag}",
     // No entry labels: a sweep can reach seventy spans, so the line states the
     // batch's totals — including the summed character partition and row mix,
     // the same two figures every row carries — and points at acp_status for the
     // list the model must fetch anyway before compressing.
-    batch: "        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
+    batch: "        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s))",
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSweep entries are not printed: the exact spans of any sweep come from acp_status({ scope: "uncompressed", view: "ranges" }).\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.'
   },
   tools: {
@@ -8013,6 +8016,16 @@ function sweepFromBaseRange(ranges, costs, baseIndex) {
     breakEvenRequests: reclaimedTokens > 0 ? cost.invalidatedTokens / reclaimedTokens : Number.POSITIVE_INFINITY
   };
 }
+function summaryTokenAllowance(foldedTokens) {
+  return Math.max(80, Math.min(1e3, Math.round(foldedTokens * 0.045)));
+}
+function billingPaybackRequests(invalidatedTokens, reclaimedTokens, missHitRatio, summaryTokens = summaryTokenAllowance(reclaimedTokens)) {
+  const newer = Math.max(0, invalidatedTokens - reclaimedTokens);
+  const perRequest = reclaimedTokens - summaryTokens;
+  if (perRequest <= 0) return Number.POSITIVE_INFINITY;
+  const oneTime = newer * Math.max(0, missHitRatio - 1) + summaryTokens * missHitRatio - reclaimedTokens;
+  return oneTime <= 0 ? 0 : oneTime / perRequest;
+}
 function foldCostsOfRanges(session, ranges, mediaPriceOf) {
   const nodes = session.surface.nodes;
   const suffix = new Float64Array(nodes.length + 1);
@@ -8644,13 +8657,17 @@ function meterMediaPriceResolver(agent, session) {
 var RANGE_TABLE_AGE_REGIONS = 6;
 var RANGE_TABLE_ROWS_PER_AGE_REGION = 3;
 var RANGE_TABLE_LIMIT = RANGE_TABLE_AGE_REGIONS * RANGE_TABLE_ROWS_PER_AGE_REGION;
-var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
-var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
+var RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS = 50;
+var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: everything newer than this span is re-sent uncached once";
 function skippedLabel(count) {
   return ` \xB7 skipped ${String(count)}\xD7`;
 }
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
+}
+function paybackLabel(requests) {
+  if (!Number.isFinite(requests)) return "\u221E";
+  return requests.toFixed(1);
 }
 function windowTokens(tokens) {
   if (tokens >= 1e6) return `${(tokens / 1e6).toFixed(2)}M`;
@@ -8710,10 +8727,22 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   })));
   noteOfferableSpans(String(session.id), ranges.map((range) => ({ start: range.start, end: range.end })));
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id));
+  const missHitRatio = context?.missHitRatio ?? 50;
   const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
-    return { range, at, ageRegion, rank, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
+    const paybackRequests = billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatio);
+    return {
+      range,
+      at,
+      ageRegion,
+      rank,
+      cost,
+      /** Tokens newer than this span: re-sent uncached once (see the helper). */
+      newerTokens: Math.max(0, cost.invalidatedTokens - range.tokens),
+      paybackRequests,
+      expensive: paybackRequests >= RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS
+    };
   });
   const proposalOfAt = /* @__PURE__ */ new Map();
   const sweeps = [];
@@ -8726,13 +8755,25 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     const composition = compositionOf(
       proposal.entries.reduce((sum, entry) => addRangeMass(sum, entry.mass), EMPTY_RANGE_MASS)
     );
+    const sweepSummaryTokens = proposal.entries.reduce(
+      (sum, entry) => sum + summaryTokenAllowance(entry.tokens),
+      0
+    );
+    const paybackRequests = billingPaybackRequests(
+      proposal.invalidatedTokens,
+      proposal.reclaimedTokens,
+      missHitRatio,
+      sweepSummaryTokens
+    );
     sweeps.push({
       rowStart: row.range.start,
       entries: proposal.entries.length,
       messages,
       reclaims: proposal.reclaimedTokens,
       invalidates: proposal.invalidatedTokens,
-      breakEven: proposal.breakEvenRequests,
+      newerTokens: Math.max(0, proposal.invalidatedTokens - proposal.reclaimedTokens),
+      breakEven: paybackRequests,
+      expensive: paybackRequests >= RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS,
       rowMix: composition.rowMix,
       rowCounts: {
         tool: proposal.entries.reduce((sum, entry) => sum + entry.mass.toolRows, 0),
@@ -8749,8 +8790,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       count: proposal.entries.length,
       coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
       reclaimed: compactTokens(proposal.reclaimedTokens),
+      newer: `${compactTokens(Math.max(0, proposal.invalidatedTokens - proposal.reclaimedTokens))} tok`,
+      // Legacy placeholder for custom templates: the whole moved prefix.
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
-      breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E",
+      breakEven: paybackLabel(paybackRequests),
       rowMix: composition.rowMix,
       toolPct: composition.toolPct,
       reasoningPct: composition.reasoningPct,
@@ -8758,7 +8801,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     }));
   }
   let previousAgeRegion = 0;
-  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion, newerTokens, paybackRequests }) => {
     const rows = [];
     if (ageRegion !== previousAgeRegion) {
       previousAgeRegion = ageRegion;
@@ -8786,8 +8829,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
+        newer: `${compactTokens(newerTokens)} tok`,
+        // Legacy placeholder for custom templates: folded content + newer tail.
         invalidated: `${compactTokens(cost.invalidatedTokens)} tok`,
-        breakEven: Number.isFinite(cost.breakEvenRequests) ? cost.breakEvenRequests.toFixed(1) : "\u221E",
+        breakEven: paybackLabel(paybackRequests),
         flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : ""
       })
     );
@@ -8816,7 +8861,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         other: row.range.mass.otherRows
       },
       invalidated: row.cost.invalidatedTokens,
-      breakEven: row.cost.breakEvenRequests,
+      newer: row.newerTokens,
+      breakEven: row.paybackRequests,
       expensive: row.expensive,
       skipped: ageRegionSkips[row.ageRegion - 1] ?? 0
     })),

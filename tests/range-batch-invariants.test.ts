@@ -194,7 +194,7 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
       assert.ok(partition !== null, 'the sweep carries the same character partition a row does')
       assert.equal(Number(partition![1]) + Number(partition![2]) + Number(partition![3]), 100, 'and it sums to 100')
       assert.equal(partition![2], '0', 'a text-only fixture reports no scratchpad')
-      assert.match(line, /rewrites ~\S+ tok of the prefix \(pays back in ~[\d.∞]+ request\(s\)\)/, 'the rewrite arithmetic survives')
+      assert.match(line, /re-sends \S+ tok newer uncached once \(pays back in ~[\d.∞]+ request\(s\)\)/, 'the billing arithmetic survives')
     }
     // The list's source is named ONCE for the whole table (owner ruling,
     // 2026-10-16): printing it on every sweep line was the same sentence

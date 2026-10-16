@@ -11,10 +11,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
-import { buildCompressibleSeqRanges, foldCostsOfRanges, shadowedSeqsOf } from '../src/region.ts'
+import { billingPaybackRequests, buildCompressibleSeqRanges, foldCostsOfRanges, shadowedSeqsOf, summaryTokenAllowance } from '../src/region.ts'
 import { bestBatchProposal, sweepFromBaseRange } from '../src/region.ts'
 import {
   RANGE_TABLE_COST_WARN_BREAK_EVEN,
+  RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS,
   rangeTable,
 } from '../src/nudge.ts'
 import { hostPriceEvent, shadowedTokensViaMeter } from '../src/host-tokens.ts'
@@ -92,22 +93,50 @@ test('fold cost: invalidation falls with a later start and never undershoots the
 test('fold cost: the table prints it, and flags a span that pays back too slowly', () => {
   const session = buildTextSession(24)
   // A two-node span at the head of a 24-node surface: it reclaims little while
-  // rewriting everything after it, i.e. the expensive default this is meant to
-  // stop hiding.
+  // re-sending everything after it uncached once, i.e. the expensive default this
+  // is meant to stop hiding.
   const view = spanView(session, 0, 1)
   const text = rangeTable(session, view as never)
+  // The printed cost is the BILLING payback (owner ruling 2026-10-17): the row's
+  // billing number is computed from the same two prices the helper documents.
   assert.match(
     text,
-    /fold cost: reclaims ~[\d.]+K? · rewrites ~[\d.]+K? tok of the cached prefix \(pays back in ~[\d.]+ request\(s\)\)/,
+    /fold cost: reclaims ~[\d.]+K? · re-sends [\d.]+K? tok newer uncached once · pays back in ~[\d.]+ request\(s\)/,
     'every row carries its fold cost',
   )
-  const costs = foldCostsOfRanges(session, buildCompressibleSeqRanges(session, view as never))
-  assert.ok(costs[0]!.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN, 'fixture is the expensive case')
+  const ranges = buildCompressibleSeqRanges(session, view as never)
+  const costs = foldCostsOfRanges(session, ranges)
+  const payback = billingPaybackRequests(costs[0]!.invalidatedTokens, ranges[0]!.tokens, 50)
+  assert.ok(
+    payback >= RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS,
+    `fixture is the expensive case (${payback.toFixed(1)} requests)`,
+  )
   assert.ok(text.includes('⚠ expensive'), 'the expensive row is flagged')
   assert.ok(
-    text.includes(`~${costs[0]!.breakEvenRequests.toFixed(1)} request(s)`),
-    'the printed break-even is the computed one',
+    text.includes(`~${payback.toFixed(1)} request(s)`),
+    'the printed payback is the billing one',
   )
+})
+
+/**
+ * The owner's own worked example (2026-10-17), as a regression: two identical
+ * 200K contexts, B folds the newest 100K into a 20K summary, A folds nothing;
+ * each step adds 1K. B's first request costs 100K hit + 20K miss + 1K miss —
+ * 900K more than A's; every later request is 80K cheaper (B's context is 80K
+ * smaller) → 11.25 requests to break even.
+ */
+test('billing payback: the owner example — 100K folded of a 200K context, no newer tail', () => {
+  const payback = billingPaybackRequests(100_000, 100_000, 50, 20_000)
+  assert.equal(Number(payback.toFixed(2)), 11.25, '900K upfront ÷ 80K per request')
+
+  // A fold whose span reaches the newest content has no newer tail: it is
+  // profitable from the first request on (the one-time term goes negative).
+  assert.equal(billingPaybackRequests(33_100, 33_100, 50, 500), 0, 'suffix fold pays back immediately')
+
+  // The default allowance tracks what is folded (measured: 4.5%, floored/capped).
+  assert.equal(summaryTokenAllowance(10_000), 450)
+  assert.equal(summaryTokenAllowance(100), 80, 'the terse junk folds keep a small floor')
+  assert.equal(summaryTokenAllowance(100_000), 1_000, 'and a big fold does not scale forever')
 })
 
 test('batch proposal: extending forward divides the same rewrite over more tokens', () => {

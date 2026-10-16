@@ -19,10 +19,18 @@ import { useHoverTip } from './hoverTip.tsx'
 const INSPECT_ROUTE = '/api/billion-context/inspect'
 
 /**
- * The ⚠ threshold, mirroring RANGE_TABLE_COST_WARN_BREAK_EVEN (src/nudge.ts).
- * Duplicated on purpose: the client bundle must not import the engine module.
+ * The ⚠ threshold, mirroring RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS (src/nudge.ts):
+ * a billable payback of this many requests. Duplicated on purpose — the client
+ * bundle must not import the engine module.
  */
-const WARN_BREAK_EVEN = 6
+const WARN_PAYBACK_REQUESTS = 50
+
+/**
+ * The billing premise, mirroring `summaryTokenAllowance` (src/region.ts): the
+ * summary a fold writes is assumed to be 4.5% of what it folds (80…1000 tokens),
+ * measured over 338 folds in the live session.
+ */
+const BILLING_TIP = '计费口径（缓存未命中 ÷ 命中 = 参数里那个倍数，默认 50×）：折叠一次性重发「本行起点之后仍然存在的部分」= 被折内容 + 更新的尾部；此后每次请求省下「被折内容 − 摘要」。回本次数 = [尾部 ×（倍数−1）+ 摘要 × 倍数 − 被折内容] ÷（被折内容 − 摘要）。摘要按被折内容的 4.5%（80…1000 token）估——实测 338 次折叠的摘要中位数。'
 
 /**
  * 被跳过 is a property of the AGE REGION (src/age-region-skips.ts), not of one
@@ -197,7 +205,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
       h('th', { title: '区间（seq（事件序号）起止，含首尾）：本行折叠时实际覆盖的那个区间。每个年龄区域印它最大的 3 个（按大小取，行仍按 seq 从老到新排）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
       h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
       h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
-      h('th', { title: `invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数是年龄区域的属性，印在「年龄区域」那一格。按计费算：作废量要乘「缓存未命中/命中」的单价倍数（默认 50×，在「参数」里可改），所以真实回本次数 = 这里的回本 × (倍数 − 1)。` }, '代价'),
+      h('th', { title: `invalidated（作废）＝ 折叠这一行要让下一发请求重新按未命中发送多少 token（词元）＝ 被折内容 + 更新的尾部；回本 ＝ 按缓存计费算，这笔重写要多少次请求才赚回来（≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠）。被跳过次数是年龄区域的属性，印在「年龄区域」那一格。${BILLING_TIP}` }, '代价'),
       h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 回本倍数）；与 nudge（提醒文本）里那一行是同一组数字。' }, '清扫'),
       h('th', { title: '复制一条可直接粘贴的 compress（压缩）调用。' }, ''))),
     h('tbody', null, rows.map((row, rowIndex) => {
@@ -240,12 +248,12 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
           h('span', { className: 'acp-sub' },
             `工具 ${String(row.toolPct)}% · 推理 ${String(row.reasoningPct)}% · 正文 ${String(row.textPct)}%`)),
         h('td', null,
-          h('div', { title: `invalidated（作废）~${String(row.invalidated)} token（词元）：折叠这一行会让下一发请求重发这么多 prefix（前缀）。` },
+          h('div', { title: `invalidated（作废）~${String(row.invalidated)} token（词元）= 被折内容 + 更新的尾部 ~${String(row.newer)} token：折叠会让下一发请求把这一整段按未命中重发一次。` },
             `作废 ~${compact(row.invalidated)}`),
           h('div', {
             className: row.expensive ? 'acp-warn acp-cost-rate' : 'acp-muted acp-cost-rate',
-            title: `breakEven（回本）${row.breakEven.toFixed(1)}×：约这么多次请求之后，省下的内容才盖过这次重写的浪费${row.expensive ? '；≥6 次标黄 ⚠' : ''}。`,
-          }, `${row.expensive ? '⚠ ' : ''}回本 ${row.breakEven.toFixed(1)}×`)),
+            title: `回本 ${row.breakEven.toFixed(1)} 次请求：${BILLING_TIP}${row.expensive ? `；≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠` : ''}`,
+          }, `${row.expensive ? '⚠ ' : ''}回本 ${row.breakEven.toFixed(1)} 次`)),
         h('td', {
           className: 'acp-sweep',
           // Same figures the nudge's sweep line carries: the panel is a view of
@@ -256,7 +264,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
               + `回收 ~${compact(sweep.reclaims)} token（词元）· 行构成 ${mixLabel(sweep.rowCounts)} · `
               + `字符三档 tool（工具）${String(sweep.toolPct)}% · reasoning（推理）${String(sweep.reasoningPct)}% · text（正文）${String(sweep.textPct)}% · `
               + `作废 ~${compact(sweep.invalidates)} token（词元）（这一批折叠会让下一发请求重发这么多 prefix（前缀））· `
-              + `回本 ${sweep.breakEven.toFixed(1)}×（把这批的作废赚回来约需要的请求数${sweep.breakEven >= WARN_BREAK_EVEN ? '，≥6 次标黄 ⚠' : ''}）· `
+              + `回本 ${sweep.breakEven.toFixed(1)} 次请求（这一批在计费口径下的回本${sweep.expensive ? `，≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠` : ''}）· `
               + `从本行的起点只向新的方向、不封顶；和 nudge（提醒文本）里那一行是同一组数字。`,
         }, sweep === undefined
           ? '—'
@@ -267,11 +275,11 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
             // recommended batch — the two numbers answer different questions and
             // the sweep is usually the cheaper of them.
             h('span', {
-              className: sweep.breakEven >= WARN_BREAK_EVEN
+              className: sweep.expensive
                 ? 'acp-sub acp-warn'
                 : 'acp-sub',
-              title: `回本 ${sweep.breakEven.toFixed(1)}×：这一批整体折叠的 breakEven（回本）——把这 ${String(sweep.entries)} 个区间折掉会造成 ~${compact(sweep.invalidates)} token（词元）的 prefix（前缀）重写，约 ${sweep.breakEven.toFixed(1)} 次请求之后省下的内容才盖过它。${sweep.breakEven >= WARN_BREAK_EVEN ? '≥6 次标黄 ⚠。' : ''}和「代价」那一格的区别：那边只算这一行自己的区间，这边算整批。`,
-            }, `${sweep.breakEven >= WARN_BREAK_EVEN ? '⚠ ' : ''}回本 ${sweep.breakEven.toFixed(1)}×`))),
+              title: `回本 ${sweep.breakEven.toFixed(1)} 次请求：这一批整体折叠的计费回本——被折 ${compact(sweep.reclaims)} token（词元）、更新的尾部 ~${compact(sweep.newerTokens)} token 要按未命中重发一次。${BILLING_TIP}和「代价」那一格的区别：那边只算这一行自己的区间，这边算整批。`,
+            }, `${sweep.expensive ? '⚠ ' : ''}回本 ${sweep.breakEven.toFixed(1)} 次`))),
         h('td', null, h(CopyButton, {
           text: compressCall(
             sweep?.spans ?? [{ start: row.start, end: row.end }],

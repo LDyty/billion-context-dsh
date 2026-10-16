@@ -54,9 +54,13 @@ export interface RangeTablePrompts {
     region: string;
     /** 每行。占位符:{start} {end} {count} {tokens} */
     line: string;
-    /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
+    /**
+     * 每行的折叠成本。占位符:{reclaimed} {newer} {invalidated} {breakEven} {flag}
+     * {reclaimed}=被折掉的 token、{newer}=比它更新的 token（折叠后要按未命中整体重发一次）、
+     * {breakEven}=按缓存计费算的回本请求数（见 src/region.ts 的 billingPaybackRequests）。
+     */
     cost: string;
-    /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {invalidated} {breakEven} {coverage} */
+    /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {newer} {invalidated} {breakEven} {coverage} */
     batch: string;
     /** 表尾调用语法。无占位符 */
     footer: string;

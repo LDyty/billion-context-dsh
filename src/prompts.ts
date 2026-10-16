@@ -58,9 +58,13 @@ export interface RangeTablePrompts {
   region: string
   /** 每行。占位符:{start} {end} {count} {tokens} */
   line: string
-  /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
+  /**
+   * 每行的折叠成本。占位符:{reclaimed} {newer} {invalidated} {breakEven} {flag}
+   * {reclaimed}=被折掉的 token、{newer}=比它更新的 token（折叠后要按未命中整体重发一次）、
+   * {breakEven}=按缓存计费算的回本请求数（见 src/region.ts 的 billingPaybackRequests）。
+   */
   cost: string
-  /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {invalidated} {breakEven} {coverage} */
+  /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {newer} {invalidated} {breakEven} {coverage} */
   batch: string
   /** 表尾调用语法。无占位符 */
   footer: string
@@ -107,8 +111,8 @@ const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string>
   title: new Set(['count']),
   region: new Set(['region', 'age', 'skipped']),
   line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'skipped']),
-  cost: new Set(['reclaimed', 'invalidated', 'breakEven', 'flag']),
-  batch: new Set(['count', 'reclaimed', 'invalidated', 'breakEven', 'coverage', 'rowMix', 'toolPct', 'reasoningPct', 'textPct']),
+  cost: new Set(['reclaimed', 'newer', 'invalidated', 'breakEven', 'flag']),
+  batch: new Set(['count', 'reclaimed', 'newer', 'invalidated', 'breakEven', 'coverage', 'rowMix', 'toolPct', 'reasoningPct', 'textPct']),
   footer: new Set(),
 }
 const TOOLS_ALLOWED: { [K in keyof ToolPrompts]: ReadonlySet<string> } = {
@@ -232,12 +236,15 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
     // summing to 100).
     line: '    - seq {start}..{end} — {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}',
-    cost: '        fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
+    // Billing caliber (owner ruling, 2026-10-17): the payback is in REQUESTS at the
+    // provider's cache pricing — the newer tail (re-sent uncached once) is what
+    // dominates it, so it is printed next to what the fold reclaims.
+    cost: '        fold cost: reclaims ~{reclaimed} · re-sends {newer} newer uncached once · pays back in ~{breakEven} request(s){flag}',
     // No entry labels: a sweep can reach seventy spans, so the line states the
     // batch's totals — including the summed character partition and row mix,
     // the same two figures every row carries — and points at acp_status for the
     // list the model must fetch anyway before compressing.
-    batch: '        sweep from here — all {count} spans in ONE call ({coverage}) · ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
+    batch: '        sweep from here — all {count} spans in ONE call ({coverage}) · ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] · re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s))',
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'
       + 'Sweep entries are not printed: the exact spans of any sweep come from acp_status({ scope: "uncompressed", view: "ranges" }).\n'
       + 'Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\n'

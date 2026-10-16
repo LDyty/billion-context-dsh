@@ -597,6 +597,54 @@ export interface RangeFoldCost {
     readonly breakEvenRequests: number;
 }
 /**
+ * How big the summary a fold writes will be, in tokens — the premise of the
+ * BILLING payback below. Measured, not guessed: over the 338 folds in the live
+ * session (2026-10-17) the summary ran 57–6,308 tokens, median 430, and the
+ * ratio to the folded content had a median of 4.4% that SHRANK with size:
+ *
+ *   folded ≈4K   → summary median 182  (4.5% of it)
+ *   folded ≈10K  → summary median 430  (4.3%)
+ *   folded ≈20K  → summary median 664  (3.3%)
+ *   folded ≈50K  → summary median 897  (1.8%)
+ *
+ * So: 4.5% of what is folded, floored at 80 tokens (the terse junk folds run
+ * 60–120) and capped at 1,000 (the biggest observed summary was 6.3K, but that
+ * was a distillation of a whole history, not a T1 fold; the cap keeps one row
+ * from dominating the estimate). The payback is only mildly sensitive to it.
+ *
+ * @param foldedTokens - tokens the fold (or one sweep entry) removes.
+ * @returns the assumed summary size in tokens.
+ */
+export declare function summaryTokenAllowance(foldedTokens: number): number;
+/**
+ * Requests a fold needs before it pays for itself at the provider's CACHE
+ * PRICING (owner ruling, 2026-10-17) — the caliber the nudge table prints.
+ *
+ * One token has two prices: a cache HIT costs 1, a cache MISS costs
+ * `missHitRatio` (DeepSeek-style prompt caching; 50 by default). A fold does
+ * three things to the very next request:
+ *
+ *  - the folded content is GONE (it would have been read at the hit price) —
+ *    that is the saving, `reclaimedTokens` per request from now on;
+ *  - the summary that replaces it is NEW input — `summaryTokens × missHitRatio`;
+ *  - everything NEWER than the fold start still exists but now sits after the
+ *    cache's first mismatch, so it is re-sent uncached ONCE:
+ *    `newerTokens × (missHitRatio − 1)` in extra cost (it used to be a hit).
+ *
+ * So `payback = [newer·(R−1) + summary·R − reclaimed] ÷ (reclaimed − summary)`,
+ * in requests. A fold that reaches the newest content has `newer ≈ 0` and pays
+ * back almost immediately; a middle fold re-sends its whole newer tail once and
+ * can need hundreds of requests.
+ *
+ * @param invalidatedTokens - tokens the fold moves (folded content + newer tail).
+ * @param reclaimedTokens - tokens the fold removes from the context.
+ * @param missHitRatio - cache-miss ÷ cache-hit price ratio (≥ 1).
+ * @param summaryTokens - assumed size of the written summary.
+ * @returns requests to break even; 0 when the fold is profitable on the first
+ *   request; `Infinity` when the summary alone outweighs what is reclaimed.
+ */
+export declare function billingPaybackRequests(invalidatedTokens: number, reclaimedTokens: number, missHitRatio: number, summaryTokens?: number): number;
+/**
  * Price what each offered range would invalidate if the model folded it.
  *
  * The provider caches a request prefix; folding a span replaces it in place, so

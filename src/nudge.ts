@@ -25,12 +25,14 @@ import { AcpStateStore } from './state.ts'
 import { allLogMessages, eventsToCoreMessages, isCheckpointNode, surfaceEventsOf } from './messages.ts'
 import {
   addRangeMass,
+  billingPaybackRequests,
   buildCompressibleSeqRanges,
   compositionOf,
   EMPTY_RANGE_MASS,
   findOpenTurn,
   sweepFromBaseRange,
   foldCostsOfRanges,
+  summaryTokenAllowance,
   summarySeqOfKernelBlock,
   surfaceSummary,
   type KernelRangeView,
@@ -212,14 +214,28 @@ export const RANGE_TABLE_ROWS_PER_AGE_REGION = 3
 export const RANGE_TABLE_LIMIT = RANGE_TABLE_AGE_REGIONS * RANGE_TABLE_ROWS_PER_AGE_REGION
 
 /**
- * Break-even request count at which a row is flagged as expensive to fold.
- * Above this the one-time prefix rewrite costs more requests than the reclaim
- * pays back quickly, so the model is told rather than left to guess.
+ * Billing payback (in requests, see {@link billingPaybackRequests}) at which a
+ * row is flagged ⚠. Below this the fold earns its one-time rewrite back quickly;
+ * above it the fold only pays off in a session that keeps going that long.
+ * 50 requests ≈ a long-but-normal stretch of one working session (the live
+ * session ran ~300 requests/day) — a knob, not a law; raise it if folds should
+ * be encouraged, lower it to be stricter.
+ */
+export const RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS = 50
+
+/**
+ * The OLD token-caliber threshold (`invalidated ÷ reclaimed`, ≥6 = ⚠). The ⚠ the
+ * model sees now uses the billing payback above; this constant survives only
+ * because the legacy batch-proposal search and its invariants still take it as
+ * their objective (src/region.ts bestBatchProposal, tests/range-*).
  */
 export const RANGE_TABLE_COST_WARN_BREAK_EVEN = 6
 
-/** Marker appended to a row whose fold pays back slower than the warning line. */
-const RANGE_TABLE_COST_WARN_FLAG = ' — ⚠ expensive: this span starts early, so most of the context is re-sent'
+/**
+ * Marker appended to a row whose fold pays back slower than the warning line:
+ * the newer tail is what dominates its one-time cost (see billingPaybackRequests).
+ */
+const RANGE_TABLE_COST_WARN_FLAG = ' — ⚠ expensive: everything newer than this span is re-sent uncached once'
 
 /** How many older / newer neighbours a normal base row may absorb into its batch. */
 export const RANGE_TABLE_BATCH_MAX_OLD = 3
@@ -248,6 +264,16 @@ function skippedLabel(count: number): string {
 /** Compact token count for a cost row: one decimal above 10K, whole numbers below. */
 function compactTokens(tokens: number): string {
   return tokens >= 10_000 ? `${(tokens / 1000).toFixed(1)}K` : String(Math.round(tokens))
+}
+
+/**
+ * The billing payback as a figure: a plain request count, `0` when the fold is
+ * already profitable on the first request, `∞` when the summary alone outweighs
+ * what the fold reclaims.
+ */
+function paybackLabel(requests: number): string {
+  if (!Number.isFinite(requests)) return '∞'
+  return requests.toFixed(1)
 }
 
 /** The window side of the context line: whole thousands below a million, two decimals above. */
@@ -443,12 +469,27 @@ export function rangeTable(
   // choice tell a sweep (one contiguous run) from a batch of scattered segments.
   noteOfferableSpans(String(session.id), ranges.map((range) => ({ start: range.start, end: range.end })))
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id))
+  // Billing caliber (owner ruling, 2026-10-17): every cost number the table
+  // prints is the payback in REQUESTS at the provider's cache pricing — the
+  // ratio rides the context line, the summary size is the stated allowance.
+  const missHitRatio = context?.missHitRatio ?? 50
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
   const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {
     const at = ranges.indexOf(range)
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
-    return { range, at, ageRegion, rank, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
+    const paybackRequests = billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatio)
+    return {
+      range,
+      at,
+      ageRegion,
+      rank,
+      cost,
+      /** Tokens newer than this span: re-sent uncached once (see the helper). */
+      newerTokens: Math.max(0, cost.invalidatedTokens - range.tokens),
+      paybackRequests,
+      expensive: paybackRequests >= RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS,
+    }
   })
   // EVERY row carries its own sweep, and every sweep is printed in full
   // (2026-10-16): the six rows are six STARTING POINTS and each one runs forward
@@ -475,13 +516,27 @@ export function rangeTable(
     const composition = compositionOf(
       proposal.entries.reduce((sum, entry) => addRangeMass(sum, entry.mass), EMPTY_RANGE_MASS),
     )
+    // A sweep writes ONE summary per entry, so its allowance is the sum of the
+    // per-entry estimates (junk slivers take the 80-token floor, big spans 4.5%).
+    const sweepSummaryTokens = proposal.entries.reduce(
+      (sum, entry) => sum + summaryTokenAllowance(entry.tokens),
+      0,
+    )
+    const paybackRequests = billingPaybackRequests(
+      proposal.invalidatedTokens,
+      proposal.reclaimedTokens,
+      missHitRatio,
+      sweepSummaryTokens,
+    )
     sweeps.push({
       rowStart: row.range.start,
       entries: proposal.entries.length,
       messages,
       reclaims: proposal.reclaimedTokens,
       invalidates: proposal.invalidatedTokens,
-      breakEven: proposal.breakEvenRequests,
+      newerTokens: Math.max(0, proposal.invalidatedTokens - proposal.reclaimedTokens),
+      breakEven: paybackRequests,
+      expensive: paybackRequests >= RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS,
       rowMix: composition.rowMix,
       rowCounts: {
         tool: proposal.entries.reduce((sum, entry) => sum + entry.mass.toolRows, 0),
@@ -498,8 +553,10 @@ export function rangeTable(
       count: proposal.entries.length,
       coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
       reclaimed: compactTokens(proposal.reclaimedTokens),
+      newer: `${compactTokens(Math.max(0, proposal.invalidatedTokens - proposal.reclaimedTokens))} tok`,
+      // Legacy placeholder for custom templates: the whole moved prefix.
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
-      breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
+      breakEven: paybackLabel(paybackRequests),
       rowMix: composition.rowMix,
       toolPct: composition.toolPct,
       reasoningPct: composition.reasoningPct,
@@ -507,7 +564,7 @@ export function rangeTable(
     }))
   }
   let previousAgeRegion = 0
-  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion, newerTokens, paybackRequests }) => {
     const rows: string[] = []
     // The age-region layer, printed once per region: its name and number, and the
     // pass-over count that belongs to the REGION (not to any one interval), with
@@ -538,8 +595,10 @@ export function rangeTable(
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
+        newer: `${compactTokens(newerTokens)} tok`,
+        // Legacy placeholder for custom templates: folded content + newer tail.
         invalidated: `${compactTokens(cost.invalidatedTokens)} tok`,
-        breakEven: Number.isFinite(cost.breakEvenRequests) ? cost.breakEvenRequests.toFixed(1) : '∞',
+        breakEven: paybackLabel(paybackRequests),
         flag: expensive ? RANGE_TABLE_COST_WARN_FLAG : '',
       }),
     )
@@ -570,7 +629,8 @@ export function rangeTable(
         other: row.range.mass.otherRows,
       },
       invalidated: row.cost.invalidatedTokens,
-      breakEven: row.cost.breakEvenRequests,
+      newer: row.newerTokens,
+      breakEven: row.paybackRequests,
       expensive: row.expensive,
       skipped: ageRegionSkips[row.ageRegion - 1] ?? 0,
     })),

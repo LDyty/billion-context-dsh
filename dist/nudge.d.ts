@@ -75,9 +75,19 @@ export declare const RANGE_TABLE_ROWS_PER_AGE_REGION = 3;
 /** Rows the nudge range table prints, at most. */
 export declare const RANGE_TABLE_LIMIT: number;
 /**
- * Break-even request count at which a row is flagged as expensive to fold.
- * Above this the one-time prefix rewrite costs more requests than the reclaim
- * pays back quickly, so the model is told rather than left to guess.
+ * Billing payback (in requests, see {@link billingPaybackRequests}) at which a
+ * row is flagged ⚠. Below this the fold earns its one-time rewrite back quickly;
+ * above it the fold only pays off in a session that keeps going that long.
+ * 50 requests ≈ a long-but-normal stretch of one working session (the live
+ * session ran ~300 requests/day) — a knob, not a law; raise it if folds should
+ * be encouraged, lower it to be stricter.
+ */
+export declare const RANGE_TABLE_COST_WARN_PAYBACK_REQUESTS = 50;
+/**
+ * The OLD token-caliber threshold (`invalidated ÷ reclaimed`, ≥6 = ⚠). The ⚠ the
+ * model sees now uses the billing payback above; this constant survives only
+ * because the legacy batch-proposal search and its invariants still take it as
+ * their objective (src/region.ts bestBatchProposal, tests/range-*).
  */
 export declare const RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 /** How many older / newer neighbours a normal base row may absorb into its batch. */
