@@ -261,11 +261,52 @@ export interface SeqCompressibleRange {
      * right after the message count — the one place a per-row figure belongs.
      */
     readonly rowMix: string;
+    /**
+     * The RAW counts every composition figure is derived from: character mass
+     * split into tool machinery / reasoning / the rest, plus the per-class row
+     * counts. Percentages cannot be summed across spans, so anything that
+     * aggregates several ranges (the sweep line under a row) adds THESE and then
+     * re-derives the shares with {@link compositionOf}.
+     */
+    readonly mass: RangeMass;
     /** Image blocks reachable inside the span (directly or through a tool result). */
     readonly images: number;
     /** File blocks reachable inside the span. */
     readonly files: number;
 }
+/**
+ * The raw material behind one span's (or one sweep's) composition figures:
+ * character mass by kind plus the row counts by class. Summing these across
+ * spans is exact; summing the PERCENTAGES they produce is not, which is why
+ * aggregates add mass and re-derive shares through {@link compositionOf}.
+ */
+export interface RangeMass {
+    readonly chars: number;
+    readonly toolChars: number;
+    readonly reasoningChars: number;
+    readonly toolRows: number;
+    readonly assistantRows: number;
+    readonly userRows: number;
+    readonly otherRows: number;
+}
+/** Zero mass — the identity for aggregating a sweep. */
+export declare const EMPTY_RANGE_MASS: RangeMass;
+/** Add two masses (a sweep sums its entries with this). */
+export declare function addRangeMass(left: RangeMass, right: RangeMass): RangeMass;
+/** The printed composition figures one mass produces (percentages + row mix). */
+export interface RangeComposition {
+    readonly toolPct: number;
+    readonly reasoningPct: number;
+    readonly textPct: number;
+    readonly toolRowPct: number;
+    readonly rowMix: string;
+}
+/**
+ * Turn raw mass into the figures a row prints. ONE caliber for the character
+ * split (so the three shares sum to exactly 100) and a separate one for the row
+ * mix (counts, empty classes omitted).
+ */
+export declare function compositionOf(mass: RangeMass): RangeComposition;
 /**
  * Per-seq provider-anchored price for non-text blocks (see `mediaPriceViaMeter`
  * in host-tokens.ts). A callback, not a map, so a media-free session never pays

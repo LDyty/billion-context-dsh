@@ -804,10 +804,91 @@ export interface SeqCompressibleRange {
    * right after the message count — the one place a per-row figure belongs.
    */
   readonly rowMix: string
+  /**
+   * The RAW counts every composition figure is derived from: character mass
+   * split into tool machinery / reasoning / the rest, plus the per-class row
+   * counts. Percentages cannot be summed across spans, so anything that
+   * aggregates several ranges (the sweep line under a row) adds THESE and then
+   * re-derives the shares with {@link compositionOf}.
+   */
+  readonly mass: RangeMass
   /** Image blocks reachable inside the span (directly or through a tool result). */
   readonly images: number
   /** File blocks reachable inside the span. */
   readonly files: number
+}
+
+/**
+ * The raw material behind one span's (or one sweep's) composition figures:
+ * character mass by kind plus the row counts by class. Summing these across
+ * spans is exact; summing the PERCENTAGES they produce is not, which is why
+ * aggregates add mass and re-derive shares through {@link compositionOf}.
+ */
+export interface RangeMass {
+  readonly chars: number
+  readonly toolChars: number
+  readonly reasoningChars: number
+  readonly toolRows: number
+  readonly assistantRows: number
+  readonly userRows: number
+  readonly otherRows: number
+}
+
+/** Zero mass — the identity for aggregating a sweep. */
+export const EMPTY_RANGE_MASS: RangeMass = {
+  chars: 0,
+  toolChars: 0,
+  reasoningChars: 0,
+  toolRows: 0,
+  assistantRows: 0,
+  userRows: 0,
+  otherRows: 0,
+}
+
+/** Add two masses (a sweep sums its entries with this). */
+export function addRangeMass(left: RangeMass, right: RangeMass): RangeMass {
+  return {
+    chars: left.chars + right.chars,
+    toolChars: left.toolChars + right.toolChars,
+    reasoningChars: left.reasoningChars + right.reasoningChars,
+    toolRows: left.toolRows + right.toolRows,
+    assistantRows: left.assistantRows + right.assistantRows,
+    userRows: left.userRows + right.userRows,
+    otherRows: left.otherRows + right.otherRows,
+  }
+}
+
+/** The printed composition figures one mass produces (percentages + row mix). */
+export interface RangeComposition {
+  readonly toolPct: number
+  readonly reasoningPct: number
+  readonly textPct: number
+  readonly toolRowPct: number
+  readonly rowMix: string
+}
+
+/**
+ * Turn raw mass into the figures a row prints. ONE caliber for the character
+ * split (so the three shares sum to exactly 100) and a separate one for the row
+ * mix (counts, empty classes omitted).
+ */
+export function compositionOf(mass: RangeMass): RangeComposition {
+  const total = mass.chars
+  const toolPct = total > 0 ? Math.round((mass.toolChars / total) * 100) : 0
+  const reasoningPct = total > 0 ? Math.round((mass.reasoningChars / total) * 100) : 0
+  const rows = mass.toolRows + mass.assistantRows + mass.userRows + mass.otherRows
+  const parts: string[] = []
+  if (mass.toolRows > 0) parts.push(`${mass.toolRows} tool`)
+  if (mass.assistantRows > 0) parts.push(`${mass.assistantRows} assistant`)
+  if (mass.userRows > 0) parts.push(`${mass.userRows} user`)
+  if (mass.otherRows > 0) parts.push(`${mass.otherRows} other`)
+  return {
+    toolPct,
+    reasoningPct,
+    textPct: Math.max(0, 100 - toolPct - reasoningPct),
+    toolRowPct: rows > 0 ? Math.round((mass.toolRows / rows) * 100) : 0,
+    rowMix: parts.length > 0 ? parts.join(' · ') : '0',
+  }
 }
 
 /**
@@ -1510,6 +1591,7 @@ function priceSurfaceSlice(
 ): {
   count: number
   tokens: number
+  mass: RangeMass
   toolPct: number
   reasoningPct: number
   textPct: number
@@ -1548,19 +1630,25 @@ function priceSurfaceSlice(
     files += attachments.files
     count += 1
   }
+  const mass: RangeMass = {
+    chars,
+    toolChars,
+    reasoningChars,
+    toolRows: toolCount,
+    assistantRows: assistantOnlyCount,
+    userRows: userCount,
+    otherRows: otherCount,
+  }
   // ONE caliber: all three shares are character mass, so they partition 100%.
   // `text` is derived (never independently rounded) so the printed row always
-  // adds up to exactly 100.
-  const toolPct = chars > 0 ? Math.round((toolChars / chars) * 100) : 0
-  const reasoningPct = chars > 0 ? Math.round((reasoningChars / chars) * 100) : 0
+  // adds up to exactly 100 — and the same helper re-derives a SWEEP's shares
+  // from the summed mass, so a row and an aggregate can never use two rulers.
+  const composition = compositionOf(mass)
   return {
     count,
     tokens,
-    toolPct,
-    reasoningPct,
-    textPct: Math.max(0, 100 - toolPct - reasoningPct),
-    toolRowPct: count > 0 ? Math.round((toolCount / count) * 100) : 0,
-    rowMix: rowMixLabelOf({ tool: toolCount, assistant: assistantOnlyCount, user: userCount, other: otherCount }),
+    mass,
+    ...composition,
     images,
     files,
   }
@@ -1582,15 +1670,6 @@ function priceSurfaceSlice(
  *
  * Empty classes are omitted, so a prose-only span reads `7 assistant`.
  */
-function rowMixLabelOf(counts: { tool: number; assistant: number; user: number; other: number }): string {
-  const parts: string[] = []
-  if (counts.tool > 0) parts.push(`${counts.tool} tool`)
-  if (counts.assistant > 0) parts.push(`${counts.assistant} assistant`)
-  if (counts.user > 0) parts.push(`${counts.user} user`)
-  if (counts.other > 0) parts.push(`${counts.other} other`)
-  return parts.length > 0 ? parts.join(' · ') : '0'
-}
-
 /**
  * Character mass of one surface row: everything the prompt carries, split into
  * three buckets that ALWAYS sum to the row's total — tool machinery, reasoning
@@ -1776,6 +1855,7 @@ export function buildCompressibleSeqRanges(
           end,
           count: priced.count,
           tokens: priced.tokens,
+          mass: priced.mass,
           toolPct: priced.toolPct,
           reasoningPct: priced.reasoningPct,
           textPct: priced.textPct,

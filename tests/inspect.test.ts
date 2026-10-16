@@ -244,7 +244,7 @@ test('inspect: the panel mirrors each row\'s sweep (same entries/reclaims/paybac
       const entries = Number(/all (\d+) spans/.exec(sweepLine)![1])
       assert.equal(sweep!.entries, entries, `row ${start}: the panel lists the same entry count`)
       assert.equal(sweep!.spans.length, entries, 'and one span per entry (copy-paste ready)')
-      assert.ok(sweepLine.includes(`reclaims ~${compactSweepTokens(sweep!.reclaims)}`), `row ${start}: same reclaim`)
+      assert.ok(sweepLine.includes(`~${compactSweepTokens(sweep!.reclaims)} tok total`), `row ${start}: same reclaim`)
       assert.ok(
         sweepLine.includes(`pays back in ~${sweep!.breakEven.toFixed(1)} request(s)`),
         `row ${start}: same payback`,

@@ -24,7 +24,10 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AcpStateStore } from './state.ts'
 import { allLogMessages, eventsToCoreMessages, isCheckpointNode, surfaceEventsOf } from './messages.ts'
 import {
+  addRangeMass,
   buildCompressibleSeqRanges,
+  compositionOf,
+  EMPTY_RANGE_MASS,
   findOpenTurn,
   sweepFromBaseRange,
   foldCostsOfRanges,
@@ -203,20 +206,6 @@ export const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6
 export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
 
 /**
- * How many sweep entries a proposal LINE lists before it summarises the rest as
- * `… +N more spans`. Display only — the sweep itself has no entry cap (see
- * {@link sweepFromBaseRange}). Owner's call (2026-10-16): THREE, because the
- * labels carry the full composition (mix + tokens + character partition) and a
- * live conversation printed six sweeps of up to 73 spans — eight labels each was
- * already ~6KB of nudge text for one build. Three entries show the SHAPE of the
- * batch; the tail names where the rest lives (`acp_status`), which the model has
- * to call anyway before compressing (the table's snapshot line says the seqs go
- * stale). The line still carries the sweep's true totals and message/summary
- * counts.
- */
-export const RANGE_TABLE_BATCH_LABEL_LIMIT = 3
-
-/**
  * How many times a row must have been offered before the count is printed.
  * Appearing twice is normal (the next build happens minutes later); a row that
  * keeps coming back is the fact worth showing.
@@ -231,23 +220,6 @@ function offeredLabel(count: number): string {
 /** Compact token count for a cost row: one decimal above 10K, whole numbers below. */
 function compactTokens(tokens: number): string {
   return tokens >= 10_000 ? `${(tokens / 1000).toFixed(1)}K` : String(Math.round(tokens))
-}
-
-/**
- * One batch entry, carrying the two facts the model needs to write its summary:
- * how big the segment is and what it is made of. The table prints only six rows,
- * but a batch reaches into the whole offerable list, so without this the model
- * would be asked to summarise seqs it never saw a size or flavour for.
- *
- * The label carries the SAME three figures the row above it carries — the row
- * mix (`3 messages (2 tool · 1 other)`), the token size, and the character
- * partition (`[tool 8% | reasoning 65% | text 27%]`) — because a sweep entry is
- * a fold target in its own right: the model writes one summary per entry, and
- * "~4108" alone said nothing about how much of it was scratchpad.
- */
-function batchEntryLabel(entry: SeqCompressibleRange): string {
-  return `${entry.start}..${entry.end}(${entry.count} messages (${entry.rowMix}), `
-    + `~${entry.tokens} tokens [tool ${entry.toolPct}% | reasoning ${entry.reasoningPct}% | text ${entry.textPct}%])`
 }
 
 /**
@@ -369,16 +341,15 @@ export function rangeTable(
     if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break
     const proposal = sweepFromBaseRange(ranges, costs, row.at)
     if (proposal === undefined) continue
-    const labels = proposal.entries.map(batchEntryLabel)
-    const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT
-      ? labels.join(', ')
-      // The tail names where the rest of the list lives: entry labels are long,
-      // and a sweep can reach seventy spans — printing them all (or even eight)
-      // dominated the nudge. Three entries show the SHAPE of the batch; the full
-      // list is one acp_status call away, and the model has to fetch that call's
-      // fresh seqs before compressing anyway (the table's snapshot line says so).
-      : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(', ')} … +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep (full list: acp_status scope:"uncompressed", view:"ranges")`
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0)
+    // The sweep's OWN composition, summed from raw mass (percentages cannot be
+    // added) — the entries themselves are NOT printed: a sweep can hold seventy
+    // spans and the labels are long, so the line carries the totals and points
+    // at acp_status for the list. The model has to call acp_status anyway before
+    // compressing (the snapshot line says the table's seqs go stale).
+    const composition = compositionOf(
+      proposal.entries.reduce((sum, entry) => addRangeMass(sum, entry.mass), EMPTY_RANGE_MASS),
+    )
     sweeps.push({
       rowStart: row.range.start,
       entries: proposal.entries.length,
@@ -389,12 +360,15 @@ export function rangeTable(
       spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end })),
     })
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
-      entries,
       count: proposal.entries.length,
+      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : '∞',
-      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
+      rowMix: composition.rowMix,
+      toolPct: composition.toolPct,
+      reasoningPct: composition.reasoningPct,
+      textPct: composition.textPct,
     }))
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {

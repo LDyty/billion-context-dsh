@@ -96,7 +96,7 @@ const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string>
   title: new Set(['count']),
     line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'rowMix', 'media', 'offered']),
   cost: new Set(['reclaimed', 'invalidated', 'breakEven', 'flag']),
-  batch: new Set(['entries', 'count', 'reclaimed', 'invalidated', 'breakEven', 'coverage']),
+  batch: new Set(['count', 'reclaimed', 'invalidated', 'breakEven', 'coverage', 'rowMix', 'toolPct', 'reasoningPct', 'textPct']),
   footer: new Set(),
 }
 const TOOLS_ALLOWED: { [K in keyof ToolPrompts]: ReadonlySet<string> } = {
@@ -215,7 +215,11 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
     // summing to 100).
     line: '  - seq {start}..{end} — {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}',
     cost: '      fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
-    batch: '      sweep from here — all {count} spans in ONE call ({coverage}): {entries} · reclaims ~{reclaimed} · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
+    // No entry labels: a sweep can reach seventy spans, so the line states the
+    // batch's totals — including the summed character partition and row mix,
+    // the same two figures every row carries — and points at acp_status for the
+    // list the model must fetch anyway before compressing.
+    batch: '      sweep from here — all {count} spans in ONE call ({coverage}) · ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s)) · full list: acp_status scope:"uncompressed", view:"ranges"',
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'
       + 'Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\n'
       + 'Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.',

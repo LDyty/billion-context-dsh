@@ -80,19 +80,6 @@ export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
 /** Only print a batch when it beats its base row's break-even by this fraction. */
 export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
- * How many sweep entries a proposal LINE lists before it summarises the rest as
- * `… +N more spans`. Display only — the sweep itself has no entry cap (see
- * {@link sweepFromBaseRange}). Owner's call (2026-10-16): THREE, because the
- * labels carry the full composition (mix + tokens + character partition) and a
- * live conversation printed six sweeps of up to 73 spans — eight labels each was
- * already ~6KB of nudge text for one build. Three entries show the SHAPE of the
- * batch; the tail names where the rest lives (`acp_status`), which the model has
- * to call anyway before compressing (the table's snapshot line says the seqs go
- * stale). The line still carries the sweep's true totals and message/summary
- * counts.
- */
-export declare const RANGE_TABLE_BATCH_LABEL_LIMIT = 3;
-/**
  * How many times a row must have been offered before the count is printed.
  * Appearing twice is normal (the next build happens minutes later); a row that
  * keeps coming back is the fact worth showing.

@@ -6982,7 +6982,7 @@ var RANGE_TABLE_ALLOWED = {
   title: /* @__PURE__ */ new Set(["count"]),
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "offered"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
-  batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
+  batch: /* @__PURE__ */ new Set(["count", "reclaimed", "invalidated", "breakEven", "coverage", "rowMix", "toolPct", "reasoningPct", "textPct"]),
   footer: /* @__PURE__ */ new Set()
 };
 var TOOLS_ALLOWED = {
@@ -7065,7 +7065,11 @@ var DEFAULT_PROMPTS = {
     // summing to 100).
     line: "  - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
-    batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
+    // No entry labels: a sweep can reach seventy spans, so the line states the
+    // batch's totals — including the summed character partition and row mix,
+    // the same two figures every row carries — and points at acp_status for the
+    // list the model must fetch anyway before compressing.
+    batch: '      sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s)) \xB7 full list: acp_status scope:"uncompressed", view:"ranges"',
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
   },
   tools: {
@@ -7476,6 +7480,44 @@ function rebuildBlockLedger(events) {
   blockLedgerCache.set(events, { len: events.length, ledger });
   return ledger;
 }
+var EMPTY_RANGE_MASS = {
+  chars: 0,
+  toolChars: 0,
+  reasoningChars: 0,
+  toolRows: 0,
+  assistantRows: 0,
+  userRows: 0,
+  otherRows: 0
+};
+function addRangeMass(left, right) {
+  return {
+    chars: left.chars + right.chars,
+    toolChars: left.toolChars + right.toolChars,
+    reasoningChars: left.reasoningChars + right.reasoningChars,
+    toolRows: left.toolRows + right.toolRows,
+    assistantRows: left.assistantRows + right.assistantRows,
+    userRows: left.userRows + right.userRows,
+    otherRows: left.otherRows + right.otherRows
+  };
+}
+function compositionOf(mass) {
+  const total = mass.chars;
+  const toolPct = total > 0 ? Math.round(mass.toolChars / total * 100) : 0;
+  const reasoningPct = total > 0 ? Math.round(mass.reasoningChars / total * 100) : 0;
+  const rows = mass.toolRows + mass.assistantRows + mass.userRows + mass.otherRows;
+  const parts = [];
+  if (mass.toolRows > 0) parts.push(`${mass.toolRows} tool`);
+  if (mass.assistantRows > 0) parts.push(`${mass.assistantRows} assistant`);
+  if (mass.userRows > 0) parts.push(`${mass.userRows} user`);
+  if (mass.otherRows > 0) parts.push(`${mass.otherRows} other`);
+  return {
+    toolPct,
+    reasoningPct,
+    textPct: Math.max(0, 100 - toolPct - reasoningPct),
+    toolRowPct: rows > 0 ? Math.round(mass.toolRows / rows * 100) : 0,
+    rowMix: parts.length > 0 ? parts.join(" \xB7 ") : "0"
+  };
+}
 function isToolEvent(event) {
   if (event.type === "tool/result") return true;
   if (event.type !== "assistant/message") return false;
@@ -7802,35 +7844,32 @@ function priceSurfaceSlice(session, nodes, from, to, mediaPriceOf) {
     else if (event.type === "assistant/message") assistantOnlyCount += 1;
     else if (event.type === "user/message" && event.data?.source?.kind === "user") userCount += 1;
     else otherCount += 1;
-    const mass = characterMassOf(event);
-    chars += mass.total;
-    reasoningChars += mass.reasoning;
-    toolChars += mass.tool;
+    const mass2 = characterMassOf(event);
+    chars += mass2.total;
+    reasoningChars += mass2.reasoning;
+    toolChars += mass2.tool;
     images += attachments.images;
     files += attachments.files;
     count += 1;
   }
-  const toolPct = chars > 0 ? Math.round(toolChars / chars * 100) : 0;
-  const reasoningPct = chars > 0 ? Math.round(reasoningChars / chars * 100) : 0;
+  const mass = {
+    chars,
+    toolChars,
+    reasoningChars,
+    toolRows: toolCount,
+    assistantRows: assistantOnlyCount,
+    userRows: userCount,
+    otherRows: otherCount
+  };
+  const composition = compositionOf(mass);
   return {
     count,
     tokens,
-    toolPct,
-    reasoningPct,
-    textPct: Math.max(0, 100 - toolPct - reasoningPct),
-    toolRowPct: count > 0 ? Math.round(toolCount / count * 100) : 0,
-    rowMix: rowMixLabelOf({ tool: toolCount, assistant: assistantOnlyCount, user: userCount, other: otherCount }),
+    mass,
+    ...composition,
     images,
     files
   };
-}
-function rowMixLabelOf(counts) {
-  const parts = [];
-  if (counts.tool > 0) parts.push(`${counts.tool} tool`);
-  if (counts.assistant > 0) parts.push(`${counts.assistant} assistant`);
-  if (counts.user > 0) parts.push(`${counts.user} user`);
-  if (counts.other > 0) parts.push(`${counts.other} other`);
-  return parts.length > 0 ? parts.join(" \xB7 ") : "0";
 }
 function characterMassOf(event) {
   const blocks = event.data.content ?? event.data.message?.content;
@@ -7922,6 +7961,7 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
           end,
           count: priced.count,
           tokens: priced.tokens,
+          mass: priced.mass,
           toolPct: priced.toolPct,
           reasoningPct: priced.reasoningPct,
           textPct: priced.textPct,
@@ -8487,16 +8527,12 @@ function meterMediaPriceResolver(agent, session) {
 var RANGE_TABLE_LIMIT = 6;
 var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
-var RANGE_TABLE_BATCH_LABEL_LIMIT = 3;
 var RANGE_TABLE_OFFERED_MIN = 3;
 function offeredLabel(count) {
   return count >= RANGE_TABLE_OFFERED_MIN ? ` \xB7 offered ${String(count)}\xD7` : "";
 }
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
-}
-function batchEntryLabel(entry) {
-  return `${entry.start}..${entry.end}(${entry.count} messages (${entry.rowMix}), ~${entry.tokens} tokens [tool ${entry.toolPct}% | reasoning ${entry.reasoningPct}% | text ${entry.textPct}%])`;
 }
 function selectRangeTableRanges(all, bands = RANGE_TABLE_LIMIT) {
   const ordered = [...all].sort((a, b) => a.start - b.start);
@@ -8546,9 +8582,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break;
     const proposal = sweepFromBaseRange(ranges, costs, row.at);
     if (proposal === void 0) continue;
-    const labels = proposal.entries.map(batchEntryLabel);
-    const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT ? labels.join(", ") : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(", ")} \u2026 +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep (full list: acp_status scope:"uncompressed", view:"ranges")`;
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0);
+    const composition = compositionOf(
+      proposal.entries.reduce((sum, entry) => addRangeMass(sum, entry.mass), EMPTY_RANGE_MASS)
+    );
     sweeps.push({
       rowStart: row.range.start,
       entries: proposal.entries.length,
@@ -8559,12 +8596,15 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       spans: proposal.entries.map((entry) => ({ start: entry.start, end: entry.end }))
     });
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
-      entries,
       count: proposal.entries.length,
+      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       invalidated: `${compactTokens(proposal.invalidatedTokens)} tok`,
       breakEven: Number.isFinite(proposal.breakEvenRequests) ? proposal.breakEvenRequests.toFixed(1) : "\u221E",
-      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`
+      rowMix: composition.rowMix,
+      toolPct: composition.toolPct,
+      reasoningPct: composition.reasoningPct,
+      textPct: composition.textPct
     }));
   }
   const lines = baseRows.flatMap(({ range, at, cost, expensive }) => {

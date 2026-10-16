@@ -178,30 +178,24 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
     // SCOPE; a row with nothing newer to absorb prints no sweep at all).
     assert.ok(sweepLines.length <= baseLines.length, 'never more sweeps than rows')
     for (const line of sweepLines) {
-      const entries = [...line.matchAll(/(\d+)\.\.(\d+)/g)].map((match) => ({ start: Number(match[1]), end: Number(match[2]) }))
-      assert.ok(entries.length > 1, 'a printed sweep lists more than the base row')
-      // Every entry carries the SAME three figures the row above it carries:
-      // the row mix, the token size, and the character partition (2026-10-16).
-      const labels = [...line.matchAll(
-        /(\d+)\.\.(\d+)\((\d+) messages \(([^)]*)\), ~(\d+) tokens \[tool (\d+)% \| reasoning (\d+)% \| text (\d+)%\]\)/g,
-      )]
-      assert.ok(labels.length >= 1 && labels.length <= entries.length, 'entries carry the full label')
-      for (const label of labels) {
-        const [, start, end, messages, mix, tokens, tool, reasoning, text] = label
-        assert.ok(Number(messages) >= 1, `entry ${start}..${end} states its message count`)
-        assert.ok(!mix.includes('%'), 'the row mix is a count list, not a percentage')
-        assert.ok(Number(tokens) > 0, `entry ${start}..${end} states its token size`)
-        assert.equal(Number(tool) + Number(reasoning) + Number(text), 100, 'the partition sums to 100')
-        assert.equal(reasoning, '0', 'a text-only fixture reports no scratchpad')
-      }
-      for (let at = 1; at < entries.length; at += 1) {
-        assert.ok(entries[at]!.start > entries[at - 1]!.end, 'printed entries are disjoint')
-      }
+      // NO entry labels (owner's call, 2026-10-16): a sweep can reach seventy
+      // spans, so the line carries AGGREGATE statistics and points at
+      // acp_status for the list — the model has to call it anyway before
+      // compressing (the table's snapshot line says the seqs go stale).
+      assert.ok(!/\d+\.\.\d+\(/.test(line), 'the sweep line lists no span entries')
+      assert.match(line, /all \d+ spans in ONE call/, 'it names how many spans the batch holds')
       assert.match(line, /\(\d+ messages \/ \d+ summaries to write\)/, 'the sweep states its coverage')
-      assert.ok(
-        entries.length <= RANGE_TABLE_BATCH_LABEL_LIMIT || line.includes('more spans of this sweep'),
-        `a sweep longer than ${String(RANGE_TABLE_BATCH_LABEL_LIMIT)} labels summarises the rest`,
+      assert.match(
+        line,
+        /~\S+ tok total \(\d+ (?:tool|assistant|user|other)(?: · \d+ (?:tool|assistant|user|other))*\)/,
+        'it states the batch totals and row mix',
       )
+      const partition = /\[tool (\d+)% \| reasoning (\d+)% \| text (\d+)%\]/.exec(line)
+      assert.ok(partition !== null, 'the sweep carries the same character partition a row does')
+      assert.equal(Number(partition![1]) + Number(partition![2]) + Number(partition![3]), 100, 'and it sums to 100')
+      assert.equal(partition![2], '0', 'a text-only fixture reports no scratchpad')
+      assert.match(line, /rewrites ~\S+ tok of the prefix \(pays back in ~[\d.∞]+ request\(s\)\)/, 'the rewrite arithmetic survives')
+      assert.ok(line.includes('full list: acp_status scope:"uncompressed", view:"ranges"'), 'and the list has a named source')
     }
   }
 })
@@ -272,11 +266,12 @@ test('batch proposal: live table geometry with nested rows keeps the contract', 
   }
 })
 
-test('sweep: entry labels report each segment composition, not just the row above', () => {
+test('sweep: the aggregate composition is the MASS-WEIGHTED sum of its entries', () => {
   const session = buildTextSession(40)
   appendToolCall(session, 'tool run', 'c1', 1, 1)
-  // A sweep pulls in whatever lowers payback, including the tool span sitting
-  // between the text rows; the labels must say which is which.
+  // A sweep pulls in every later span, including the tool span sitting between
+  // the text rows — the aggregate must reflect that tool mass, not just the base
+  // row's flavour (its own row is pure text).
   appendToolResult(session, longText('toolout', 1).repeat(24), 'c1', 1, 1)
   // Four more text messages keep the tool rows out of the protected tail.
   for (let index = 0; index < 4; index += 1) {
@@ -287,9 +282,11 @@ test('sweep: entry labels report each segment composition, not just the row abov
   const text = rangeTable(session, viewOfPositions(session, [[0, 1], [40, 41]]) as never)
   const batchLine = text.split('\n').find((line) => line.includes('sweep from here'))
   assert.ok(batchLine, 'the text span and the tool span sweep together')
-  const toolShares = [...batchLine.matchAll(/\[tool (\d+)% \| reasoning (\d+)% \| text (\d+)%\]/g)]
-    .map((match) => Number(match[1]))
-  assert.ok(toolShares.length >= 2, `both segments carry a composition (${batchLine})`)
-  assert.ok(toolShares.includes(0), 'the text segment reads tool 0%')
-  assert.ok(toolShares.some((share) => share > 0), 'the tool segment reads its tool share')
+  // The line carries exactly ONE partition (the aggregate), and its tool share
+  // is > 0 because the sweep's mass includes the tool result — even though the
+  // row it is printed under is pure text.
+  const partitions = [...batchLine.matchAll(/\[tool (\d+)% \| reasoning (\d+)% \| text (\d+)%\]/g)]
+  assert.equal(partitions.length, 1, `the sweep prints one aggregate partition (${batchLine})`)
+  assert.ok(Number(partitions[0]![1]) > 0, 'the tool mass of a swept entry shows up in the aggregate')
+  assert.equal(Number(partitions[0]![1]) + Number(partitions[0]![2]) + Number(partitions[0]![3]), 100, 'and it sums to 100')
 })
