@@ -98,7 +98,9 @@ test('B6-2 哲学段与规则段移出 nudge、仍留在系统提示里（移出
   } as never
   const text = buildNudgeText(decision, false, session, wholeSurfaceRangeView(session))
   assert.match(text, /efficiency nudge/i, 'nudge 仍带效率框')
-  assert.ok(text.includes('Context breakdown:'), 'nudge 仍带上下文分解行')
+  // 2026-10-16（owner）：明细行也摘掉——它是「可见表面 + 字符启发式」的第二把尺子，
+  // 与它下面的压力行不是一个口径，也不参与任何决策；面板仍显示（给人看）。
+  assert.equal(text.includes('Context breakdown:'), false, '明细行已从 nudge 摘除')
   assert.equal(text.includes('Compression Philosophy:'), false, '哲学段已从 nudge 摘除')
   assert.equal(text.includes('HOW TO COMPRESS'), false, '压缩规则已从 nudge 摘除')
 })

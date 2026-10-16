@@ -59,9 +59,25 @@ import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompt
  */
 const GUIDANCE_BLOCKS = [COMPRESS_PHILOSOPHY, HOW_TO_COMPRESS_RULES, TIER2_DISTILL_RULES, TIER3_CONDENSE_RULES] as const
 
+/**
+ * The kernel's one-line composition readout ("Context breakdown: 480.3K tool | …"),
+ * stripped out of the nudge as well: it is a SECOND caliber (a text-only estimate
+ * over the visible surface, no fixed overhead — the panel labels it that way) that
+ * does not add up to the pressure line right under it, and its content is already
+ * on every row (tool/reasoning/text share) and in each sweep's aggregate. Two
+ * calibers in one message read as a broken number, and this one never drives a
+ * decision (host comment: display-only). The panel keeps showing it for the
+ * operator.
+ *
+ * UPSTREAM: same labeled host-side workaround as {@link stripNudgeGuidance} — the
+ * clean fix is a kernel option that renders the nudge without the breakdown line.
+ */
+const NUDGE_BREAKDOWN_LINE = /^Context breakdown: .*$/m
+
 export function stripNudgeGuidance(text: string): string {
   let out = text
   for (const block of GUIDANCE_BLOCKS) out = out.split(block).join('')
+  out = out.replace(NUDGE_BREAKDOWN_LINE, '')
   return out.replace(/\n{3,}/g, '\n\n').trim()
 }
 

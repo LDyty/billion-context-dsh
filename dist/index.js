@@ -8604,9 +8604,11 @@ function lastAgeRegionSkipsOf(sessionId) {
 
 // src/nudge.ts
 var GUIDANCE_BLOCKS = [COMPRESS_PHILOSOPHY, HOW_TO_COMPRESS_RULES, TIER2_DISTILL_RULES, TIER3_CONDENSE_RULES];
+var NUDGE_BREAKDOWN_LINE = /^Context breakdown: .*$/m;
 function stripNudgeGuidance(text) {
   let out = text;
   for (const block of GUIDANCE_BLOCKS) out = out.split(block).join("");
+  out = out.replace(NUDGE_BREAKDOWN_LINE, "");
   return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 function resolveTokenCount(agent, coreMessages) {

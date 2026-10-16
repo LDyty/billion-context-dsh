@@ -112,6 +112,10 @@ test('M4/prompts 2: default normal nudge — efficiency note + tip, guidance mov
   assert.ok(!text.includes('Compression Philosophy:'), '哲学段不在 nudge（B6）')
   assert.ok(!text.includes('HOW TO COMPRESS'), '压缩规则段不在 nudge（B6）')
   assert.ok(!text.includes('KEEP VERBATIM'), 'KEEP VERBATIM 不在 nudge（B6）')
+  // 第二把尺子同样摘掉：kernel 的 "Context breakdown: …" 是「可见表面 + 字符启发式」
+  // 的文本估算，和它下面的压力行（provider 口径）不一个口径，也不参与任何决策；
+  // 面板照样显示它（给人看），nudge 里不再放。
+  assert.ok(!text.includes('Context breakdown:'), '明细行不在 nudge（另一把尺子）')
   // No "suggestion, not a requirement"
   assert.ok(!text.includes('suggestion, not a requirement'), 'no "suggestion, not a requirement"')
   // Tip at end (kernel 0.0.101 copy: the batch fold is ONE call, array OR plain-string form)
