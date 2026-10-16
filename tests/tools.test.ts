@@ -186,22 +186,17 @@ test('M3: the summary floor is judged per entry by the size of the folded span',
     exec: fakeExec(session),
   })
 
-  // (a) Small spans may fold with one short honest sentence — junk slivers have
-  // nothing to pad. Each span here is ~300 tokens (under the waiver), and six of
-  // them in one call clear the kernel's own 1250-token compress gate.
+  // (a) A small span may fold with one short honest sentence — junk slivers have
+  // nothing to pad. ONE span, on its own: the kernel's "compressible content too
+  // small" gate is off for calls (the model reads the fold cost and decides), so
+  // a ~300-token sliver no longer needs five siblings to become foldable.
   const small = compressFor(buildFloorFixture())
   const smallResult = await small.compress.execute({
-    content: [
-      { startSeq: 9, endSeq: 11, summary: 'retry logs — nothing kept' },
-      { startSeq: 12, endSeq: 14, summary: 'duplicate probe output — nothing kept' },
-      { startSeq: 15, endSeq: 17, summary: 'empty directory listing — nothing kept' },
-      { startSeq: 18, endSeq: 20, summary: 'no-op status check — nothing kept' },
-      { startSeq: 21, endSeq: 23, summary: 'third retry of the same probe — nothing kept' },
-      { startSeq: 24, endSeq: 26, summary: 'same listing again — nothing kept' },
-    ],
+    content: [{ startSeq: 9, endSeq: 11, summary: 'retry logs — nothing kept' }],
   } as never, small.exec)
   const smallText = discardResultText(smallResult)
-  assert.match(smallText, /Compressed 6 block/, `all six short summaries landed (${smallText.slice(0, 140)})`)
+  assert.match(smallText, /Compressed 1 block/, `the short summary landed (${smallText.slice(0, 140)})`)
+  assert.doesNotMatch(smallText, /too small/, 'and no size gate stood in the way')
 
   // (b) A LARGE span still owes the floor (~1K-token fixture messages).
   const plain = compressFor()
@@ -212,22 +207,16 @@ test('M3: the summary floor is judged per entry by the size of the folded span',
 
   // (c) …and the two rules hold in ONE call: the junk slivers fold with one
   // sentence each while the big span in the same call is refused for being a
-  // stub. (Five slivers, not one: the kernel's own "compressible content too
-  // small" gate is measured over the ranges that survive — refuse the big entry
-  // and only 279 tokens of slivers are left, which the kernel will not fold.)
+  // stub.
   const mixed = compressFor(buildFloorFixture())
   const mixedResult = await mixed.compress.execute({
     content: [
       { startSeq: 9, endSeq: 11, summary: 'retry logs — nothing kept' },
-      { startSeq: 12, endSeq: 14, summary: 'duplicate probe output — nothing kept' },
-      { startSeq: 15, endSeq: 17, summary: 'empty directory listing — nothing kept' },
-      { startSeq: 18, endSeq: 20, summary: 'no-op status check — nothing kept' },
-      { startSeq: 21, endSeq: 23, summary: 'third retry of the same probe — nothing kept' },
       { startSeq: 1, endSeq: 3, summary: 'auth work' },
     ],
   } as never, mixed.exec)
   const mixedText = discardResultText(mixedResult)
-  assert.match(mixedText, /Compressed 5 block/, `the five slivers still folded (${mixedText.slice(0, 160)})`)
+  assert.match(mixedText, /Compressed 1 block/, `the sliver still folded (${mixedText.slice(0, 160)})`)
   assert.match(mixedText, /Summary too short/, 'and the large one was refused in the same call')
 })
 

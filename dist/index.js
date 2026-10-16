@@ -9523,9 +9523,17 @@ async function handleCompress(env, args, exec) {
     ranges: foldable.map(({ startRef, endRef, summary, topic }) => ({ startRef, endRef, summary, topic })),
     messages: coreMessages,
     state: turn.state,
-    // The floor is the host's now (summaryFloorRefusal already refused the
-    // entries that owe one), so the kernel's per-call copy is switched off.
-    config: { ...config, compress: { ...config.compress, minSummaryLength: 0 } }
+    // Two per-CALL kernel knobs are switched off here because this host owns
+    // both decisions, per entry:
+    //  - `minSummaryLength`: `summaryFloorRefusal` already refused the entries
+    //    that owe a real summary, and a small span may be one sentence.
+    //  - `minCompressRange` (owner ruling, 2026-10-16): the model reads the fold
+    //    cost — rewrites and payback — on every row it is offered, so a small
+    //    fold is its call to make, not a blanket threshold's. The kernel's own
+    //    use of the knob is untouched: which ranges are worth OFFERING is still
+    //    filtered in its nudge decision (pendingByTier), and a block-ref
+    //    distillation never tripped this gate anyway.
+    config: { ...config, compress: { ...config.compress, minSummaryLength: 0, minCompressRange: 0 } }
     // Deliberately NOT overriding protectedMessageIds: with the full log the
     // kernel's recent/last-user protection is computed over the same
     // non-block-covered messages as the visible feed, so default behavior is
