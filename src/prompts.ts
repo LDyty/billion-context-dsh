@@ -46,7 +46,7 @@ export interface RangeTablePrompts {
   header: string
   /** 标题。占位符:{count}(表格行数) */
   title: string
-  /** 每行。占位符:{start} {end} {count} {tokens} */
+  /** 每行。占位符:{start} {end} {count} {tokens} {offered} */
   line: string
   /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
   cost: string
@@ -94,7 +94,7 @@ const NUDGE_ALLOWED: { [K in keyof NudgePrompts]: ReadonlySet<string> } = {
 const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string> } = {
   header: new Set(['surface']),
   title: new Set(['count']),
-  line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'media']),
+  line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'media', 'offered']),
   cost: new Set(['reclaimed', 'invalidated', 'breakEven', 'flag']),
   batch: new Set(['entries', 'count', 'reclaimed', 'invalidated', 'breakEven', 'coverage']),
   footer: new Set(),
@@ -209,7 +209,7 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
   rangeTable: {
     header: 'Surface: {surface}',
     title: 'Compressible ranges ({count}, one per age band — oldest first; exact surface seqs — usable as-is):',
-    line: '  - seq {start}..{end} — {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}',
+    line: '  - seq {start}..{end} — {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}{offered}',
     cost: '      fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
     batch: '      sweep from here — all {count} spans in ONE call ({coverage}): {entries} · reclaims ~{reclaimed} · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'

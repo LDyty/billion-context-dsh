@@ -5,6 +5,21 @@
 
 import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { forgetOffers } from '../src/offer-count.ts'
+import { forgetInspectCache } from '../src/inspect.ts'
+
+/**
+ * Reset the engine's per-session side tables for a freshly built fixture.
+ *
+ * Several tests reuse the fixture id (`test-session`), while the offer counter
+ * and the inspector cache are keyed BY session id — without this a second test
+ * that builds a range table inherits the first one's history (the row would print
+ * `· offered 4×`). Production never hits this: session ids are unique.
+ */
+function resetSessionSideTables(id: string): void {
+  forgetOffers(id)
+  forgetInspectCache(id)
+}
 
 /** One message template: long enough to pass acp-kernel's 5000-char threshold. */
 const LONG = 'Authentication uses JWT access tokens with 15 minute expiry and refresh tokens stored in Redis with 30 day TTL, implemented in src/auth/login.ts with sliding-window rate limiting at 10 requests per minute. '.repeat(20)
@@ -109,6 +124,7 @@ export function appendEmptyToolResult(session: Session, callId: string, turn = 1
 
 /** A session with `count` alternating user/assistant text messages inside one open turn. */
 export function buildTextSession(count: number, id: string = 'test-session'): Session {
+  resetSessionSideTables(id)
   const session = Session.create(id)
   appendTurn(session, 1)
   for (let index = 0; index < count; index += 1) {
@@ -120,6 +136,7 @@ export function buildTextSession(count: number, id: string = 'test-session'): Se
 
 /** Short (~87-char, fixed-length) counterpart to buildTextSession: small enough that several messages fit under one decompress page's char budget, so paging/limit assertions are stable (issue #112). Callers must size the session AND compressed range to clear the kernel's compress gates — see the tools.test.ts decompress-limit test. */
 export function buildShortTextSession(count: number): Session {
+  resetSessionSideTables('test-session')
   const session = Session.create('test-session')
   appendTurn(session, 1)
   for (let index = 0; index < count; index += 1) {

@@ -38,6 +38,7 @@ import { mediaPriceViaMeter } from './host-tokens.ts'
 import { sessionEventsOf } from './session-events.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { rememberBreakdown, rememberPressure, rememberRangeTable } from './inspect.ts'
+import { noteOfferedRows } from './offer-count.ts'
 import type { AcpInspectSweep } from './inspect-types.ts'
 import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompts.ts'
 
@@ -211,6 +212,18 @@ export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
  */
 export const RANGE_TABLE_BATCH_LABEL_LIMIT = 8
 
+/**
+ * How many times a row must have been offered before the count is printed.
+ * Appearing twice is normal (the next build happens minutes later); a row that
+ * keeps coming back is the fact worth showing.
+ */
+export const RANGE_TABLE_OFFERED_MIN = 3
+
+/** The row suffix naming how often this start has been offered (`''` below the floor). */
+function offeredLabel(count: number): string {
+  return count >= RANGE_TABLE_OFFERED_MIN ? ` · offered ${String(count)}×` : ''
+}
+
 /** Compact token count for a cost row: one decimal above 10K, whole numbers below. */
 function compactTokens(tokens: number): string {
   return tokens >= 10_000 ? `${(tokens / 1000).toFixed(1)}K` : String(Math.round(tokens))
@@ -303,6 +316,7 @@ export function rangeTable(
   kernelView: KernelRangeView,
   prompts: ResolvedPrompts = DEFAULT_RESOLVED,
   mediaPriceOf?: MediaPriceOf,
+  opts: { recordOffers?: boolean } = {},
 ): string {
   const ranges = buildCompressibleSeqRanges(
     session,
@@ -316,6 +330,12 @@ export function rangeTable(
   // and after its start re-send uncached once, so the model needs that number to
   // weigh a cheap-but-tiny span against an expensive-but-satisfying one.
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
+  // How often each of these starts has been offered before (see src/offer-count.ts).
+  // The inspector's on-demand rebuild passes `recordOffers: false`: the panel
+  // shows the table, it does not count as one of the model's chances to act.
+  const offeredCounts = opts.recordOffers === false
+    ? new Map<number, number>()
+    : noteOfferedRows(String(session.id), shown.map((range) => ({ start: range.start, end: range.end })))
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
   const baseRows = shown.map((range) => {
@@ -370,6 +390,10 @@ export function rangeTable(
         toolPct: range.toolPct,
         textPct: 100 - range.toolPct,
         media: mediaSuffixOf(range),
+        // "This row keeps coming back": how many builds have put a row covering
+        // this start in front of the model. Shown from the third appearance on —
+        // the first repeat is normal, a counter that keeps climbing is not.
+        offered: offeredLabel(offeredCounts.get(range.start) ?? 1),
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),

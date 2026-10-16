@@ -59,6 +59,7 @@ import { allLogMessages, eventsToCoreMessages, isCheckpointNode, overflowMarkerS
 import { shadowedTokensViaMeter } from './host-tokens.ts'
 import { handleInspectRequest } from './inspect.ts'
 import { inspectCacheOf, invalidateInspectTable, rememberBreakdown, rememberPressure } from './inspect.ts'
+import { noteFoldLanded } from './offer-count.ts'
 import { kernelConfigFor } from './config.ts'
 import {
   ACP_SETTINGS_NAMESPACE,
@@ -541,7 +542,7 @@ export class AcpCompactionEngine extends CompactionEngine {
         rangeTable(session, {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs,
-        }, this.prompts)
+        }, this.prompts, undefined, { recordOffers: false })
         rememberPressure(sessionId, pressure, windowLimit, windowSource)
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
@@ -880,6 +881,10 @@ export class AcpCompactionEngine extends CompactionEngine {
         const sessionId = String(session.id)
         invalidateInspectTable(sessionId)
         this.inspectBuilds.delete(sessionId)
+        // The offer counter forgets the builds whose rows this fold replaced: the
+        // content they described is gone, so they must not keep counting toward
+        // whatever survives around them.
+        noteFoldLanded(sessionId, (event.data as { shadowedSeqs?: readonly number[] }).shadowedSeqs ?? [])
       }
       // An assistant message on a session that just overflowed means the retry
       // (or a later request) made progress: reset that agent's overflow budget

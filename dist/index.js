@@ -8150,6 +8150,47 @@ function nodeKindOf(event, isGuarded, isStaleFoldable) {
   return isToolEvent(event) ? "tool" : "text";
 }
 
+// src/offer-count.ts
+var HISTORY_LIMIT = 200;
+var SESSION_LIMIT = 50;
+var histories = /* @__PURE__ */ new Map();
+function putHistory(sessionId, history) {
+  histories.delete(sessionId);
+  histories.set(sessionId, history);
+  while (histories.size > SESSION_LIMIT) {
+    const oldest = histories.keys().next();
+    if (oldest.done === true) break;
+    histories.delete(oldest.value);
+  }
+}
+function noteOfferedRows(sessionId, rows) {
+  const history = histories.get(sessionId) ?? [];
+  const counts = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let previous = 0;
+    for (const build2 of history) {
+      if (build2.some((span) => span.start <= row.start && row.start <= span.end)) previous += 1;
+    }
+    counts.set(row.start, previous + 1);
+  }
+  history.push(rows.map((row) => ({ start: row.start, end: row.end })));
+  if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
+  putHistory(sessionId, history);
+  return counts;
+}
+function noteFoldLanded(sessionId, shadowed) {
+  const history = histories.get(sessionId);
+  if (history === void 0 || shadowed.length === 0) return;
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const seq of shadowed) {
+    if (seq < low) low = seq;
+    if (seq > high) high = seq;
+  }
+  const kept = history.map((build2) => build2.filter((span) => span.end < low || span.start > high)).filter((build2) => build2.length > 0);
+  putHistory(sessionId, kept);
+}
+
 // src/prompts.ts
 var NUDGE_ALLOWED = {
   normal: /* @__PURE__ */ new Set(["pct", "philosophy"]),
@@ -8163,7 +8204,7 @@ var NUDGE_ALLOWED = {
 var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
   title: /* @__PURE__ */ new Set(["count"]),
-  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "media"]),
+  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "media", "offered"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
   footer: /* @__PURE__ */ new Set()
@@ -8242,7 +8283,7 @@ var DEFAULT_PROMPTS = {
   rangeTable: {
     header: "Surface: {surface}",
     title: "Compressible ranges ({count}, one per age band \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
-    line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}",
+    line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}{offered}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
     batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
@@ -8333,6 +8374,10 @@ var RANGE_TABLE_LIMIT = 6;
 var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
 var RANGE_TABLE_BATCH_LABEL_LIMIT = 8;
+var RANGE_TABLE_OFFERED_MIN = 3;
+function offeredLabel(count) {
+  return count >= RANGE_TABLE_OFFERED_MIN ? ` \xB7 offered ${String(count)}\xD7` : "";
+}
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
@@ -8366,7 +8411,7 @@ function selectRangeTableRanges(all, bands = RANGE_TABLE_LIMIT) {
   close();
   return picks;
 }
-function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
+function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, opts = {}) {
   const ranges = buildCompressibleSeqRanges(
     session,
     kernelView,
@@ -8375,6 +8420,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   const shown = selectRangeTableRanges(ranges);
   if (shown.length === 0) return "";
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf);
+  const offeredCounts = opts.recordOffers === false ? /* @__PURE__ */ new Map() : noteOfferedRows(String(session.id), shown.map((range) => ({ start: range.start, end: range.end })));
   const baseRows = shown.map((range) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
@@ -8417,7 +8463,11 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         tokens: range.tokens,
         toolPct: range.toolPct,
         textPct: 100 - range.toolPct,
-        media: mediaSuffixOf(range)
+        media: mediaSuffixOf(range),
+        // "This row keeps coming back": how many builds have put a row covering
+        // this start in front of the model. Shown from the third appearance on —
+        // the first repeat is normal, a counter that keeps climbing is not.
+        offered: offeredLabel(offeredCounts.get(range.start) ?? 1)
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
@@ -10222,7 +10272,7 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
         rangeTable(session, {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs
-        }, this.prompts);
+        }, this.prompts, void 0, { recordOffers: false });
         rememberPressure(sessionId, pressure, windowLimit, windowSource);
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
@@ -10424,6 +10474,7 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
         const sessionId = String(session.id);
         invalidateInspectTable(sessionId);
         this.inspectBuilds.delete(sessionId);
+        noteFoldLanded(sessionId, event.data.shadowedSeqs ?? []);
       }
       if (event.type === "assistant/message") {
         const overflowAgent = this.overflowSessions.get(session);

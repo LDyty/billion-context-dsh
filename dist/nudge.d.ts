@@ -89,6 +89,12 @@ export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
  */
 export declare const RANGE_TABLE_BATCH_LABEL_LIMIT = 8;
 /**
+ * How many times a row must have been offered before the count is printed.
+ * Appearing twice is normal (the next build happens minutes later); a row that
+ * keeps coming back is the fact worth showing.
+ */
+export declare const RANGE_TABLE_OFFERED_MIN = 3;
+/**
  * Pick the rows the nudge range table prints: **one per age band**.
  *
  * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
@@ -128,7 +134,9 @@ export declare function selectRangeTableRanges<T extends {
  * `UPSTREAM:` workaround for kernel ref-map drift; that drift is fixed upstream
  * (acp-kernel #207) and the workaround is gone (rule 11).
  */
-export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf): string;
+export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, opts?: {
+    recordOffers?: boolean;
+}): string;
 /**
  * Compute a SURFACE-ONLY context breakdown for display, aligned with
  * `acp_status` (kernel `buildStatusReport`/`renderOverview`).

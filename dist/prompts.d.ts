@@ -42,7 +42,7 @@ export interface RangeTablePrompts {
     header: string;
     /** 标题。占位符:{count}(表格行数) */
     title: string;
-    /** 每行。占位符:{start} {end} {count} {tokens} */
+    /** 每行。占位符:{start} {end} {count} {tokens} {offered} */
     line: string;
     /** 每行的折叠成本。占位符:{reclaimed} {invalidated} {breakEven} {flag} */
     cost: string;
