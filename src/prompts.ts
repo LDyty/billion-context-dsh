@@ -220,7 +220,7 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
   },
   rangeTable: {
     header: 'Surface: {surface}',
-    context: 'Context: {used} / {window} tokens used ({pct}%) — cache hits are cheap per token, yet the bill grows with size and long context dilutes attention and reasoning quality; a fold re-sends this prefix uncached once, then it is shorter',
+    context: 'Context: {used} / {window} tokens used ({pct}%) — cheap per cached token, costly at scale, and long context dilutes attention; a fold re-sends the prefix uncached once, and the wider the sweep the faster that pays back',
     title: 'Compressible ranges ({count} — up to 3 of each age region\'s largest intervals, oldest first; exact surface seqs — usable as-is):',
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: '[age region {region}{age} · skipped {skipped}×]',
