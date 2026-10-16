@@ -611,6 +611,10 @@ test('M5: buildCompressibleSeqRanges carries the character-based composition sha
   assert.equal(ranges[0]!.textPct, 100, 'so the rest is text')
   assert.ok(ranges[1]!.toolPct > 0, 'the tool pair contributes tool mass')
   assert.equal(ranges[1]!.toolRowPct, Math.round((2 / 3) * 100), 'the kernel-caliber row share rides beside it (67)')
+  // The row-count caliber is a MIX, not a lone figure: a reader must be able to
+  // tell "two tool rows + one assistant row" from "three tool rows".
+  assert.equal(ranges[0]!.rowMix, '1 assistant · 1 user', 'the text range names its row mix')
+  assert.equal(ranges[1]!.rowMix, '2 tool · 1 assistant', 'the tool range names its row mix')
   assert.equal(
     ranges[1]!.toolPct + ranges[1]!.reasoningPct + ranges[1]!.textPct,
     100,

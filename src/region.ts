@@ -798,6 +798,12 @@ export interface SeqCompressibleRange {
    * count figure is printed with the message count for exactly that reason.
    */
   readonly toolRowPct: number
+  /**
+   * The row-count caliber as a MIX: `3 tool · 2 assistant · 1 user` (empty
+   * classes omitted; `other` covers injected rows and checkpoints). Printed
+   * right after the message count — the one place a per-row figure belongs.
+   */
+  readonly rowMix: string
   /** Image blocks reachable inside the span (directly or through a tool result). */
   readonly images: number
   /** File blocks reachable inside the span. */
@@ -1501,10 +1507,23 @@ function priceSurfaceSlice(
   from: number,
   to: number,
   mediaPriceOf?: MediaPriceOf,
-): { count: number; tokens: number; toolPct: number; reasoningPct: number; textPct: number; toolRowPct: number; images: number; files: number } {
+): {
+  count: number
+  tokens: number
+  toolPct: number
+  reasoningPct: number
+  textPct: number
+  toolRowPct: number
+  rowMix: string
+  images: number
+  files: number
+} {
   let count = 0
   let tokens = 0
   let toolCount = 0
+  let assistantOnlyCount = 0
+  let userCount = 0
+  let otherCount = 0
   let chars = 0
   let reasoningChars = 0
   let toolChars = 0
@@ -1518,6 +1537,9 @@ function priceSurfaceSlice(
     const attachments = attachmentsOfEvent(event)
     tokens += surfaceNodeTokens(event, seq, attachments, mediaPriceOf)
     if (isToolEvent(event)) toolCount += 1
+    else if (event.type === 'assistant/message') assistantOnlyCount += 1
+    else if (event.type === 'user/message' && (event.data as { source?: { kind?: string } })?.source?.kind === 'user') userCount += 1
+    else otherCount += 1
     const mass = characterMassOf(event)
     chars += mass.total
     reasoningChars += mass.reasoning
@@ -1538,9 +1560,35 @@ function priceSurfaceSlice(
     reasoningPct,
     textPct: Math.max(0, 100 - toolPct - reasoningPct),
     toolRowPct: count > 0 ? Math.round((toolCount / count) * 100) : 0,
+    rowMix: rowMixLabelOf({ tool: toolCount, assistant: assistantOnlyCount, user: userCount, other: otherCount }),
     images,
     files,
   }
+}
+
+/**
+ * The row-count caliber as a MIX, not a lone figure: `3 tool · 2 assistant ·
+ * 1 user`. The kernel hands us its own single `toolPct` (share of messages that
+ * are tool messages), and printing only that made one row of the table answer
+ * "what kind of rows are these?" with a single number — the reader could not
+ * tell two tool rows + one assistant row from three tool rows. Classes are
+ * mutually exclusive and follow the kernel's own tool definition:
+ *
+ *  - `tool`: a `tool/result` row, or an assistant row carrying a tool-call;
+ *  - `assistant`: an assistant row WITHOUT a tool-call (prose/reasoning only);
+ *  - `user`: a real user turn (`source.kind === 'user'`);
+ *  - `other`: everything else — injected rows (AGENTS.md, nudges, goal,
+ *    time-context), checkpoints, system rows.
+ *
+ * Empty classes are omitted, so a prose-only span reads `7 assistant`.
+ */
+function rowMixLabelOf(counts: { tool: number; assistant: number; user: number; other: number }): string {
+  const parts: string[] = []
+  if (counts.tool > 0) parts.push(`${counts.tool} tool`)
+  if (counts.assistant > 0) parts.push(`${counts.assistant} assistant`)
+  if (counts.user > 0) parts.push(`${counts.user} user`)
+  if (counts.other > 0) parts.push(`${counts.other} other`)
+  return parts.length > 0 ? parts.join(' · ') : '0'
 }
 
 /**
@@ -1732,6 +1780,7 @@ export function buildCompressibleSeqRanges(
           reasoningPct: priced.reasoningPct,
           textPct: priced.textPct,
           toolRowPct: priced.toolRowPct,
+          rowMix: priced.rowMix,
           images: priced.images,
           files: priced.files,
         })

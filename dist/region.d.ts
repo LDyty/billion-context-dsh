@@ -255,6 +255,12 @@ export interface SeqCompressibleRange {
      * count figure is printed with the message count for exactly that reason.
      */
     readonly toolRowPct: number;
+    /**
+     * The row-count caliber as a MIX: `3 tool · 2 assistant · 1 user` (empty
+     * classes omitted; `other` covers injected rows and checkpoints). Printed
+     * right after the message count — the one place a per-row figure belongs.
+     */
+    readonly rowMix: string;
     /** Image blocks reachable inside the span (directly or through a tool result). */
     readonly images: number;
     /** File blocks reachable inside the span. */

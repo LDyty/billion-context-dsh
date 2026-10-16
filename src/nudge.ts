@@ -391,6 +391,7 @@ export function rangeTable(
         reasoningPct: range.reasoningPct,
         textPct: range.textPct,
         toolRowPct: range.toolRowPct,
+        rowMix: range.rowMix,
         media: mediaSuffixOf(range),
         // "This row keeps coming back": how many builds have put a row covering
         // this start in front of the model. Shown from the third appearance on —
@@ -422,6 +423,7 @@ export function rangeTable(
       reasoningPct: row.range.reasoningPct,
       textPct: row.range.textPct,
       toolRowPct: row.range.toolRowPct,
+      rowMix: row.range.rowMix,
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,

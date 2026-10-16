@@ -41,6 +41,8 @@ export interface AcpInspectRow {
     readonly textPct: number;
     /** Share of the row's MESSAGES that are tool messages (the kernel's own caliber), printed next to the message count. */
     readonly toolRowPct: number;
+    /** The row-count caliber as a mix (`3 tool · 2 assistant · 1 user`; empty classes omitted). */
+    readonly rowMix: string;
     /** Tokens the next request re-sends uncached once because of this fold. */
     readonly invalidated: number;
     /** `invalidated ÷ tokens` — requests needed to pay the rewrite back. */
