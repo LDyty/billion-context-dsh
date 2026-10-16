@@ -583,11 +583,18 @@ test('M5: stripOrphanedSurfaceToolMessages removes orphan results and orphan cal
   assert.doesNotThrow(() => buildCompressibleSeqRanges(session, wholeSurfaceRangeView(session), { preserveRecent: 0 }), 'orphan cleanup leaves the range table computable')
 })
 
-test('M5: buildCompressibleSeqRanges carries kernel-parity toolPct and oldest-first order', () => {
+test('M5: buildCompressibleSeqRanges carries the character-based composition shares and oldest-first order', () => {
   // Mixed session: a text turn, then the last user message (always protected,
   // breaking the segment), then an assistant reply + tool pair. The range
-  // table must report the tool share per range (kernel `toolPct` parity) and
-  // order ranges oldest-first (stable across turns, kernel `oldest first`).
+  // table must report the composition per range and order ranges oldest-first
+  // (stable across turns, kernel `oldest first`).
+  //
+  // Caliber note (2026-10-16): the shares are CHARACTER mass in one caliber —
+  // tool machinery (tool results + tool-call arguments), reasoning scratchpad,
+  // and the rest — so the three partition exactly 100%. The kernel-parity
+  // ROW-count `toolPct` was dropped because it could not be read together with
+  // a character-based reasoning share (a reader had to know two rulers to read
+  // one row).
   const session = Session.create('toolpct')
   appendTurn(session, 1)
   appendUser(session, longText('q0', 0))                  // seq 1 — text segment
@@ -599,8 +606,15 @@ test('M5: buildCompressibleSeqRanges carries kernel-parity toolPct and oldest-fi
 
   const ranges = buildCompressibleSeqRanges(session, wholeSurfaceRangeView(session), { preserveRecent: 0 })
   assert.equal(ranges.length, 2, 'protected user message splits the surface into two ranges')
-  assert.equal(ranges[0]!.toolPct, 0, 'text-only range reports toolPct 0')
-  assert.equal(ranges[1]!.toolPct, Math.round((2 / 3) * 100), '2-tool-of-3-msg range reports the tool share (67)')
+  assert.equal(ranges[0]!.toolPct, 0, 'text-only range reports tool 0%')
+  assert.equal(ranges[0]!.reasoningPct, 0, 'and reasoning 0%')
+  assert.equal(ranges[0]!.textPct, 100, 'so the rest is text')
+  assert.ok(ranges[1]!.toolPct > 0, 'the tool pair contributes tool mass')
+  assert.equal(
+    ranges[1]!.toolPct + ranges[1]!.reasoningPct + ranges[1]!.textPct,
+    100,
+    'the three shares always partition 100%',
+  )
   // Oldest-first: start seqs are non-decreasing (stable ordering for the model).
   for (let index = 1; index < ranges.length; index += 1) {
     assert.ok(ranges[index]!.start >= ranges[index - 1]!.start, 'ranges ordered oldest-first')

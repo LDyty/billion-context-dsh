@@ -766,23 +766,30 @@ export interface SeqCompressibleRange {
   readonly end: number
   readonly count: number
   readonly tokens: number
-  /** Share of messages that are tool messages (tool-call or tool-result), 0-100 — kernel `toolPct` parity. */
+  /**
+   * Share of the span's CHARACTERS held by tool machinery (tool-result content
+   * plus tool-call arguments), 0-100. Character-based since 2026-10-16 so the
+   * three composition shares partition exactly 100% — the kernel-parity
+   * ROW-count `toolPct` it replaced could not be read together with a
+   * character-based reasoning share.
+   */
   readonly toolPct: number
   /**
-   * Share of the span's CHARACTERS that live in assistant reasoning
-   * (`thinking`/`reasoning` blocks), 0-100. A second caliber on purpose: the
-   * kernel-parity `toolPct` above counts ROWS, while this one answers the
-   * question the row cannot — "how much of this span is scratchpad?". Live
-   * audit of the long-running daily session: assistant rows held 61.6% of the
-   * visible characters, of which reasoning was 61.3% (37.8% of the whole
-   * surface) and the visible PROSE only 3.1%; over the whole session, reasoning
-   * was 65.1% of all assistant content and prose 4.4%. Reasoning is the densest
-   * reclaimable mass in a reasoning-model session, and because a fold's
-   * invalidation cost depends only on where the span STARTS (never on what it
-   * holds), a reasoning-dense span has a far better payback than a tool span
-   * that begins at the same place.
+   * Share of the span's CHARACTERS held by assistant reasoning
+   * (`{type:'reasoning', text}` in the log, `{type:'thinking', thinking}` on the
+   * wire), 0-100. Live audit of the long-running daily session: assistant rows
+   * held 61.6% of the visible characters, of which reasoning was 61.3% (37.8% of
+   * the whole surface) and the visible PROSE only 3.1%; over the whole session
+   * reasoning was 65.1% of all assistant content against 4.4% prose. Reasoning
+   * is the densest reclaimable mass in a reasoning-model session, and because a
+   * fold's invalidation cost depends only on where the span STARTS (never on
+   * what it holds), a reasoning-dense span pays back far faster than a tool span
+   * beginning at the same place. Reported, never instructed: no copy tells the
+   * model to prefer it.
    */
   readonly reasoningPct: number
+  /** Share of the span's characters that are neither tool machinery nor reasoning (user turns, prose, injected rows), 0-100. Derived so `toolPct + reasoningPct + textPct === 100`. */
+  readonly textPct: number
   /** Image blocks reachable inside the span (directly or through a tool result). */
   readonly images: number
   /** File blocks reachable inside the span. */
@@ -1486,12 +1493,13 @@ function priceSurfaceSlice(
   from: number,
   to: number,
   mediaPriceOf?: MediaPriceOf,
-): { count: number; tokens: number; toolPct: number; reasoningPct: number; images: number; files: number } {
+): { count: number; tokens: number; toolPct: number; reasoningPct: number; textPct: number; images: number; files: number } {
   let count = 0
   let tokens = 0
   let toolCount = 0
   let chars = 0
   let reasoningChars = 0
+  let toolChars = 0
   let images = 0
   let files = 0
   for (let index = from; index <= to; index += 1) {
@@ -1505,15 +1513,22 @@ function priceSurfaceSlice(
     const mass = characterMassOf(event)
     chars += mass.total
     reasoningChars += mass.reasoning
+    toolChars += mass.tool
     images += attachments.images
     files += attachments.files
     count += 1
   }
+  // ONE caliber: all three shares are character mass, so they partition 100%.
+  // `text` is derived (never independently rounded) so the printed row always
+  // adds up to exactly 100.
+  const toolPct = chars > 0 ? Math.round((toolChars / chars) * 100) : 0
+  const reasoningPct = chars > 0 ? Math.round((reasoningChars / chars) * 100) : 0
   return {
     count,
     tokens,
-    toolPct: count > 0 ? Math.round((toolCount / count) * 100) : 0,
-    reasoningPct: chars > 0 ? Math.round((reasoningChars / chars) * 100) : 0,
+    toolPct,
+    reasoningPct,
+    textPct: Math.max(0, 100 - toolPct - reasoningPct),
     images,
     files,
   }
@@ -1521,43 +1536,58 @@ function priceSurfaceSlice(
 
 /**
  * Character mass of one surface row: everything the prompt carries, split into
- * reasoning and the rest. Text, reasoning and tool-call argument strings are
- * counted at any nesting depth (tool results nest their payload one level
- * down); attachments and structural blocks contribute nothing, matching
- * `extractText`'s contract.
+ * three buckets that ALWAYS sum to the row's total — tool machinery, reasoning
+ * scratchpad, and the rest:
  *
- * Reasoning arrives in TWO spellings: the durable DSH event shape
- * `{ type: 'reasoning', text }` (what the session log actually stores — audited
- * 2026-10-16: 31 reasoning blocks, keys `type+text`) and the provider-side
- * Anthropic shape `{ type: 'thinking', thinking }` seen in request bodies. The
- * first cut of this helper only knew the second one, so every live row reported
- * `reasoning 0%`; both are recognized here so a projection change cannot
- * silently zero the column again.
+ *  - `tool`: tool-result content (nested one level down inside a `tool/result`
+ *    row) plus tool-call `arguments` strings. Both are machinery, not
+ *    conversation: a 40K-char `write` payload is a tool cost, not "text".
+ *  - `reasoning`: `{type:'reasoning', text}` (the DURABLE shape the session log
+ *    stores) and the provider-side `{type:'thinking', thinking}` spelling seen
+ *    in request bodies. The first cut of this helper only knew the second one,
+ *    so every live row reported `reasoning 0%`; both are recognized so a
+ *    projection change cannot silently zero the bucket again.
+ *  - `text`: everything else — user turns, assistant prose, injected rows,
+ *    summaries.
+ *
+ * Counting is by CHARACTERS, in one caliber with the row's `~tokens` column, so
+ * the three shares partition 100% (the earlier `tool X%` figure was kernel
+ * parity measured in ROWS, which is why the two figures could not be read
+ * together).
+ *
+ * Attachments and structural blocks contribute nothing, matching
+ * `extractText`'s contract.
  */
-function characterMassOf(event: SessionEvent): { total: number; reasoning: number } {
+function characterMassOf(event: SessionEvent): { total: number; reasoning: number; tool: number } {
   const blocks = (event.data as { content?: unknown; message?: { content?: unknown } }).content
     ?? (event.data as { message?: { content?: unknown } }).message?.content
   let total = 0
   let reasoning = 0
-  const walk = (value: unknown): void => {
+  let tool = 0
+  const walk = (value: unknown, inTool: boolean): void => {
     if (!Array.isArray(value)) return
     for (const block of value) {
       if (block === null || typeof block !== 'object') continue
       const entry = block as { type?: unknown; text?: unknown; thinking?: unknown; arguments?: unknown; content?: unknown }
+      const nested = inTool || entry.type === 'tool-result'
       if (typeof entry.text === 'string') {
         total += entry.text.length
         if (entry.type === 'reasoning') reasoning += entry.text.length
+        else if (nested) tool += entry.text.length
       }
-      if (typeof entry.arguments === 'string') total += entry.arguments.length
+      if (typeof entry.arguments === 'string') {
+        total += entry.arguments.length
+        if (entry.type === 'tool-call') tool += entry.arguments.length
+      }
       if (typeof entry.thinking === 'string') {
         total += entry.thinking.length
         reasoning += entry.thinking.length
       }
-      walk(entry.content)
+      walk(entry.content, nested)
     }
   }
-  walk(blocks)
-  return { total, reasoning }
+  walk(blocks, event.type === 'tool/result')
+  return { total, reasoning, tool }
 }
 
 function compressibleSegmentsOf(
@@ -1691,6 +1721,7 @@ export function buildCompressibleSeqRanges(
           tokens: priced.tokens,
           toolPct: priced.toolPct,
           reasoningPct: priced.reasoningPct,
+          textPct: priced.textPct,
           images: priced.images,
           files: priced.files,
         })

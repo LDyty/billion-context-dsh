@@ -223,23 +223,30 @@ export interface SeqCompressibleRange {
     readonly end: number;
     readonly count: number;
     readonly tokens: number;
-    /** Share of messages that are tool messages (tool-call or tool-result), 0-100 — kernel `toolPct` parity. */
+    /**
+     * Share of the span's CHARACTERS held by tool machinery (tool-result content
+     * plus tool-call arguments), 0-100. Character-based since 2026-10-16 so the
+     * three composition shares partition exactly 100% — the kernel-parity
+     * ROW-count `toolPct` it replaced could not be read together with a
+     * character-based reasoning share.
+     */
     readonly toolPct: number;
     /**
-     * Share of the span's CHARACTERS that live in assistant reasoning
-     * (`thinking`/`reasoning` blocks), 0-100. A second caliber on purpose: the
-     * kernel-parity `toolPct` above counts ROWS, while this one answers the
-     * question the row cannot — "how much of this span is scratchpad?". Live
-     * audit of the long-running daily session: assistant rows held 61.6% of the
-     * visible characters, of which reasoning was 61.3% (37.8% of the whole
-     * surface) and the visible PROSE only 3.1%; over the whole session, reasoning
-     * was 65.1% of all assistant content and prose 4.4%. Reasoning is the densest
-     * reclaimable mass in a reasoning-model session, and because a fold's
-     * invalidation cost depends only on where the span STARTS (never on what it
-     * holds), a reasoning-dense span has a far better payback than a tool span
-     * that begins at the same place.
+     * Share of the span's CHARACTERS held by assistant reasoning
+     * (`{type:'reasoning', text}` in the log, `{type:'thinking', thinking}` on the
+     * wire), 0-100. Live audit of the long-running daily session: assistant rows
+     * held 61.6% of the visible characters, of which reasoning was 61.3% (37.8% of
+     * the whole surface) and the visible PROSE only 3.1%; over the whole session
+     * reasoning was 65.1% of all assistant content against 4.4% prose. Reasoning
+     * is the densest reclaimable mass in a reasoning-model session, and because a
+     * fold's invalidation cost depends only on where the span STARTS (never on
+     * what it holds), a reasoning-dense span pays back far faster than a tool span
+     * beginning at the same place. Reported, never instructed: no copy tells the
+     * model to prefer it.
      */
     readonly reasoningPct: number;
+    /** Share of the span's characters that are neither tool machinery nor reasoning (user turns, prose, injected rows), 0-100. Derived so `toolPct + reasoningPct + textPct === 100`. */
+    readonly textPct: number;
     /** Image blocks reachable inside the span (directly or through a tool result). */
     readonly images: number;
     /** File blocks reachable inside the span. */

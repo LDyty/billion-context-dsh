@@ -7781,6 +7781,7 @@ function priceSurfaceSlice(session, nodes, from, to, mediaPriceOf) {
   let toolCount = 0;
   let chars = 0;
   let reasoningChars = 0;
+  let toolChars = 0;
   let images = 0;
   let files = 0;
   for (let index = from; index <= to; index += 1) {
@@ -7794,15 +7795,19 @@ function priceSurfaceSlice(session, nodes, from, to, mediaPriceOf) {
     const mass = characterMassOf(event);
     chars += mass.total;
     reasoningChars += mass.reasoning;
+    toolChars += mass.tool;
     images += attachments.images;
     files += attachments.files;
     count += 1;
   }
+  const toolPct = chars > 0 ? Math.round(toolChars / chars * 100) : 0;
+  const reasoningPct = chars > 0 ? Math.round(reasoningChars / chars * 100) : 0;
   return {
     count,
     tokens,
-    toolPct: count > 0 ? Math.round(toolCount / count * 100) : 0,
-    reasoningPct: chars > 0 ? Math.round(reasoningChars / chars * 100) : 0,
+    toolPct,
+    reasoningPct,
+    textPct: Math.max(0, 100 - toolPct - reasoningPct),
     images,
     files
   };
@@ -7811,25 +7816,31 @@ function characterMassOf(event) {
   const blocks = event.data.content ?? event.data.message?.content;
   let total = 0;
   let reasoning = 0;
-  const walk = (value) => {
+  let tool = 0;
+  const walk = (value, inTool) => {
     if (!Array.isArray(value)) return;
     for (const block of value) {
       if (block === null || typeof block !== "object") continue;
       const entry = block;
+      const nested = inTool || entry.type === "tool-result";
       if (typeof entry.text === "string") {
         total += entry.text.length;
         if (entry.type === "reasoning") reasoning += entry.text.length;
+        else if (nested) tool += entry.text.length;
       }
-      if (typeof entry.arguments === "string") total += entry.arguments.length;
+      if (typeof entry.arguments === "string") {
+        total += entry.arguments.length;
+        if (entry.type === "tool-call") tool += entry.arguments.length;
+      }
       if (typeof entry.thinking === "string") {
         total += entry.thinking.length;
         reasoning += entry.thinking.length;
       }
-      walk(entry.content);
+      walk(entry.content, nested);
     }
   };
-  walk(blocks);
-  return { total, reasoning };
+  walk(blocks, event.type === "tool/result");
+  return { total, reasoning, tool };
 }
 function compressibleSegmentsOf(session, fromIndex, toIndex, protectedSeqs, staleFoldableSeqs = /* @__PURE__ */ new Set()) {
   const nodes = session.surface.nodes;
@@ -7893,6 +7904,7 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
           tokens: priced.tokens,
           toolPct: priced.toolPct,
           reasoningPct: priced.reasoningPct,
+          textPct: priced.textPct,
           images: priced.images,
           files: priced.files
         });
@@ -8570,7 +8582,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         tokens: range.tokens,
         toolPct: range.toolPct,
         reasoningPct: range.reasoningPct,
-        textPct: 100 - range.toolPct,
+        textPct: range.textPct,
         media: mediaSuffixOf(range),
         // "This row keeps coming back": how many builds have put a row covering
         // this start in front of the model. Shown from the third appearance on —
@@ -8598,6 +8610,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       tokens: row.range.tokens,
       toolPct: row.range.toolPct,
       reasoningPct: row.range.reasoningPct,
+      textPct: row.range.textPct,
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
