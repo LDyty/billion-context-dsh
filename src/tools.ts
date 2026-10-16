@@ -179,7 +179,7 @@ export const compressParameters = {
         },
         summary: {
           type: 'string' as const,
-          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
+          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed; junk-only spans are cheapest folded as their own call). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
         },
         topic: { type: 'string' as const, description: 'Short label (3-5 words) for this range.' },
         // B3 (2026-09-08 governance plan): the handler and region.ts have

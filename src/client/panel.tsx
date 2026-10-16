@@ -18,6 +18,12 @@ import { useHoverTip } from './hoverTip.tsx'
 /** Where the host route lives (src/index.ts registers the same path). */
 const INSPECT_ROUTE = '/api/billion-context/inspect'
 
+/**
+ * The ⚠ threshold, mirroring RANGE_TABLE_COST_WARN_BREAK_EVEN (src/nudge.ts).
+ * Duplicated on purpose: the client bundle must not import the engine module.
+ */
+const WARN_BREAK_EVEN = 6
+
 const KIND_LABEL: Record<AcpInspectNode['kind'], string> = {
   tool: 'tool 工具输出',
   text: 'text 对话',
@@ -227,12 +233,23 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
             : `sweep（清扫）：${String(sweep.entries)} 个区间 → ${String(sweep.messages)} 条消息折叠成 ${String(sweep.entries)} 份摘要 · `
               + `回收 ~${compact(sweep.reclaims)} token（词元）· 行构成 ${mixLabel(sweep.rowCounts)} · `
               + `字符三档 tool（工具）${String(sweep.toolPct)}% · reasoning（推理）${String(sweep.reasoningPct)}% · text（正文）${String(sweep.textPct)}% · `
+              + `作废 ~${compact(sweep.invalidates)} token（词元）（这一批折叠会让下一发请求重发这么多 prefix（前缀））· `
+              + `回本 ${sweep.breakEven.toFixed(1)}×（把这批的作废赚回来约需要的请求数${sweep.breakEven >= WARN_BREAK_EVEN ? '，≥6 次标黄 ⚠' : ''}）· `
               + `从本行的起点只向新的方向、不封顶；和 nudge（提醒文本）里那一行是同一组数字。`,
         }, sweep === undefined
           ? '—'
           : h('div', null,
             `${String(sweep.entries)} 个区间 → ~${compact(sweep.reclaims)}`,
-            h('span', { className: 'acp-sub' }, `回本 ${sweep.breakEven.toFixed(1)}×`))),
+            // The sweep's own payback, explained where it is read: the row's 代价
+            // cell prices folding THAT span alone, this one prices the whole
+            // recommended batch — the two numbers answer different questions and
+            // the sweep is usually the cheaper of them.
+            h('span', {
+              className: sweep.breakEven >= WARN_BREAK_EVEN
+                ? 'acp-sub acp-warn'
+                : 'acp-sub',
+              title: `回本 ${sweep.breakEven.toFixed(1)}×：这一批整体折叠的 breakEven（回本）——把这 ${String(sweep.entries)} 个区间折掉会造成 ~${compact(sweep.invalidates)} token（词元）的 prefix（前缀）重写，约 ${sweep.breakEven.toFixed(1)} 次请求之后省下的内容才盖过它。${sweep.breakEven >= WARN_BREAK_EVEN ? '≥6 次标黄 ⚠。' : ''}和「代价」那一格的区别：那边只算这一行自己的区间，这边算整批。`,
+            }, `${sweep.breakEven >= WARN_BREAK_EVEN ? '⚠ ' : ''}回本 ${sweep.breakEven.toFixed(1)}×`))),
         h('td', null, h(CopyButton, {
           text: compressCall(
             sweep?.spans ?? [{ start: row.start, end: row.end }],
