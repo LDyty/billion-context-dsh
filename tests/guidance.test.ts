@@ -156,12 +156,20 @@ test('guidance: a compress over the row is cut around it — the current copy is
   appendTurn(session, 1)                                          // seq 0
   appendUser(session, longText('q0', 0))                          // seq 1
   appendAssistant(session, longText('a0', 1), 1, 1)               // seq 2
-  appendGuidanceRow(session, 'first copy — superseded')           // seq 3
+  const staleSeq = appendGuidanceRow(session, 'first copy — superseded') // seq 3
   appendUser(session, longText('q1', 3))                          // seq 4
   appendAssistant(session, longText('a1', 4), 1, 4)               // seq 5
   const guidanceSeq = appendGuidanceRow(session, acpGuidanceText(PROMPTS)) // seq 6 — CURRENT
   appendUser(session, longText('q2', 7))                          // seq 7
   appendAssistant(session, longText('a2', 8), 1, 8)               // seq 8
+
+  // The range table offers the SUPERSEDED copy as foldable content (nothing
+  // re-injects it) but never the current one — a barrier that would otherwise
+  // accumulate one span-splitting row per wording edit.
+  const ranges = buildCompressibleSeqRanges(session, wholeSurfaceRangeView(session), { preserveRecent: 0 })
+  const covers = (target: number): boolean => ranges.some((range) => range.start <= target && target <= range.end)
+  assert.ok(covers(staleSeq), `the superseded copy (seq ${staleSeq}) is offered for folding`)
+  assert.ok(!covers(guidanceSeq), `the current copy (seq ${guidanceSeq}) never is`)
 
   const compress = makeTools(env).find((definition) => definition.name === 'compress')
   assert.ok(compress, 'compress tool registered')
@@ -181,6 +189,7 @@ test('guidance: a compress over the row is cut around it — the current copy is
     .filter((event) => event.type === 'compaction/summary' || event.type === 'compaction/prune')
     .flatMap((event) => (event.data as { shadowedSeqs?: number[] }).shadowedSeqs ?? [])
   assert.ok(!shadowed.includes(guidanceSeq), 'the guidance row is never shadowed')
+  assert.ok(shadowed.includes(staleSeq), 'while the superseded copy IS reclaimed by the same call')
 })
 
 test("guidance: engine-level — 'message' (default) injects the row and registers NO system section", async () => {

@@ -39,7 +39,7 @@ import {
 import { hostMediaStructuralPrice, hostPriceEvent } from './host-tokens.ts'
 import { eventAtOf, sessionEventsOf } from './session-events.ts'
 import { decodeAcpBlockLedger, encodeAcpBlockLedger, type AcpBlockLedgerPayload } from './block-ledger.ts'
-import { newestAcpGuidanceSeqOf } from './guidance.ts'
+import { isAcpGuidanceRow, newestAcpGuidanceSeqOf } from './guidance.ts'
 
 /**
  * A surface sequence number as the INSTALLED `dsh-session` sees it. Since the
@@ -1233,6 +1233,7 @@ export function staleFoldableHostRowSeqs(session: Session): Set<number> {
   const stale = new Set<number>()
   const newestInstructions = newestInstructionSeqsOf(session)
   const newestCatalog = newestSkillCatalogSeqOf(session)
+  const newestGuidance = newestAcpGuidanceSeqOf(session)
   for (const seq of session.surface.nodes) {
     const event = eventAtOf(session, seq)
     if (event === undefined || event.type !== 'user/message') continue
@@ -1243,6 +1244,16 @@ export function staleFoldableHostRowSeqs(session: Session): Set<number> {
     }
     if (isSkillCatalogRow(event)) {
       if (newestCatalog !== null && seq !== newestCatalog) stale.add(seq)
+      continue
+    }
+    // Superseded ACP guidance copies (src/guidance.ts): the newest copy carries
+    // the live policy and must stay a barrier + hard-reject, but an OLD copy is
+    // history nothing re-injects — and leaving it a barrier forever is how a
+    // session that edited its guidance three times accumulates three
+    // span-splitting rows nobody can reclaim. Same shape as the host state
+    // echoes above: exactly the newest survives as a barrier.
+    if (isAcpGuidanceRow(event)) {
+      if (newestGuidance !== null && seq !== newestGuidance) stale.add(seq)
       continue
     }
     const kind = (event.data as { source?: { kind?: string } } | undefined)?.source?.kind

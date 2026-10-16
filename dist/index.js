@@ -7696,6 +7696,7 @@ function staleFoldableHostRowSeqs(session) {
   const stale = /* @__PURE__ */ new Set();
   const newestInstructions = newestInstructionSeqsOf(session);
   const newestCatalog = newestSkillCatalogSeqOf(session);
+  const newestGuidance = newestAcpGuidanceSeqOf(session);
   for (const seq of session.surface.nodes) {
     const event = eventAtOf(session, seq);
     if (event === void 0 || event.type !== "user/message") continue;
@@ -7705,6 +7706,10 @@ function staleFoldableHostRowSeqs(session) {
     }
     if (isSkillCatalogRow(event)) {
       if (newestCatalog !== null && seq !== newestCatalog) stale.add(seq);
+      continue;
+    }
+    if (isAcpGuidanceRow(event)) {
+      if (newestGuidance !== null && seq !== newestGuidance) stale.add(seq);
       continue;
     }
     const kind = event.data?.source?.kind;

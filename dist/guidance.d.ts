@@ -30,12 +30,20 @@
  * nothing folded). Ahead of the batch it is the conversation's first node, so
  * ordinary spans never cross it.
  *
- * The row is deliberately an `instruction` row (unknown plugin name, see
- * `classifySurfaceEvent`): never offered in the range table, never folded —
+ * The CURRENT row is deliberately an `instruction` row (unknown plugin name,
+ * see `classifySurfaceEvent`): never offered in the range table, never folded —
  * guidance that can be compressed away is guidance the model has lost, and
  * nothing re-injects it on absence. The newest copy also joins the hard-reject
- * guard set (`protectedSurfaceSeqs`), the same treatment the current AGENTS.md
- * row and the skill catalog get.
+ * guard set (`protectedSurfaceSeqs`, `guardedSurfaceSeqsOf`), the same
+ * treatment the current AGENTS.md row and the skill catalog get.
+ *
+ * SUPERSEDED copies are the opposite: once a newer copy exists, an older one is
+ * history that nothing re-injects, so it joins `staleFoldableHostRowSeqs` — the
+ * newest copy keeps the barrier, every older copy becomes ordinary foldable
+ * content (the same rule the host state echoes `goal` / `time-context` /
+ * `team-message` follow). Without it, a session that edited its guidance three
+ * times would carry three permanent span-splitting barrier rows that no caller
+ * can ever reclaim.
  * @module billion-context-dsh/guidance
  */
 import { type UserMessage } from '@deepseek-ai/dsh-llm';
