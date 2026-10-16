@@ -8487,7 +8487,7 @@ function meterMediaPriceResolver(agent, session) {
 var RANGE_TABLE_LIMIT = 6;
 var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
-var RANGE_TABLE_BATCH_LABEL_LIMIT = 8;
+var RANGE_TABLE_BATCH_LABEL_LIMIT = 3;
 var RANGE_TABLE_OFFERED_MIN = 3;
 function offeredLabel(count) {
   return count >= RANGE_TABLE_OFFERED_MIN ? ` \xB7 offered ${String(count)}\xD7` : "";
@@ -8547,7 +8547,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     const proposal = sweepFromBaseRange(ranges, costs, row.at);
     if (proposal === void 0) continue;
     const labels = proposal.entries.map(batchEntryLabel);
-    const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT ? labels.join(", ") : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(", ")} \u2026 +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep`;
+    const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT ? labels.join(", ") : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(", ")} \u2026 +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep (full list: acp_status scope:"uncompressed", view:"ranges")`;
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0);
     sweeps.push({
       rowStart: row.range.start,

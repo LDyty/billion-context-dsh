@@ -82,12 +82,16 @@ export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
  * How many sweep entries a proposal LINE lists before it summarises the rest as
  * `… +N more spans`. Display only — the sweep itself has no entry cap (see
- * {@link bestSweepProposal}); a live row swept 42 spans, and printing all 42
- * labels would push the nudge body past 4KB on its own, re-sent with every
- * request. The full list is one `acp_status` call away, and the line still
- * carries the sweep's true totals and its message/summary counts.
+ * {@link sweepFromBaseRange}). Owner's call (2026-10-16): THREE, because the
+ * labels carry the full composition (mix + tokens + character partition) and a
+ * live conversation printed six sweeps of up to 73 spans — eight labels each was
+ * already ~6KB of nudge text for one build. Three entries show the SHAPE of the
+ * batch; the tail names where the rest lives (`acp_status`), which the model has
+ * to call anyway before compressing (the table's snapshot line says the seqs go
+ * stale). The line still carries the sweep's true totals and message/summary
+ * counts.
  */
-export declare const RANGE_TABLE_BATCH_LABEL_LIMIT = 8;
+export declare const RANGE_TABLE_BATCH_LABEL_LIMIT = 3;
 /**
  * How many times a row must have been offered before the count is printed.
  * Appearing twice is normal (the next build happens minutes later); a row that

@@ -205,12 +205,16 @@ export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
 /**
  * How many sweep entries a proposal LINE lists before it summarises the rest as
  * `… +N more spans`. Display only — the sweep itself has no entry cap (see
- * {@link bestSweepProposal}); a live row swept 42 spans, and printing all 42
- * labels would push the nudge body past 4KB on its own, re-sent with every
- * request. The full list is one `acp_status` call away, and the line still
- * carries the sweep's true totals and its message/summary counts.
+ * {@link sweepFromBaseRange}). Owner's call (2026-10-16): THREE, because the
+ * labels carry the full composition (mix + tokens + character partition) and a
+ * live conversation printed six sweeps of up to 73 spans — eight labels each was
+ * already ~6KB of nudge text for one build. Three entries show the SHAPE of the
+ * batch; the tail names where the rest lives (`acp_status`), which the model has
+ * to call anyway before compressing (the table's snapshot line says the seqs go
+ * stale). The line still carries the sweep's true totals and message/summary
+ * counts.
  */
-export const RANGE_TABLE_BATCH_LABEL_LIMIT = 8
+export const RANGE_TABLE_BATCH_LABEL_LIMIT = 3
 
 /**
  * How many times a row must have been offered before the count is printed.
@@ -368,7 +372,12 @@ export function rangeTable(
     const labels = proposal.entries.map(batchEntryLabel)
     const entries = labels.length <= RANGE_TABLE_BATCH_LABEL_LIMIT
       ? labels.join(', ')
-      : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(', ')} … +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep`
+      // The tail names where the rest of the list lives: entry labels are long,
+      // and a sweep can reach seventy spans — printing them all (or even eight)
+      // dominated the nudge. Three entries show the SHAPE of the batch; the full
+      // list is one acp_status call away, and the model has to fetch that call's
+      // fresh seqs before compressing anyway (the table's snapshot line says so).
+      : `${labels.slice(0, RANGE_TABLE_BATCH_LABEL_LIMIT).join(', ')} … +${labels.length - RANGE_TABLE_BATCH_LABEL_LIMIT} more spans of this sweep (full list: acp_status scope:"uncompressed", view:"ranges")`
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0)
     sweeps.push({
       rowStart: row.range.start,
