@@ -17,7 +17,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { AcpStateStore } from './state.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { resolveTokenCount } from './nudge.ts'
-import { lastAgeRegionSkipsOf, noteAgeRegionChoice } from './age-region-skips.ts'
+import { lastAgeRegionSkipsOf, noteAgeRegionChoice, offerableSpansOf } from './age-region-skips.ts'
 import { inspectCacheOf } from './inspect.ts'
 import { routeFor, type AcpWindow } from './window.ts'
 import {
@@ -41,8 +41,6 @@ import {
   sliceDecompressPage,
   surfaceSummary,
   buildCompressibleSeqRanges,
-  foldCostsOfRanges,
-  sweepFromBaseRange,
   DEFAULT_DECOMPRESS_PAGE,
   DEFAULT_DECOMPRESS_PAGE_CHARS,
   type KernelRangeView,
@@ -181,7 +179,7 @@ export const compressParameters = {
         endSeq: {
           oneOf: [
             { type: 'integer' as const, description: 'Inclusive last surface seq of the range.' },
-            { type: 'string' as const, description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3). Or the literal "sweep": fold the whole forward sweep that starts at startSeq in ONE call, every span sharing your summary (see the table\'s sweep lines).' },
+            { type: 'string' as const, description: 'Seq as text; a trailing #callId fragment is ignored. Also accepts a drilldown mN ref or a kernel block id ("b3") — for a multi-block condense name the LAST block id (tier 3). Or "sweep" (live: from startSeq to the newest compressible span at call time) / "table-sweep" (exactly the spans the last printed table offered): one call, every span sharing your summary.' },
           ],
         },
         summary: {
@@ -468,12 +466,30 @@ function unwrapEnvelope<T extends object>(args: T): T {
  * An empty/whitespace-only summary counts as missing (the kernel would
  * reject it anyway — fail early with the field name instead).
  */
-/** The sweep shorthand's sentinel: `endSeq: "sweep"` (see expandSweepEntries). */
+/**
+ * The two sweep sentinels (owner ruling, 2026-10-17). Both fold a forward run in
+ * ONE call with ONE shared summary; they differ in WHICH run:
+ *
+ *  - `"sweep"` — live: from the start to the newest compressible span AT CALL
+ *    TIME, so it also picks up whatever landed since the table was built.
+ *  - `"table-sweep"` — exactly the spans the LAST table build printed, which is
+ *    the geometry the sweep line's cost numbers describe.
+ */
 const SWEEP_END = 'sweep'
+const SWEEP_TABLE_END = 'table-sweep'
 
-/** True for the sentinel `endSeq` value, in any casing/whitespace. */
+/** True for either sweep sentinel, in any casing/whitespace. */
 function isSweepEnd(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().toLowerCase() === SWEEP_END
+  return sweepKindOf(value) !== undefined
+}
+
+/** Which sentinel an `endSeq` is, or undefined when it is an ordinary seq. */
+function sweepKindOf(value: unknown): 'live' | 'table' | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim().toLowerCase()
+  if (text === SWEEP_END) return 'live'
+  if (text === SWEEP_TABLE_END) return 'table'
+  return undefined
 }
 
 /** A startSeq the sweep shorthand accepts: an integer, or the digits as text. */
@@ -499,6 +515,25 @@ function isPlainSeq(value: unknown): boolean {
  * @param content - the parsed content entries.
  * @returns the expanded entries plus one note per expansion (or per refusal).
  */
+/**
+ * The forward run a sweep means, as pure geometry: the offerable span the start
+ * lands in (or the first one at/after it) plus every later span that does not
+ * overlap the last one taken — the same rule `sweepFromBaseRange` applies to the
+ * table's own list, so "sweep" means the same thing wherever it is expanded.
+ */
+function forwardRunFrom(spans: readonly { start: number; end: number }[], start: number): { start: number; end: number }[] | undefined {
+  let base = spans.findIndex((span) => span.start <= start && start <= span.end)
+  if (base < 0) base = spans.findIndex((span) => span.start >= start)
+  if (base < 0) return undefined
+  const run = [spans[base]!]
+  for (let at = base + 1; at < spans.length; at += 1) {
+    const candidate = spans[at]!
+    if (candidate.start <= run[run.length - 1]!.end) continue
+    run.push(candidate)
+  }
+  return run
+}
+
 function expandSweepEntries(
   session: Session,
   turn: ReturnType<CompressionCore['processTurn']>,
@@ -506,37 +541,55 @@ function expandSweepEntries(
   content: CompressContent,
 ): { content: CompressContent; notes: string[] } {
   if (!content.some((item) => isSweepEnd(item.endSeq))) return { content, notes: [] }
+  // The two sentinels differ only in which geometry they expand against:
+  // "sweep" rebuilds the offerable list from THIS turn's kernel view (so it also
+  // catches what landed since), "table-sweep" reads the LAST build's list — the
+  // one the printed sweep line and its cost numbers came from.
   const view: KernelRangeView = { ranges: turn.nudge?.compressibleRanges ?? [], refs: turn.state.messageRefs }
-  const offerable = buildCompressibleSeqRanges(session, view, mediaPriceOf === undefined ? {} : { mediaPriceOf })
-  const costs = foldCostsOfRanges(session, offerable, mediaPriceOf)
+  let liveSpans: ReturnType<typeof buildCompressibleSeqRanges> | undefined
   const notes: string[] = []
   const out: CompressContent = []
   for (const item of content) {
-    if (!isSweepEnd(item.endSeq)) {
+    const kind = sweepKindOf(item.endSeq)
+    if (kind === undefined) {
       out.push(item)
       continue
     }
     const start = Number(String(item.startSeq).trim())
-    // The base row is the offerable span the start lands in; falling back to the
-    // first span that starts at/after it keeps a slightly stale seq usable.
-    let base = offerable.findIndex((span) => span.start <= start && start <= span.end)
-    if (base < 0) base = offerable.findIndex((span) => span.start >= start)
-    // `sweepFromBaseRange` needs the row it starts from and at least one span
-    // after it; both are the table's own rule, so the expansion matches the line
-    // the model read (the sweep it advertises, not a second opinion).
-    const sweep = base < 0 ? undefined : sweepFromBaseRange(offerable, costs, base)
-    if (sweep === undefined) {
+    const label = kind === 'table' ? SWEEP_TABLE_END : SWEEP_END
+    let spans: readonly { start: number; end: number }[]
+    if (kind === 'table') {
+      const remembered = offerableSpansOf(String(session.id))
+      if (remembered.length === 0) {
+        notes.push(
+          `  seqs ${String(item.startSeq)}..${label} — no range table on record for this session yet: `
+          + 'read a nudge table (or acp_status) first, or use endSeq:"sweep" for the live run.',
+        )
+        continue
+      }
+      spans = remembered
+    } else {
+      liveSpans ??= buildCompressibleSeqRanges(session, view, mediaPriceOf === undefined ? {} : { mediaPriceOf })
+      spans = liveSpans
+    }
+    const run = forwardRunFrom(spans, start)
+    // A "sweep" of one span would only repeat the row it is printed under, so the
+    // shorthand needs at least one newer span — same rule as the table's line.
+    if (run === undefined || run.length < 2) {
       notes.push(
-        `  seqs ${String(item.startSeq)}..sweep — nothing to sweep from there: no offerable span starts at or after it `
-        + '(the seq is already compressed, or the table has moved on). Run acp_status for current seqs, or fold a single range explicitly.',
+        `  seqs ${String(item.startSeq)}..${label} — nothing to sweep from there: `
+        + `no offerable span starts at or after it ${kind === 'table' ? 'in the table this session last built' : 'right now'} `
+        + '(the seq is already compressed, or the surface moved on). Run acp_status for current seqs, or fold a single range explicitly.',
       )
       continue
     }
+    const first = run[0]!
+    const last = run[run.length - 1]!
     notes.push(
-      `  seqs ${String(sweep.entries[0]!.start)}..sweep expanded to ${String(sweep.entries.length)} ranges `
-      + `(${String(sweep.entries[0]!.start)}..${String(sweep.entries[sweep.entries.length - 1]!.end)}), one shared summary each`,
+      `  seqs ${String(item.startSeq)}..${label} expanded to ${String(run.length)} ranges `
+      + `(${String(first.start)}..${String(last.end)}${kind === 'table' ? ', the spans the last table printed' : ', live run to the newest compressible span'}), one shared summary each`,
     )
-    for (const entry of sweep.entries) {
+    for (const entry of run) {
       out.push({ ...item, startSeq: entry.start, endSeq: entry.end })
     }
   }

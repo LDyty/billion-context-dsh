@@ -83,6 +83,14 @@ export declare function noteAgeRegions(sessionId: string, ageRegions: readonly S
  */
 export declare function noteOfferableSpans(sessionId: string, spans: readonly SeqSpan[]): void;
 /**
+ * The offerable spans of the LAST build, in table order (empty before any build).
+ *
+ * This is the geometry the printed sweep lines and their cost numbers describe:
+ * `endSeq: "table-sweep"` expands against THIS list, so the call folds exactly
+ * what the table advertised instead of whatever exists at call time.
+ */
+export declare function offerableSpansOf(sessionId: string): readonly SeqSpan[];
+/**
  * One model CHOICE: every age region whose span does not contain the fold's start
  * is counted as passed over; when the call folded a CONTIGUOUS RUN of more than
  * one span (a sweep), the age regions those other spans reach into get that count
