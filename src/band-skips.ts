@@ -21,10 +21,21 @@
  *
  * So a climbing number reads "the model keeps choosing a start somewhere else",
  * and the band with the smallest number is the one folds keep starting in.
- * In-memory and session-scoped: a restart starts over.
+ *
+ * PERSISTENCE (sidecar, 2026-10-16): the counters live in
+ * `<DSH_HOME>/dsh-acp-band-skips.json` — one small file, not the session log —
+ * so a restart no longer wipes a day's worth of choices ("skipped 40×" survives
+ * the operator opening and closing dsh all day). Only the per-band counters are
+ * stored; the regions are re-recorded by the next build anyway. A missing or
+ * unreadable file degrades to zeros, never throws, and the file is pruned to the
+ * most recently updated sessions so it cannot grow without bound.
  *
  * @module billion-context-dsh/band-skips
  */
+
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 /** One band's region on the surface: its first offerable span's start .. its last span's end. */
 export interface BandRegion {
@@ -34,6 +45,98 @@ export interface BandRegion {
 
 /** How many sessions are tracked at once (the engine has no disposal hook on this line). */
 const SESSION_LIMIT = 50
+
+/** Sidecar file name inside the DSH home, and how many sessions it keeps. */
+const SIDECAR_FILE = 'dsh-acp-band-skips.json'
+const SIDECAR_VERSION = 1
+const SIDECAR_SESSIONS = 50
+
+interface SidecarSession {
+  skips: number[]
+  updatedAt: number
+}
+
+interface Sidecar {
+  version: number
+  sessions: Record<string, SidecarSession>
+}
+
+/**
+ * Where the sidecar lives: `DSH_HOME` when the launcher set it (it always does
+ * in this setup), else `<home>/.dsh` — the same directory the harness keeps its
+ * sessions in. `undefined` when neither can be resolved (a stripped environment
+ * degrades to in-memory counting).
+ */
+export function bandSkipsPath(): string | undefined {
+  try {
+    const env = typeof process === 'undefined' ? undefined : process.env
+    const home = env?.DSH_HOME !== undefined && env.DSH_HOME.length > 0
+      ? env.DSH_HOME
+      : path.join(os.homedir(), '.dsh')
+    return home.length > 0 ? path.join(home, SIDECAR_FILE) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Loaded sidecars, keyed by absolute file path (a test can point DSH_HOME elsewhere). */
+const sidecars = new Map<string, Sidecar>()
+
+function sidecarPath(): string | undefined {
+  return bandSkipsPath()
+}
+
+/** Read (once per path) the sidecar; an unreadable or malformed file degrades to empty. */
+function sidecar(): Sidecar | undefined {
+  const file = sidecarPath()
+  if (file === undefined) return undefined
+  const cached = sidecars.get(file)
+  if (cached !== undefined) return cached
+  let parsed: Sidecar = { version: SIDECAR_VERSION, sessions: {} }
+  try {
+    const raw = fs.readFileSync(file, 'utf8')
+    const value = JSON.parse(raw) as { version?: unknown; sessions?: unknown }
+    if (value.version === SIDECAR_VERSION && typeof value.sessions === 'object' && value.sessions !== null) {
+      const sessions: Record<string, SidecarSession> = {}
+      for (const [id, entry] of Object.entries(value.sessions as Record<string, unknown>)) {
+        const skips = (entry as { skips?: unknown })?.skips
+        if (!Array.isArray(skips)) continue
+        const cleaned = skips
+          .map((count) => (typeof count === 'number' && Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0))
+        sessions[id] = { skips: cleaned, updatedAt: Number((entry as { updatedAt?: unknown })?.updatedAt) || 0 }
+      }
+      parsed = { version: SIDECAR_VERSION, sessions }
+    }
+  } catch {
+    // Missing file, no permission, truncated JSON: count in memory instead.
+  }
+  sidecars.set(file, parsed)
+  return parsed
+}
+
+/** Write the sidecar back (tmp + rename), pruned to the newest {@link SIDECAR_SESSIONS}. */
+function persistSidecar(): void {
+  const file = sidecarPath()
+  const store = file === undefined ? undefined : sidecars.get(file)
+  if (file === undefined || store === undefined) return
+  try {
+    const entries = Object.entries(store.sessions)
+      .sort((left, right) => right[1].updatedAt - left[1].updatedAt)
+      .slice(0, SIDECAR_SESSIONS)
+    store.sessions = Object.fromEntries(entries)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(store), 'utf8')
+    fs.renameSync(tmp, file)
+  } catch {
+    // A sidecar that cannot be written is not worth failing a compress over.
+  }
+}
+
+/** The persisted counters for one session, or undefined when the sidecar has none. */
+function persistedSkips(sessionId: string): number[] | undefined {
+  return sidecar()?.sessions[sessionId]?.skips
+}
 
 /** The regions the LAST build printed, per session — how a later choice is attributed. */
 const regions = new Map<string, readonly BandRegion[]>()
@@ -62,8 +165,14 @@ function touch<T>(map: Map<string, T>, sessionId: string, value: T): void {
  */
 export function noteBandRegions(sessionId: string, bands: readonly BandRegion[]): void {
   touch(regions, sessionId, bands.map((band) => ({ start: band.start, end: band.end })))
-  if (!skips.has(sessionId)) touch(skips, sessionId, bands.map(() => 0))
-  else touch(skips, sessionId, skips.get(sessionId)!)
+  if (skips.has(sessionId)) {
+    touch(skips, sessionId, skips.get(sessionId)!)
+    return
+  }
+  // First sight of this session in this process: seed from the sidecar (a
+  // restart must not wipe the day's choices), padded/trimmed to this build's
+  // band count.
+  touch(skips, sessionId, bands.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0))
 }
 
 /**
@@ -82,6 +191,11 @@ export function noteBandChoice(sessionId: string, chosenSeq: number): void {
     return (counters[index] ?? 0) + (inside ? 0 : 1)
   })
   touch(skips, sessionId, next)
+  const store = sidecar()
+  if (store !== undefined) {
+    store.sessions[sessionId] = { skips: next, updatedAt: Date.now() }
+    persistSidecar()
+  }
 }
 
 /** The counters of the last build's bands, oldest first (empty before any build). */
@@ -93,6 +207,11 @@ export function lastBandSkipsOf(sessionId: string): readonly number[] {
 export function forgetBandSkips(sessionId: string): void {
   regions.delete(sessionId)
   skips.delete(sessionId)
+  const store = sidecar()
+  if (store !== undefined && store.sessions[sessionId] !== undefined) {
+    delete store.sessions[sessionId]
+    persistSidecar()
+  }
 }
 
 /** The remembered band count for one session (tests and diagnostics). */

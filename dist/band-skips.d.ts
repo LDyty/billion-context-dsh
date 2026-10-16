@@ -21,7 +21,14 @@
  *
  * So a climbing number reads "the model keeps choosing a start somewhere else",
  * and the band with the smallest number is the one folds keep starting in.
- * In-memory and session-scoped: a restart starts over.
+ *
+ * PERSISTENCE (sidecar, 2026-10-16): the counters live in
+ * `<DSH_HOME>/dsh-acp-band-skips.json` — one small file, not the session log —
+ * so a restart no longer wipes a day's worth of choices ("skipped 40×" survives
+ * the operator opening and closing dsh all day). Only the per-band counters are
+ * stored; the regions are re-recorded by the next build anyway. A missing or
+ * unreadable file degrades to zeros, never throws, and the file is pruned to the
+ * most recently updated sessions so it cannot grow without bound.
  *
  * @module billion-context-dsh/band-skips
  */
@@ -30,6 +37,13 @@ export interface BandRegion {
     readonly start: number;
     readonly end: number;
 }
+/**
+ * Where the sidecar lives: `DSH_HOME` when the launcher set it (it always does
+ * in this setup), else `<home>/.dsh` — the same directory the harness keeps its
+ * sessions in. `undefined` when neither can be resolved (a stripped environment
+ * degrades to in-memory counting).
+ */
+export declare function bandSkipsPath(): string | undefined;
 /**
  * Record the regions of the build that is about to be shown to the model. Pure
  * bookkeeping: a build is not a choice, so nothing increments here.

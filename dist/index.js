@@ -6992,14 +6992,14 @@ var TOOLS_ALLOWED = {
   acpStatus: /* @__PURE__ */ new Set()
 };
 var SYSTEM_ALLOWED = /* @__PURE__ */ new Set(["philosophy", "howToCompressRules", "tier2DistillRules", "tier3CondenseRules"]);
-function validateTemplate(template, allowed, path) {
+function validateTemplate(template, allowed, path2) {
   const re = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   let match;
   while ((match = re.exec(template)) !== null) {
     const name = match[1];
     if (!allowed.has(name)) {
       throw new Error(
-        `${path} contains unknown placeholder {${name}} \u2014 allowed: ${[...allowed].join(", ") || "(none)"}`
+        `${path2} contains unknown placeholder {${name}} \u2014 allowed: ${[...allowed].join(", ") || "(none)"}`
       );
     }
   }
@@ -7016,12 +7016,12 @@ function renderTemplate(template, vars) {
     return String(value);
   });
 }
-function mergeGroup(defaults, override, allowed, path) {
+function mergeGroup(defaults, override, allowed, path2) {
   if (override == null) return defaults;
   const out = {};
   for (const key of Object.keys(defaults)) {
     const value = override[key];
-    out[key] = value === null || value === void 0 ? defaults[key] : validateTemplate(value, allowed[key], `${path}.${String(key)}`);
+    out[key] = value === null || value === void 0 ? defaults[key] : validateTemplate(value, allowed[key], `${path2}.${String(key)}`);
   }
   return out;
 }
@@ -8441,7 +8441,67 @@ function nodeKindOf(event, isGuarded, isStaleFoldable) {
 }
 
 // src/band-skips.ts
+import fs from "fs";
+import os from "os";
+import path from "path";
 var SESSION_LIMIT = 50;
+var SIDECAR_FILE = "dsh-acp-band-skips.json";
+var SIDECAR_VERSION = 1;
+var SIDECAR_SESSIONS = 50;
+function bandSkipsPath() {
+  try {
+    const env = typeof process === "undefined" ? void 0 : process.env;
+    const home = env?.DSH_HOME !== void 0 && env.DSH_HOME.length > 0 ? env.DSH_HOME : path.join(os.homedir(), ".dsh");
+    return home.length > 0 ? path.join(home, SIDECAR_FILE) : void 0;
+  } catch {
+    return void 0;
+  }
+}
+var sidecars = /* @__PURE__ */ new Map();
+function sidecarPath() {
+  return bandSkipsPath();
+}
+function sidecar() {
+  const file = sidecarPath();
+  if (file === void 0) return void 0;
+  const cached = sidecars.get(file);
+  if (cached !== void 0) return cached;
+  let parsed = { version: SIDECAR_VERSION, sessions: {} };
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    const value = JSON.parse(raw);
+    if (value.version === SIDECAR_VERSION && typeof value.sessions === "object" && value.sessions !== null) {
+      const sessions = {};
+      for (const [id, entry] of Object.entries(value.sessions)) {
+        const skips2 = entry?.skips;
+        if (!Array.isArray(skips2)) continue;
+        const cleaned = skips2.map((count) => typeof count === "number" && Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0);
+        sessions[id] = { skips: cleaned, updatedAt: Number(entry?.updatedAt) || 0 };
+      }
+      parsed = { version: SIDECAR_VERSION, sessions };
+    }
+  } catch {
+  }
+  sidecars.set(file, parsed);
+  return parsed;
+}
+function persistSidecar() {
+  const file = sidecarPath();
+  const store = file === void 0 ? void 0 : sidecars.get(file);
+  if (file === void 0 || store === void 0) return;
+  try {
+    const entries = Object.entries(store.sessions).sort((left, right) => right[1].updatedAt - left[1].updatedAt).slice(0, SIDECAR_SESSIONS);
+    store.sessions = Object.fromEntries(entries);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(store), "utf8");
+    fs.renameSync(tmp, file);
+  } catch {
+  }
+}
+function persistedSkips(sessionId) {
+  return sidecar()?.sessions[sessionId]?.skips;
+}
 var regions = /* @__PURE__ */ new Map();
 var skips = /* @__PURE__ */ new Map();
 function touch(map, sessionId, value) {
@@ -8456,8 +8516,11 @@ function touch(map, sessionId, value) {
 }
 function noteBandRegions(sessionId, bands) {
   touch(regions, sessionId, bands.map((band) => ({ start: band.start, end: band.end })));
-  if (!skips.has(sessionId)) touch(skips, sessionId, bands.map(() => 0));
-  else touch(skips, sessionId, skips.get(sessionId));
+  if (skips.has(sessionId)) {
+    touch(skips, sessionId, skips.get(sessionId));
+    return;
+  }
+  touch(skips, sessionId, bands.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0));
 }
 function noteBandChoice(sessionId, chosenSeq) {
   const bands = regions.get(sessionId);
@@ -8468,6 +8531,11 @@ function noteBandChoice(sessionId, chosenSeq) {
     return (counters[index] ?? 0) + (inside ? 0 : 1);
   });
   touch(skips, sessionId, next);
+  const store = sidecar();
+  if (store !== void 0) {
+    store.sessions[sessionId] = { skips: next, updatedAt: Date.now() };
+    persistSidecar();
+  }
 }
 function lastBandSkipsOf(sessionId) {
   return skips.get(sessionId) ?? [];
@@ -9119,11 +9187,11 @@ function unwrapEnvelope(args) {
 function validateContentItems(content) {
   const violations = [];
   content.forEach((item, index) => {
-    const path = `content[${index}]`;
-    if (item.startSeq === void 0) violations.push(`missing required property "${path}.startSeq"`);
-    if (item.endSeq === void 0) violations.push(`missing required property "${path}.endSeq"`);
+    const path2 = `content[${index}]`;
+    if (item.startSeq === void 0) violations.push(`missing required property "${path2}.startSeq"`);
+    if (item.endSeq === void 0) violations.push(`missing required property "${path2}.endSeq"`);
     if (typeof item.summary !== "string" || item.summary.trim().length === 0) {
-      violations.push(`missing required property "${path}.summary"`);
+      violations.push(`missing required property "${path2}.summary"`);
     }
   });
   if (violations.length > 0) throw new ToolArgsError(violations);

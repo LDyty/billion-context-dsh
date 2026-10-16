@@ -182,8 +182,8 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
           // included — the label keeps it from reading as another multiplier.
           h('span', {
             className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
-            title: '未报价次数：模型每次选折叠起点，起点没落在本年龄区里就 +1。爬得越高说明模型一直从别的区开始折；最小的那个数就是它反复选中的区。',
-          }, `未报价 ${String(row.skipped)}×`)),
+            title: '被跳过次数：模型每次选折叠起点，起点没落在本年龄区里就 +1。爬得越高说明模型一直从别的区开始折；最小的那个数就是它反复选中的区。',
+          }, `被跳过 ${String(row.skipped)}×`)),
         h('td', {
           className: 'acp-sweep',
           // Same figures the nudge's sweep line carries: the panel is a view of
