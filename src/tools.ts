@@ -963,8 +963,11 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     // ONE model choice: this call committed to a fold START, and every age band
     // that start does not fall into is counted as passed over (src/band-skips.ts).
     // A sweep is deliberately ONE choice — the earliest seq it folds is the point
-    // the model committed to, not each of its entries.
-    if (ranges.length > 0) noteBandChoice(String(session.id), Math.min(...ranges.map((range) => range.startSeq)))
+    // the model committed to, not each of its entries — and the spans it folds
+    // past the start take the count back from every band they reached into.
+    if (ranges.length > 0) {
+      noteBandChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })))
+    }
   }
 
   // Match freshly created kernel blocks to the requested ranges by their
@@ -1393,7 +1396,7 @@ async function handleStatus(env: ToolEnvironment, rawArgs: StatusArgs, exec: Too
     if (skippedBands.length > 0) {
       lines.push(
         '',
-        `Bands your folds keep passing over (nudge column \`skipped N×\`; every choice of a fold start outside the band counts once): `
+        `Bands your folds keep passing over (nudge column \`skipped N×\`; every choice of a fold start outside the band counts once, and a sweep gives that count back to every band it folded through): `
         + skippedBands.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}×`).join(', '),
       )
     }

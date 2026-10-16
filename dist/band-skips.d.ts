@@ -18,6 +18,12 @@
  *    +1; the band it lands in does not.
  *  - a start that lands in NO band (older than the first band's region, newer
  *    than the last) counts for every band.
+ *  - SWEEP RETRACTION (owner rule, 2026-10-16): when one call folds MORE than
+ *    one span, every band those OTHER spans reach into gets −1 — the call did
+ *    not pass that band over, it folded through it. Every such band was +1'd a
+ *    line earlier, so the sweep leaves its count where it was (floored at 0).
+ *    A single-span call never retracts: it cannot cover a band it did not start
+ *    in.
  *
  * So a climbing number reads "the model keeps choosing a start somewhere else",
  * and the band with the smallest number is the one folds keep starting in.
@@ -53,13 +59,16 @@ export declare function bandSkipsPath(): string | undefined;
  */
 export declare function noteBandRegions(sessionId: string, bands: readonly BandRegion[]): void;
 /**
- * One model CHOICE: every band whose region does not contain `chosenSeq` is
- * counted as passed over. The band it lands in is left alone.
+ * One model CHOICE: every band whose region does not contain the fold's start is
+ * counted as passed over; when the call folded more than one span, the bands
+ * those other spans reach into get that count taken back.
  *
  * @param sessionId - the session the fold belongs to.
- * @param chosenSeq - the earliest seq this compress call folds (a sweep is one choice).
+ * @param folded - every seq span this compress call folds, in call order. The
+ *   START of the choice is the earliest `start` among them (a sweep is ONE
+ *   choice); the rest are what a sweep retracts with.
  */
-export declare function noteBandChoice(sessionId: string, chosenSeq: number): void;
+export declare function noteBandChoice(sessionId: string, folded: readonly BandRegion[]): void;
 /** The counters of the last build's bands, oldest first (empty before any build). */
 export declare function lastBandSkipsOf(sessionId: string): readonly number[];
 /** Drop one session's regions and counters. */

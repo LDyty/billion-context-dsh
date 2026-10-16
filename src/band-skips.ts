@@ -18,6 +18,12 @@
  *    +1; the band it lands in does not.
  *  - a start that lands in NO band (older than the first band's region, newer
  *    than the last) counts for every band.
+ *  - SWEEP RETRACTION (owner rule, 2026-10-16): when one call folds MORE than
+ *    one span, every band those OTHER spans reach into gets −1 — the call did
+ *    not pass that band over, it folded through it. Every such band was +1'd a
+ *    line earlier, so the sweep leaves its count where it was (floored at 0).
+ *    A single-span call never retracts: it cannot cover a band it did not start
+ *    in.
  *
  * So a climbing number reads "the model keeps choosing a start somewhere else",
  * and the band with the smallest number is the one folds keep starting in.
@@ -41,6 +47,11 @@ import path from 'node:path'
 export interface BandRegion {
   readonly start: number
   readonly end: number
+}
+
+/** Does a folded span reach into this band's region? (Regions overlap; one span can cross several.) */
+function reaches(band: BandRegion, span: BandRegion): boolean {
+  return span.start <= band.end && span.end >= band.start
 }
 
 /** How many sessions are tracked at once (the engine has no disposal hook on this line). */
@@ -176,19 +187,31 @@ export function noteBandRegions(sessionId: string, bands: readonly BandRegion[])
 }
 
 /**
- * One model CHOICE: every band whose region does not contain `chosenSeq` is
- * counted as passed over. The band it lands in is left alone.
+ * One model CHOICE: every band whose region does not contain the fold's start is
+ * counted as passed over; when the call folded more than one span, the bands
+ * those other spans reach into get that count taken back.
  *
  * @param sessionId - the session the fold belongs to.
- * @param chosenSeq - the earliest seq this compress call folds (a sweep is one choice).
+ * @param folded - every seq span this compress call folds, in call order. The
+ *   START of the choice is the earliest `start` among them (a sweep is ONE
+ *   choice); the rest are what a sweep retracts with.
  */
-export function noteBandChoice(sessionId: string, chosenSeq: number): void {
+export function noteBandChoice(sessionId: string, folded: readonly BandRegion[]): void {
   const bands = regions.get(sessionId)
   if (bands === undefined || bands.length === 0) return
+  if (folded.length === 0) return
+  const first = folded.reduce((best, span) => (span.start < best.start ? span : best))
+  const chosenSeq = first.start
+  // Sweep mode: this call committed to a start AND folded through somewhere
+  // else. The spans it covered are evidence the model did not pass those bands
+  // over, so each of them gives back the +1 the start handed it.
+  const swept = folded.length > 1 ? folded.filter((span) => span !== first) : []
   const counters = skips.get(sessionId) ?? bands.map(() => 0)
   const next = bands.map((band, index) => {
     const inside = band.start <= chosenSeq && chosenSeq <= band.end
-    return (counters[index] ?? 0) + (inside ? 0 : 1)
+    if (inside) return counters[index] ?? 0
+    const count = (counters[index] ?? 0) + 1
+    return swept.some((span) => reaches(band, span)) ? Math.max(0, count - 1) : count
   })
   touch(skips, sessionId, next)
   const store = sidecar()

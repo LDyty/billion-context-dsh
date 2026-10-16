@@ -7126,7 +7126,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age band that start did NOT fall into was counted once \u2014 so a climbing number marks a band your folds keep starting somewhere else, and the smallest number is the band you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on a band whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age band that start did NOT fall into was counted once; when that same call folded MORE than one span (a sweep), every band those other spans reached into gave that count back \u2014 a fold that went through a band did not pass it over. So a climbing number marks a band your folds keep starting somewhere else AND never fold through, and the smallest number is the band you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on a band whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -8444,6 +8444,9 @@ function nodeKindOf(event, isGuarded, isStaleFoldable) {
 import fs from "fs";
 import os from "os";
 import path from "path";
+function reaches(band, span) {
+  return span.start <= band.end && span.end >= band.start;
+}
 var SESSION_LIMIT = 50;
 var SIDECAR_FILE = "dsh-acp-band-skips.json";
 var SIDECAR_VERSION = 1;
@@ -8522,13 +8525,19 @@ function noteBandRegions(sessionId, bands) {
   }
   touch(skips, sessionId, bands.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0));
 }
-function noteBandChoice(sessionId, chosenSeq) {
+function noteBandChoice(sessionId, folded) {
   const bands = regions.get(sessionId);
   if (bands === void 0 || bands.length === 0) return;
+  if (folded.length === 0) return;
+  const first = folded.reduce((best, span) => span.start < best.start ? span : best);
+  const chosenSeq = first.start;
+  const swept = folded.length > 1 ? folded.filter((span) => span !== first) : [];
   const counters = skips.get(sessionId) ?? bands.map(() => 0);
   const next = bands.map((band, index) => {
     const inside = band.start <= chosenSeq && chosenSeq <= band.end;
-    return (counters[index] ?? 0) + (inside ? 0 : 1);
+    if (inside) return counters[index] ?? 0;
+    const count = (counters[index] ?? 0) + 1;
+    return swept.some((span) => reaches(band, span)) ? Math.max(0, count - 1) : count;
   });
   touch(skips, sessionId, next);
   const store = sidecar();
@@ -9460,7 +9469,9 @@ async function handleCompress(env, args, exec) {
   env.store.set(session, applied.state);
   if (applied.result.blocksCreated > 0) {
     env.compressCallIdsToHide?.add(exec.callId);
-    if (ranges.length > 0) noteBandChoice(String(session.id), Math.min(...ranges.map((range) => range.startSeq)));
+    if (ranges.length > 0) {
+      noteBandChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })));
+    }
   }
   const previousIds = new Set(turn.state.blocks.map((block) => block.blockId));
   const newBlocks = applied.state.blocks.filter((block) => !previousIds.has(block.blockId));
@@ -9750,7 +9761,7 @@ async function handleStatus(env, rawArgs, exec) {
     if (skippedBands.length > 0) {
       lines.push(
         "",
-        `Bands your folds keep passing over (nudge column \`skipped N\xD7\`; every choice of a fold start outside the band counts once): ` + skippedBands.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}\xD7`).join(", ")
+        `Bands your folds keep passing over (nudge column \`skipped N\xD7\`; every choice of a fold start outside the band counts once, and a sweep gives that count back to every band it folded through): ` + skippedBands.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}\xD7`).join(", ")
       );
     }
   }
