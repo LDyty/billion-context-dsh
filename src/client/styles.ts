@@ -52,7 +52,7 @@ export const ACP_PANEL_CSS = `
    the row mix as a sub-line under the range, cost as one cell with an offer
    badge. Detail is hover-only, so the table stays scannable. */
 .acp-ranges td { vertical-align: top; }
-.acp-ranges .acp-band { opacity: .6; text-align: left; }
+.acp-ranges .acp-age-region { opacity: .6; text-align: left; }
 .acp-ranges .acp-range { text-align: left; }
 .acp-sub { display: block; font-size: 10px; opacity: .55; }
 .acp-mix { display: inline-flex; width: 56px; height: 8px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, currentColor 10%, transparent); vertical-align: middle; }

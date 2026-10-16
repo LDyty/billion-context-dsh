@@ -5,7 +5,7 @@
 
 import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { forgetBandSkips } from '../src/band-skips.ts'
+import { forgetAgeRegionSkips } from '../src/age-region-skips.ts'
 import { forgetInspectCache } from '../src/inspect.ts'
 
 /**
@@ -17,7 +17,7 @@ import { forgetInspectCache } from '../src/inspect.ts'
  * `· offered 4×`). Production never hits this: session ids are unique.
  */
 function resetSessionSideTables(id: string): void {
-  forgetBandSkips(id)
+  forgetAgeRegionSkips(id)
   forgetInspectCache(id)
 }
 

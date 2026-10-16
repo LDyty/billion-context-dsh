@@ -7058,7 +7058,7 @@ var DEFAULT_PROMPTS = {
   },
   rangeTable: {
     header: "Surface: {surface}",
-    title: "Compressible ranges ({count}, one per age band \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
+    title: "Compressible ranges ({count}, one per age region \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
     // Two figures, two units, each printed where it belongs: the row MIX rides
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
@@ -7126,7 +7126,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age band that start did NOT fall into was counted once; when that same call folded MORE than one span (a sweep), every band those other spans reached into gave that count back \u2014 a fold that went through a band did not pass it over. So a climbing number marks a band your folds keep starting somewhere else AND never fold through, and the smallest number is the band you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on a band whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age region that start did NOT fall into was counted once; when that same call folded MORE than one span (a sweep), every age region those other spans reached into gave that count back \u2014 a fold that went through an age region did not pass it over. So a climbing number marks an age region your folds keep starting somewhere else AND never fold through, and the smallest number is the age region you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on an age region whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -8440,18 +8440,19 @@ function nodeKindOf(event, isGuarded, isStaleFoldable) {
   return isToolEvent(event) ? "tool" : "text";
 }
 
-// src/band-skips.ts
+// src/age-region-skips.ts
 import fs from "fs";
 import os from "os";
 import path from "path";
-function reaches(band, span) {
-  return span.start <= band.end && span.end >= band.start;
+function reaches(ageRegion, span) {
+  return span.start <= ageRegion.end && span.end >= ageRegion.start;
 }
 var SESSION_LIMIT = 50;
-var SIDECAR_FILE = "dsh-acp-band-skips.json";
+var SIDECAR_FILE = "dsh-acp-age-region-skips.json";
+var LEGACY_SIDECAR_FILE = "dsh-acp-band-skips.json";
 var SIDECAR_VERSION = 1;
 var SIDECAR_SESSIONS = 50;
-function bandSkipsPath() {
+function ageRegionSkipsPath() {
   try {
     const env = typeof process === "undefined" ? void 0 : process.env;
     const home = env?.DSH_HOME !== void 0 && env.DSH_HOME.length > 0 ? env.DSH_HOME : path.join(os.homedir(), ".dsh");
@@ -8462,7 +8463,27 @@ function bandSkipsPath() {
 }
 var sidecars = /* @__PURE__ */ new Map();
 function sidecarPath() {
-  return bandSkipsPath();
+  return ageRegionSkipsPath();
+}
+function legacySidecarPath() {
+  const file = sidecarPath();
+  return file === void 0 ? void 0 : path.join(path.dirname(file), LEGACY_SIDECAR_FILE);
+}
+function parseSidecar(raw) {
+  try {
+    const value = JSON.parse(raw);
+    if (value.version !== SIDECAR_VERSION || typeof value.sessions !== "object" || value.sessions === null) return void 0;
+    const sessions = {};
+    for (const [id, entry] of Object.entries(value.sessions)) {
+      const skips2 = entry?.skips;
+      if (!Array.isArray(skips2)) continue;
+      const cleaned = skips2.map((count) => typeof count === "number" && Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0);
+      sessions[id] = { skips: cleaned, updatedAt: Number(entry?.updatedAt) || 0 };
+    }
+    return { version: SIDECAR_VERSION, sessions };
+  } catch {
+    return void 0;
+  }
 }
 function sidecar() {
   const file = sidecarPath();
@@ -8471,19 +8492,24 @@ function sidecar() {
   if (cached !== void 0) return cached;
   let parsed = { version: SIDECAR_VERSION, sessions: {} };
   try {
-    const raw = fs.readFileSync(file, "utf8");
-    const value = JSON.parse(raw);
-    if (value.version === SIDECAR_VERSION && typeof value.sessions === "object" && value.sessions !== null) {
-      const sessions = {};
-      for (const [id, entry] of Object.entries(value.sessions)) {
-        const skips2 = entry?.skips;
-        if (!Array.isArray(skips2)) continue;
-        const cleaned = skips2.map((count) => typeof count === "number" && Number.isFinite(count) && count >= 0 ? Math.floor(count) : 0);
-        sessions[id] = { skips: cleaned, updatedAt: Number(entry?.updatedAt) || 0 };
-      }
-      parsed = { version: SIDECAR_VERSION, sessions };
-    }
+    const current = parseSidecar(fs.readFileSync(file, "utf8"));
+    if (current !== void 0) parsed = current;
   } catch {
+  }
+  if (Object.keys(parsed.sessions).length === 0) {
+    const legacy = legacySidecarPath();
+    if (legacy !== void 0) {
+      try {
+        const inherited = parseSidecar(fs.readFileSync(legacy, "utf8"));
+        if (inherited !== void 0 && Object.keys(inherited.sessions).length > 0) {
+          parsed = inherited;
+          sidecars.set(file, parsed);
+          persistSidecar();
+          return parsed;
+        }
+      } catch {
+      }
+    }
   }
   sidecars.set(file, parsed);
   return parsed;
@@ -8517,27 +8543,27 @@ function touch(map, sessionId, value) {
     skips.delete(oldest.value);
   }
 }
-function noteBandRegions(sessionId, bands) {
-  touch(regions, sessionId, bands.map((band) => ({ start: band.start, end: band.end })));
+function noteAgeRegions(sessionId, ageRegions) {
+  touch(regions, sessionId, ageRegions.map((ageRegion) => ({ start: ageRegion.start, end: ageRegion.end })));
   if (skips.has(sessionId)) {
     touch(skips, sessionId, skips.get(sessionId));
     return;
   }
-  touch(skips, sessionId, bands.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0));
+  touch(skips, sessionId, ageRegions.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0));
 }
-function noteBandChoice(sessionId, folded) {
-  const bands = regions.get(sessionId);
-  if (bands === void 0 || bands.length === 0) return;
+function noteAgeRegionChoice(sessionId, folded) {
+  const ageRegions = regions.get(sessionId);
+  if (ageRegions === void 0 || ageRegions.length === 0) return;
   if (folded.length === 0) return;
   const first = folded.reduce((best, span) => span.start < best.start ? span : best);
   const chosenSeq = first.start;
   const swept = folded.length > 1 ? folded.filter((span) => span !== first) : [];
-  const counters = skips.get(sessionId) ?? bands.map(() => 0);
-  const next = bands.map((band, index) => {
-    const inside = band.start <= chosenSeq && chosenSeq <= band.end;
+  const counters = skips.get(sessionId) ?? ageRegions.map(() => 0);
+  const next = ageRegions.map((ageRegion, index) => {
+    const inside = ageRegion.start <= chosenSeq && chosenSeq <= ageRegion.end;
     if (inside) return counters[index] ?? 0;
     const count = (counters[index] ?? 0) + 1;
-    return swept.some((span) => reaches(band, span)) ? Math.max(0, count - 1) : count;
+    return swept.some((span) => reaches(ageRegion, span)) ? Math.max(0, count - 1) : count;
   });
   touch(skips, sessionId, next);
   const store = sidecar();
@@ -8546,7 +8572,7 @@ function noteBandChoice(sessionId, folded) {
     persistSidecar();
   }
 }
-function lastBandSkipsOf(sessionId) {
+function lastAgeRegionSkipsOf(sessionId) {
   return skips.get(sessionId) ?? [];
 }
 
@@ -8596,10 +8622,10 @@ function skippedLabel(count) {
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
-function partitionOfferableIntoBands(all, bands = RANGE_TABLE_LIMIT) {
+function partitionOfferableIntoAgeRegions(all, ageRegions = RANGE_TABLE_LIMIT) {
   const ordered = [...all].sort((a, b) => a.start - b.start);
   if (ordered.length === 0) return [];
-  const count = Math.max(1, Math.min(bands, ordered.length));
+  const count = Math.max(1, Math.min(ageRegions, ordered.length));
   const total = ordered.reduce((sum, range) => sum + Math.max(0, range.tokens), 0);
   const target = total / count;
   const groups = [];
@@ -8616,8 +8642,8 @@ function partitionOfferableIntoBands(all, bands = RANGE_TABLE_LIMIT) {
     running += Math.max(0, range.tokens);
     if (groups.length >= count - 1) continue;
     const spansLeft = ordered.length - index - 1;
-    const bandsLeft = count - groups.length;
-    if (running >= target || spansLeft <= bandsLeft - 1) close();
+    const ageRegionsLeft = count - groups.length;
+    if (running >= target || spansLeft <= ageRegionsLeft - 1) close();
   }
   close();
   return groups;
@@ -8628,19 +8654,19 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     kernelView,
     mediaPriceOf === void 0 ? {} : { mediaPriceOf }
   );
-  const bandGroups = partitionOfferableIntoBands(ranges);
-  const shown = bandGroups.map((group) => group.reduce((best, range) => range.tokens > best.tokens ? range : best));
+  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges);
+  const shown = ageRegionGroups.map((group) => group.reduce((best, range) => range.tokens > best.tokens ? range : best));
   if (shown.length === 0) return "";
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf);
-  noteBandRegions(String(session.id), bandGroups.map((group) => ({
+  noteAgeRegions(String(session.id), ageRegionGroups.map((group) => ({
     start: group[0].start,
     end: group[group.length - 1].end
   })));
-  const bandSkips = lastBandSkipsOf(String(session.id));
-  const baseRows = shown.map((range, band) => {
+  const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id));
+  const baseRows = shown.map((range, ageRegion) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
-    return { range, at, band, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
+    return { range, at, ageRegion, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
   const proposalOfAt = /* @__PURE__ */ new Map();
   const sweeps = [];
@@ -8684,7 +8710,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       textPct: composition.textPct
     }));
   }
-  const lines = baseRows.flatMap(({ range, at, cost, expensive, band }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion }) => {
     const rows = [
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
@@ -8697,10 +8723,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
-        // "This band keeps being passed over": how many model choices picked a
-        // fold start outside this band (src/band-skips.ts). Independent of the
-        // seq range — the number belongs to the band slot, not the content.
-        skipped: skippedLabel(bandSkips[band] ?? 0)
+        // "This age region keeps being passed over": how many model choices picked a
+        // fold start outside this age region (src/age-region-skips.ts). Independent of the
+        // seq range — the number belongs to the age region slot, not the content.
+        skipped: skippedLabel(ageRegionSkips[ageRegion] ?? 0)
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
@@ -8716,7 +8742,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   rememberRangeTable(
     String(session.id),
     baseRows.map((row, index) => ({
-      band: index + 1,
+      ageRegion: index + 1,
       start: row.range.start,
       end: row.range.end,
       messages: row.range.count,
@@ -8735,7 +8761,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
-      skipped: bandSkips[row.band] ?? 0
+      skipped: ageRegionSkips[row.ageRegion] ?? 0
     })),
     sweeps
   );
@@ -9470,7 +9496,7 @@ async function handleCompress(env, args, exec) {
   if (applied.result.blocksCreated > 0) {
     env.compressCallIdsToHide?.add(exec.callId);
     if (ranges.length > 0) {
-      noteBandChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })));
+      noteAgeRegionChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })));
     }
   }
   const previousIds = new Set(turn.state.blocks.map((block) => block.blockId));
@@ -9756,12 +9782,12 @@ async function handleStatus(env, rawArgs, exec) {
         "Note: the pressure line is provider-anchored (images/files priced by the live route); the breakdown above is a text-only estimate. They can differ on media-heavy sessions."
       );
     }
-    const skips2 = lastBandSkipsOf(String(session.id));
-    const skippedBands = (inspectCacheOf(String(session.id))?.rows ?? []).map((row, index) => ({ row, skipped: skips2[index] ?? 0 })).filter((entry) => entry.skipped > 0).sort((left, right) => right.skipped - left.skipped).slice(0, 5);
-    if (skippedBands.length > 0) {
+    const skips2 = lastAgeRegionSkipsOf(String(session.id));
+    const skippedAgeRegions = (inspectCacheOf(String(session.id))?.rows ?? []).map((row, index) => ({ row, skipped: skips2[index] ?? 0 })).filter((entry) => entry.skipped > 0).sort((left, right) => right.skipped - left.skipped).slice(0, 5);
+    if (skippedAgeRegions.length > 0) {
       lines.push(
         "",
-        `Bands your folds keep passing over (nudge column \`skipped N\xD7\`; every choice of a fold start outside the band counts once, and a sweep gives that count back to every band it folded through): ` + skippedBands.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}\xD7`).join(", ")
+        `Age regions your folds keep passing over (nudge column \`skipped N\xD7\`; every choice of a fold start outside the age region counts once, and a sweep gives that count back to every age region it folded through): ` + skippedAgeRegions.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}\xD7`).join(", ")
       );
     }
   }

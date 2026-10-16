@@ -201,14 +201,14 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
 })
 
 /**
- * Rows come from disjoint age bands, so two printed rows can no longer share a
+ * Rows come from disjoint age regions, so two printed rows can no longer share a
  * start seq — but neighbouring rows still print OVERLAPPING sweeps on purpose:
  * they differ in how far back the fold starts, and that scope choice is what the
  * model is picking between. This used to be deduped (one shared line); it is not
  * any more, so the invariant is "one sweep per row, in printed order" rather
  * than uniqueness.
  */
-test('sweep: rows come from disjoint bands, and each row prints at most one sweep', () => {
+test('sweep: rows come from disjoint age regions, and each row prints at most one sweep', () => {
   const session = buildTextSession(24)
   const text = rangeTable(session, viewOfPositions(session, [[0, 4], [0, 2], [6, 8], [10, 12], [14, 16]]) as never)
   const rows = text.split('\n').filter((line) => /^\s+- seq /.test(line))

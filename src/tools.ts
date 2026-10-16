@@ -17,7 +17,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { AcpStateStore } from './state.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { resolveTokenCount } from './nudge.ts'
-import { lastBandSkipsOf, noteBandChoice } from './band-skips.ts'
+import { lastAgeRegionSkipsOf, noteAgeRegionChoice } from './age-region-skips.ts'
 import { inspectCacheOf } from './inspect.ts'
 import { routeFor, type AcpWindow } from './window.ts'
 import {
@@ -960,13 +960,13 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     // compaction summary never sits between an assistant tool_calls block and
     // its tool response (strict providers reject that sequence).
     env.compressCallIdsToHide?.add(exec.callId)
-    // ONE model choice: this call committed to a fold START, and every age band
-    // that start does not fall into is counted as passed over (src/band-skips.ts).
+    // ONE model choice: this call committed to a fold START, and every age region
+    // that start does not fall into is counted as passed over (src/age-region-skips.ts).
     // A sweep is deliberately ONE choice — the earliest seq it folds is the point
     // the model committed to, not each of its entries — and the spans it folds
-    // past the start take the count back from every band they reached into.
+    // past the start take the count back from every age region they reached into.
     if (ranges.length > 0) {
-      noteBandChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })))
+      noteAgeRegionChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })))
     }
   }
 
@@ -1386,18 +1386,18 @@ async function handleStatus(env: ToolEnvironment, rawArgs: StatusArgs, exec: Too
     // The nudge table's `skipped N×` suffix, restated here: acp_status is the
     // other place a model reads compressible ranges, and "your folds keep
     // starting somewhere else" is a fact neither seq order nor fold cost can
-    // carry. Same numbers, same band slots — keyed by BAND INDEX, not by seq.
-    const skips = lastBandSkipsOf(String(session.id))
-    const skippedBands = (inspectCacheOf(String(session.id))?.rows ?? [])
+    // carry. Same numbers, same age region slots — keyed by AGE REGION INDEX, not by seq.
+    const skips = lastAgeRegionSkipsOf(String(session.id))
+    const skippedAgeRegions = (inspectCacheOf(String(session.id))?.rows ?? [])
       .map((row, index) => ({ row, skipped: skips[index] ?? 0 }))
       .filter((entry) => entry.skipped > 0)
       .sort((left, right) => right.skipped - left.skipped)
       .slice(0, 5)
-    if (skippedBands.length > 0) {
+    if (skippedAgeRegions.length > 0) {
       lines.push(
         '',
-        `Bands your folds keep passing over (nudge column \`skipped N×\`; every choice of a fold start outside the band counts once, and a sweep gives that count back to every band it folded through): `
-        + skippedBands.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}×`).join(', '),
+        `Age regions your folds keep passing over (nudge column \`skipped N×\`; every choice of a fold start outside the age region counts once, and a sweep gives that count back to every age region it folded through): `
+        + skippedAgeRegions.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}×`).join(', '),
       )
     }
   }

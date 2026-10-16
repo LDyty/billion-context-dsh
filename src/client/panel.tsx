@@ -145,7 +145,7 @@ function mixLabel(counts: { readonly tool: number; readonly assistant: number; r
 /** Exported for the offline preview (`scratch-panel-preview.mjs`) and future tests. */
 export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
   const { rows, sweeps, map } = props.snapshot
-  if (rows.length === 0) return h('div', { className: 'acp-empty' }, '还没有可压范围（等下一次 nudge 生成）')
+  if (rows.length === 0) return h('div', { className: 'acp-empty' }, '还没有可压区间（等下一次 nudge 生成）')
   const sweepOf = (start: number): AcpInspectSnapshot['sweeps'][number] | undefined =>
     sweeps.find((sweep) => sweep.rowStart === start)
   // A row whose edges are no longer on the live surface describes content that
@@ -168,23 +168,24 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
     // carries its Chinese gloss right beside it.
     h('table', { className: 'acp-table acp-ranges' },
     h('thead', null, h('tr', null,
-      h('th', { title: 'band（年龄区）：可压内容按年龄等分成 6 段，1 最老、6 最新；折叠的起点落在哪一段，这一行就属于哪一段。' }, '段位'),
+      h('th', { title: 'ageRegion（年龄区域）：可压内容按年龄等分成 6 个年龄区域，1 最老、6 最新；折叠的起点落在哪个年龄区域，这一行就属于哪个年龄区域。' }, '年龄区域'),
       // 列名不叫「范围」：这个说法会和整张表的「可压范围」撞车，读者分不清是
-      // 「这一行要折的那一段」还是「所有可压的段」。一行就是一段 seq 区间。
-      h('th', { title: '区间（seq（事件序号）起止，含首尾）：这一行折叠时实际覆盖的那一段。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
+      // 「这一行要折的那个区间」还是「整张表所有可压的区间」。一行就是一个年龄区域；
+      // 那个年龄区域只印它最大的一个区间。
+      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本年龄区域折叠时实际覆盖的那一段 seq（每个年龄区域只印它最大的那个区间）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
       h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
       h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
       h('th', { title: 'invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数见那一格自己的提示。' }, '代价'),
-      h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 段 → 回收 token（词元）量 · 回本倍数）；与 nudge（提醒文本）里那一行是同一组数字。' }, '清扫'),
+      h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 回本倍数）；与 nudge（提醒文本）里那一行是同一组数字。' }, '清扫'),
       h('th', { title: '复制一条可直接粘贴的 compress（压缩）调用。' }, ''))),
     h('tbody', null, rows.map((row) => {
       const sweep = sweepOf(row.start)
       const stale = staleOf(row)
       return h('tr', { key: `${row.start}-${row.end}`, className: stale ? 'acp-stale' : undefined },
         h('td', {
-          className: 'acp-band',
-          title: `band（年龄区）${String(row.band)}：${row.band === 1 ? '最老的一段' : `从老到新数第 ${String(row.band)} 段`}`,
-        }, row.band === 1 ? '1 最老' : String(row.band)),
+          className: 'acp-age-region',
+          title: `ageRegion（年龄区域）${String(row.ageRegion)}：${row.ageRegion === 1 ? '最老的年龄区域' : `从老到新数第 ${String(row.ageRegion)} 个年龄区域`}`,
+        }, row.ageRegion === 1 ? '1 最老' : String(row.ageRegion)),
         h('td', { className: 'acp-range' },
           h('span', {
             title: `seq（事件序号）${String(row.start)}..${String(row.end)}，含首尾${stale ? '；这两个 seq 已不在表面上，行已过期' : ''}。`,
@@ -210,27 +211,27 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
             className: row.expensive ? 'acp-warn acp-cost-rate' : 'acp-muted acp-cost-rate',
             title: `breakEven（回本）${row.breakEven.toFixed(1)}×：约这么多次请求之后，省下的内容才盖过这次重写的浪费${row.expensive ? '；≥6 次标黄 ⚠' : ''}。`,
           }, `${row.expensive ? '⚠ ' : ''}回本 ${row.breakEven.toFixed(1)}×`),
-          // The band's pass-over count: how many model choices started a fold
-          // OUTSIDE this age band (src/band-skips.ts). Always printed, 0
+          // The age region's pass-over count: how many model choices started a fold
+          // OUTSIDE this age region (src/age-region-skips.ts). Always printed, 0
           // included — the label keeps it from reading as another multiplier.
           h('div', null, h('span', {
             className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
-            title: '被跳过次数：模型每次选折叠起点（sweep（清扫）算一次），起点没落在本年龄区（band）里就 +1；如果这一次是 sweep（清扫，一拍折多段），折的其它段落进了本区，就把这次的 +1 收回去（穿过就不算跳过）。爬得越高说明模型一直从别的区开始折、且从没折穿本区；最小的那个数就是它反复选中的区。',
+            title: '被跳过次数：模型每次选择折叠起点（sweep（清扫）算一次），起点没落在本年龄区域（ageRegion）里就 +1；如果这一次是 sweep（清扫，一拍折多个区间），其中别的区间落进了本年龄区域，就把这次的 +1 收回去（折穿就不算跳过）。爬得越高说明模型一直从别的年龄区域开始折、且从没折穿本区域；最小的那个数就是它反复选中的年龄区域。',
           }, `被跳过 ${String(row.skipped)}×`))),
         h('td', {
           className: 'acp-sweep',
           // Same figures the nudge's sweep line carries: the panel is a view of
           // one remembered build, never a second opinion.
           title: sweep === undefined
-            ? '这一行后面没有可加的段'
-            : `sweep（清扫）：${String(sweep.entries)} 段 → ${String(sweep.messages)} 条消息折叠成 ${String(sweep.entries)} 份摘要 · `
+            ? '这一行后面没有可加的区间'
+            : `sweep（清扫）：${String(sweep.entries)} 个区间 → ${String(sweep.messages)} 条消息折叠成 ${String(sweep.entries)} 份摘要 · `
               + `回收 ~${compact(sweep.reclaims)} token（词元）· 行构成 ${mixLabel(sweep.rowCounts)} · `
               + `字符三档 tool（工具）${String(sweep.toolPct)}% · reasoning（推理）${String(sweep.reasoningPct)}% · text（正文）${String(sweep.textPct)}% · `
               + `从本行的起点只向新的方向、不封顶；和 nudge（提醒文本）里那一行是同一组数字。`,
         }, sweep === undefined
           ? '—'
           : h('div', null,
-            `${String(sweep.entries)} 段 → ~${compact(sweep.reclaims)}`,
+            `${String(sweep.entries)} 个区间 → ~${compact(sweep.reclaims)}`,
             h('span', { className: 'acp-sub' }, `回本 ${sweep.breakEven.toFixed(1)}×`))),
         h('td', null, h(CopyButton, {
           text: compressCall(
@@ -342,7 +343,7 @@ export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
         `文本估算（另一把尺子，不含固定开销）：tool ${compact(breakdown.tool)} · text ${compact(breakdown.text)}`
         + ` · code ${compact(breakdown.code)} · summaries ${compact(breakdown.summaries)}`),
       h('div', { className: 'acp-section' }, h('h4', null, '上下文地图（按提示顺序）'), h(ContextMap, { map: snapshot.map })),
-      h('div', { className: 'acp-section' }, h('h4', null, '可压范围与清扫（与 nudge 同一套数字）'), h(RangeTable, { snapshot })),
+      h('div', { className: 'acp-section' }, h('h4', null, '可压区间与清扫（与 nudge 同一套数字）'), h(RangeTable, { snapshot })),
       h('div', { className: 'acp-section' }, h('h4', null, `已压块 ${String(snapshot.blocks.length)}（展开看它当时的思考）`), h(Blocks, { blocks: snapshot.blocks })),
       Params({ snapshot }),
     )

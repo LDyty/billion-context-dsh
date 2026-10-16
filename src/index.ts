@@ -903,7 +903,7 @@ export class AcpCompactionEngine extends CompactionEngine {
         invalidateInspectTable(sessionId)
         this.inspectBuilds.delete(sessionId)
         // The pass-over counters are NOT touched here: they belong to the age
-        // band SLOTS, not to content, so a fold that lands changes nothing about
+        // age region SLOTS, not to content, so a fold that lands changes nothing about
         // them (the model's choice was already counted when the compress landed,
         // src/tools.ts). Only the panel's stale table is invalidated.
       }

@@ -77,7 +77,7 @@ test('inspect: the snapshot serves the remembered table, map kinds and settings'
 
   assert.ok(text.includes('Compressible ranges'), 'the fixture really renders a table')
   assert.ok(snapshot.rows.length > 0, 'the snapshot carries the rows')
-  assert.equal(snapshot.rows[0]!.band, 1, 'bands are numbered from the oldest')
+  assert.equal(snapshot.rows[0]!.ageRegion, 1, 'age regions are numbered from the oldest')
   // The panel's rows ARE the printed rows: same seqs, same tokens.
   for (const row of snapshot.rows) {
     assert.ok(text.includes(`${row.start}..${row.end}`), `row ${row.start}..${row.end} appears in the nudge text`)
@@ -93,9 +93,9 @@ test('inspect: the snapshot serves the remembered table, map kinds and settings'
   assert.equal(snapshot.surface.nodes, session.surface.nodes.length)
   assert.equal(snapshot.usage.window, 200000, 'the panel shows the configured window')
   // The panel mirrors the nudge's `skipped N×` column too (same counter, same
-  // band slots). A build is not a choice, so a fresh session reads 0 on every
-  // band — and the printed row says the same thing.
-  assert.ok(snapshot.rows.every((row) => row.skipped === 0), 'a fresh build has passed over no band')
+  // age region slots). A build is not a choice, so a fresh session reads 0 on every
+  // age region — and the printed row says the same thing.
+  assert.ok(snapshot.rows.every((row) => row.skipped === 0), 'a fresh build has passed over no age region')
   for (const row of snapshot.rows) {
     assert.ok(text.includes(`· skipped ${String(row.skipped)}×`), `row ${row.start} prints the same count as the panel`)
   }

@@ -90,7 +90,7 @@ const nudgeTableChecks = (result) => {
   // which the row-count tool share can never show.
   const rows = table.split('\n').filter((line) => /seq \d+\.\.\d+/.test(line) && /\[tool \d+% \| reasoning \d+% \| text \d+%\]/.test(line))
   // Ordering is AGE-first since the 2026-10-16 range-table rework: one row per
-  // equal-weight age band, so the rows run oldest → newest by start seq (a
+  // equal-weight age region, so the rows run oldest → newest by start seq (a
   // size-ranked table would leave older scattered content unoffered forever).
   const starts = rows.map((line) => {
     const match = line.match(/seq (\d+)\.\./)
@@ -98,7 +98,7 @@ const nudgeTableChecks = (result) => {
   })
   const ascending = starts.length >= 1 && starts.every((value, i) => i === 0 || value >= starts[i - 1])
   return [
-    ['nudge range table header (one row per age band)', table.includes('Compressible ranges') && table.includes('one per age band'), ''],
+    ['nudge range table header (one row per age region)', table.includes('Compressible ranges') && table.includes('one per age region'), ''],
     ['nudge range rows carry [tool X% | reasoning Y% | text Z%] share', rows.length >= 1, `rows=${rows.length}`],
     ['nudge range rows oldest-first (non-decreasing start seq)', ascending, `starts=${starts.join(',')}`]
   ]

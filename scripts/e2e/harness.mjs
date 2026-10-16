@@ -116,8 +116,8 @@ const runScenario = async (scenario, hooks = {}) => {
   const JsonlPersistence = (await import('@deepseek-ai/dsh-session-persistence-jsonl')).default
   const persistRoot = mkdtempSync(join(tmpdir(), 'e2e-sessions-'))
   // The engine also writes REAL files beside the home it is told about — the
-  // per-age-band skip sidecar (`<DSH_HOME>/dsh-acp-band-skips.json`,
-  // src/band-skips.ts). The one-shot runner inherits whatever DSH_HOME the
+  // per-age-region skip sidecar (`<DSH_HOME>/dsh-acp-age-region-skips.json`,
+  // src/age-region-skips.ts). The one-shot runner inherits whatever DSH_HOME the
   // caller has, so without this the e2e scenarios (`basic-compress`,
   // `carrier-split`, …) land their fixture session ids in the operator's own
   // ~/.dsh — measured 2026-10-16. Pointing it at this run's temp root keeps the

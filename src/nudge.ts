@@ -41,7 +41,7 @@ import { mediaPriceViaMeter } from './host-tokens.ts'
 import { sessionEventsOf } from './session-events.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { rememberBreakdown, rememberPressure, rememberRangeTable } from './inspect.ts'
-import { lastBandSkipsOf, noteBandRegions } from './band-skips.ts'
+import { lastAgeRegionSkipsOf, noteAgeRegions } from './age-region-skips.ts'
 import type { AcpInspectSweep } from './inspect-types.ts'
 import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompts.ts'
 
@@ -206,10 +206,10 @@ export const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6
 export const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25
 
 /**
- * The row suffix naming how many times THIS BAND was passed over: the model has
- * chosen a fold start outside it `count` times (src/band-skips.ts). Printed on
+ * The row suffix naming how many times THIS AGE REGION was passed over: the model has
+ * chosen a fold start outside it `count` times (src/age-region-skips.ts). Printed on
  * every row, 0 included — a stable field needs no legend, and 0 is information
- * ("every choice so far landed in this band").
+ * ("every choice so far landed in this age region").
  */
 function skippedLabel(count: number): string {
   return ` · skipped ${String(count)}×`
@@ -221,38 +221,38 @@ function compactTokens(tokens: number): string {
 }
 
 /**
- * Pick the rows the nudge range table prints: **one per age band**.
+ * Pick the rows the nudge range table prints: **one per age region**.
  *
  * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
  * spot: on a big surface the shortlist is filled from whatever region happens to
  * hold the largest spans, so the older scattered content is never offered —
- * measured on the live surface, the oldest band held 26 offerable spans (median
+ * measured on the live surface, the oldest age region held 26 offerable spans (median
  * 1.3K tokens) and not one of them could ever reach a six-row size-first table.
  *
- * The bands are equal WEIGHT, not equal count: splitting the offerable list into
+ * The age regions are equal WEIGHT, not equal count: splitting the offerable list into
  * six equal-count groups gives the oldest group three times the spans of the
  * newest (26 vs 7 live) and lets it monopolise rows. Walking the surface in
- * order and closing a band once it holds `total ÷ bands` tokens gives every row
- * the same share of the reclaimable context, so a row IS an age band: row 1 is
- * the oldest sixth of the reclaimable content, row 6 the newest. Each band
+ * order and closing an age region once it holds `total ÷ age regions` tokens gives every row
+ * the same share of the reclaimable context, so a row IS an age region: row 1 is
+ * the oldest sixth of the reclaimable content, row 6 the newest. Each age region
  * offers its largest span as the base — the row the model reads — and carries
  * its own sweep (see {@link bestSweepProposal}), which is what makes an old
- * band actionable at all.
+ * age region actionable at all.
  *
- * Rows come back in band order (oldest → newest), which is also surface order,
+ * Rows come back in age region order (oldest → newest), which is also surface order,
  * so the table reads as the timeline it is.
  *
  * @param all - every offerable range, in surface position order.
- * @param bands - how many bands to cut (defaults to the row cap).
- * @returns one base range per band, oldest first.
+ * @param age regions - how many age regions to cut (defaults to the row cap).
+ * @returns one base range per age region, oldest first.
  */
-export function partitionOfferableIntoBands<T extends { start: number; end: number; tokens: number }>(
+export function partitionOfferableIntoAgeRegions<T extends { start: number; end: number; tokens: number }>(
   all: readonly T[],
-  bands: number = RANGE_TABLE_LIMIT,
+  ageRegions: number = RANGE_TABLE_LIMIT,
 ): T[][] {
   const ordered = [...all].sort((a, b) => a.start - b.start)
   if (ordered.length === 0) return []
-  const count = Math.max(1, Math.min(bands, ordered.length))
+  const count = Math.max(1, Math.min(ageRegions, ordered.length))
   const total = ordered.reduce((sum, range) => sum + Math.max(0, range.tokens), 0)
   const target = total / count
   const groups: T[][] = []
@@ -268,32 +268,32 @@ export function partitionOfferableIntoBands<T extends { start: number; end: numb
     bucket.push(range)
     running += Math.max(0, range.tokens)
     if (groups.length >= count - 1) continue
-    // Close when the band is full, or when the spans left are exactly the bands
-    // left — otherwise one heavy span swallows the whole tail into the last band
+    // Close when the age region is full, or when the spans left are exactly the age regions
+    // left — otherwise one heavy span swallows the whole tail into the last age region
     // and the table collapses to fewer rows than asked for (measured on a
-    // fixture with one 40K span ahead of five slivers: 6 bands → 4 rows).
+    // fixture with one 40K span ahead of five slivers: 6 age regions → 4 rows).
     const spansLeft = ordered.length - index - 1
-    const bandsLeft = count - groups.length
-    if (running >= target || spansLeft <= bandsLeft - 1) close()
+    const ageRegionsLeft = count - groups.length
+    if (running >= target || spansLeft <= ageRegionsLeft - 1) close()
   }
   close()
   return groups
 }
 
 /**
- * The rows the table prints: **one per age band**, each the LARGEST span of its
- * band (the row the model reads, and the one every neighbour in the sweep is
- * priced against). See {@link partitionOfferableIntoBands} for the geometry.
+ * The rows the table prints: **one per age region**, each the LARGEST span of its
+ * age region (the row the model reads, and the one every neighbour in the sweep is
+ * priced against). See {@link partitionOfferableIntoAgeRegions} for the geometry.
  *
  * @param all - every offerable range, in any order.
- * @param bands - how many bands to cut (defaults to the row cap).
- * @returns one base range per band, oldest first.
+ * @param age regions - how many age regions to cut (defaults to the row cap).
+ * @returns one base range per age region, oldest first.
  */
 export function selectRangeTableRanges<T extends { start: number; end: number; tokens: number }>(
   all: readonly T[],
-  bands: number = RANGE_TABLE_LIMIT,
+  ageRegions: number = RANGE_TABLE_LIMIT,
 ): T[] {
-  return partitionOfferableIntoBands(all, bands)
+  return partitionOfferableIntoAgeRegions(all, ageRegions)
     .map((group) => group.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
 }
 
@@ -317,32 +317,32 @@ export function rangeTable(
     kernelView,
     mediaPriceOf === undefined ? {} : { mediaPriceOf },
   )
-  // The bands are cut ONCE: their regions are what a later fold start is
-  // attributed against (src/band-skips.ts), and the printed rows are their
+  // The age regions are cut ONCE: their regions are what a later fold start is
+  // attributed against (src/age-region-skips.ts), and the printed rows are their
   // largest spans. Panel rebuilds record the same regions as a nudge does —
   // a build is never a choice, so there is nothing to skip counting.
-  const bandGroups = partitionOfferableIntoBands(ranges)
-  const shown = bandGroups.map((group) => group.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
+  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges)
+  const shown = ageRegionGroups.map((group) => group.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
   // 零范围:整块省略(保留现状的提前返回与 nudge 尾部 '\n')。
   if (shown.length === 0) return ''
   // Each row carries its own fold cost: reclaiming a span makes every node at
   // and after its start re-send uncached once, so the model needs that number to
   // weigh a cheap-but-tiny span against an expensive-but-satisfying one.
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
-  // Publish this build's band regions, then read the per-band pass-over counts
-  // (src/band-skips.ts): a band's number moves only when a fold CHOOSES a start
+  // Publish this build's age region regions, then read the per-age region pass-over counts
+  // (src/age-region-skips.ts): an age region's number moves only when a fold CHOOSES a start
   // outside it, never because the table was rebuilt or its span drifted.
-  noteBandRegions(String(session.id), bandGroups.map((group) => ({
+  noteAgeRegions(String(session.id), ageRegionGroups.map((group) => ({
     start: group[0]!.start,
     end: group[group.length - 1]!.end,
   })))
-  const bandSkips = lastBandSkipsOf(String(session.id))
+  const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id))
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
-  const baseRows = shown.map((range, band) => {
+  const baseRows = shown.map((range, ageRegion) => {
     const at = ranges.indexOf(range)
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
-    return { range, at, band, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
+    return { range, at, ageRegion, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
   })
   // EVERY row carries its own sweep, and every sweep is printed in full
   // (2026-10-16): the six rows are six STARTING POINTS and each one runs forward
@@ -400,7 +400,7 @@ export function rangeTable(
       textPct: composition.textPct,
     }))
   }
-  const lines = baseRows.flatMap(({ range, at, cost, expensive, band }) => {
+  const lines = baseRows.flatMap(({ range, at, cost, expensive, ageRegion }) => {
     const rows = [
       renderTemplate(prompts.rangeTable.line, {
         start: range.start,
@@ -413,10 +413,10 @@ export function rangeTable(
         toolRowPct: range.toolRowPct,
         rowMix: range.rowMix,
         media: mediaSuffixOf(range),
-        // "This band keeps being passed over": how many model choices picked a
-        // fold start outside this band (src/band-skips.ts). Independent of the
-        // seq range — the number belongs to the band slot, not the content.
-        skipped: skippedLabel(bandSkips[band] ?? 0),
+        // "This age region keeps being passed over": how many model choices picked a
+        // fold start outside this age region (src/age-region-skips.ts). Independent of the
+        // seq range — the number belongs to the age region slot, not the content.
+        skipped: skippedLabel(ageRegionSkips[ageRegion] ?? 0),
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
@@ -434,7 +434,7 @@ export function rangeTable(
   rememberRangeTable(
     String(session.id),
     baseRows.map((row, index) => ({
-      band: index + 1,
+      ageRegion: index + 1,
       start: row.range.start,
       end: row.range.end,
       messages: row.range.count,
@@ -453,7 +453,7 @@ export function rangeTable(
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
-      skipped: bandSkips[row.band] ?? 0,
+      skipped: ageRegionSkips[row.ageRegion] ?? 0,
     })),
     sweeps,
   )

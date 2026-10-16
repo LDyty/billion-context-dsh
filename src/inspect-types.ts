@@ -32,10 +32,10 @@ export interface AcpInspectNode {
   readonly barrier?: string
 }
 
-/** One printed range row (one per age band) with its fold cost. */
+/** One printed range row (one per age region) with its fold cost. */
 export interface AcpInspectRow {
-  /** 1-based band index; band 1 is the oldest sixth of the reclaimable content. */
-  readonly band: number
+  /** 1-based age region index; age region 1 is the oldest sixth of the reclaimable content. */
+  readonly ageRegion: number
   readonly start: number
   readonly end: number
   readonly messages: number
@@ -64,8 +64,8 @@ export interface AcpInspectRow {
   readonly breakEven: number
   readonly expensive: boolean
   /**
-   * How many times this AGE BAND was passed over: every model choice of a fold
-   * start that did not land in this band (src/band-skips.ts). Keyed to the band
+   * How many times this AGE REGION was passed over: every model choice of a fold
+   * start that did not land in this age region (src/age-region-skips.ts). Keyed to the age region
    * slot, not to content — the panel shows the same number the nudge prints,
    * because "the model keeps starting its folds somewhere else" is exactly what
    * a human watching the table needs to know.

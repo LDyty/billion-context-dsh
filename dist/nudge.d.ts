@@ -80,50 +80,50 @@ export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
 /** Only print a batch when it beats its base row's break-even by this fraction. */
 export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
- * Pick the rows the nudge range table prints: **one per age band**.
+ * Pick the rows the nudge range table prints: **one per age region**.
  *
  * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
  * spot: on a big surface the shortlist is filled from whatever region happens to
  * hold the largest spans, so the older scattered content is never offered —
- * measured on the live surface, the oldest band held 26 offerable spans (median
+ * measured on the live surface, the oldest age region held 26 offerable spans (median
  * 1.3K tokens) and not one of them could ever reach a six-row size-first table.
  *
- * The bands are equal WEIGHT, not equal count: splitting the offerable list into
+ * The age regions are equal WEIGHT, not equal count: splitting the offerable list into
  * six equal-count groups gives the oldest group three times the spans of the
  * newest (26 vs 7 live) and lets it monopolise rows. Walking the surface in
- * order and closing a band once it holds `total ÷ bands` tokens gives every row
- * the same share of the reclaimable context, so a row IS an age band: row 1 is
- * the oldest sixth of the reclaimable content, row 6 the newest. Each band
+ * order and closing an age region once it holds `total ÷ age regions` tokens gives every row
+ * the same share of the reclaimable context, so a row IS an age region: row 1 is
+ * the oldest sixth of the reclaimable content, row 6 the newest. Each age region
  * offers its largest span as the base — the row the model reads — and carries
  * its own sweep (see {@link bestSweepProposal}), which is what makes an old
- * band actionable at all.
+ * age region actionable at all.
  *
- * Rows come back in band order (oldest → newest), which is also surface order,
+ * Rows come back in age region order (oldest → newest), which is also surface order,
  * so the table reads as the timeline it is.
  *
  * @param all - every offerable range, in surface position order.
- * @param bands - how many bands to cut (defaults to the row cap).
- * @returns one base range per band, oldest first.
+ * @param age regions - how many age regions to cut (defaults to the row cap).
+ * @returns one base range per age region, oldest first.
  */
-export declare function partitionOfferableIntoBands<T extends {
+export declare function partitionOfferableIntoAgeRegions<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(all: readonly T[], bands?: number): T[][];
+}>(all: readonly T[], ageRegions?: number): T[][];
 /**
- * The rows the table prints: **one per age band**, each the LARGEST span of its
- * band (the row the model reads, and the one every neighbour in the sweep is
- * priced against). See {@link partitionOfferableIntoBands} for the geometry.
+ * The rows the table prints: **one per age region**, each the LARGEST span of its
+ * age region (the row the model reads, and the one every neighbour in the sweep is
+ * priced against). See {@link partitionOfferableIntoAgeRegions} for the geometry.
  *
  * @param all - every offerable range, in any order.
- * @param bands - how many bands to cut (defaults to the row cap).
- * @returns one base range per band, oldest first.
+ * @param age regions - how many age regions to cut (defaults to the row cap).
+ * @returns one base range per age region, oldest first.
  */
 export declare function selectRangeTableRanges<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(all: readonly T[], bands?: number): T[];
+}>(all: readonly T[], ageRegions?: number): T[];
 /**
  * Render the compressible-range table as seq refs for the model.
  *

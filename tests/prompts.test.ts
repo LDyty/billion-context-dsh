@@ -187,7 +187,7 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
   assert.equal(
     rangeTable(paged, wholeSurfaceRangeView(paged)),
     `\nSurface: 12 nodes, seqs 1..12
-Compressible ranges (1, one per age band — oldest first; exact surface seqs — usable as-is):
+Compressible ranges (1, one per age region — oldest first; exact surface seqs — usable as-is):
   - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens [tool 0% | reasoning 0% | text 100%] · skipped 0×
       fold cost: reclaims ~7283 · rewrites ~12.5K tok of the cached prefix (pays back in ~1.7 request(s))
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
