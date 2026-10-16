@@ -178,7 +178,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
       // 列名不叫「范围」：这个说法会和整张表的「可压范围」撞车，读者分不清是
       // 「这一行要折的那个区间」还是「整张表所有可压的区间」。一行就是一个年龄区域；
       // 那个年龄区域只印它最大的一个区间。
-      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本年龄区域折叠时实际覆盖的那一段 seq（每个年龄区域只印它最大的那个区间）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
+      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本年龄区域折叠时实际覆盖的那个区间——每个年龄区域只印它最大的那一个。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
       h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
       h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
       h('th', { title: 'invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数见那一格自己的提示。' }, '代价'),
@@ -253,7 +253,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
         h('td', null, h(CopyButton, {
           text: compressCall(
             sweep?.spans ?? [{ start: row.start, end: row.end }],
-            `（替换 ${row.start}..${row.end} 这段已消费的内容：写清做了什么、结论与还需要的路径/取值）`,
+            `（替换 ${row.start}..${row.end} 这个区间里已消费的内容：写清做了什么、结论与还需要的路径/取值）`,
           ),
         })),
       )
