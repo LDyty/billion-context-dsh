@@ -636,13 +636,13 @@ export declare function summaryTokenAllowance(foldedTokens: number): number;
  *    that is the saving, `reclaimedTokens` per request from now on;
  *  - the summary that replaces it is NEW input — `summaryTokens × missHitRatio`;
  *  - everything NEWER than the fold start still exists but now sits after the
- *    cache's first mismatch, so it is re-sent uncached ONCE:
- *    `newerTokens × (missHitRatio − 1)` in extra cost (it used to be a hit).
+ *    cache's first mismatch, so it is re-sent uncached ONCE — it pays the miss
+ *    price (newer × ratio) instead of the hit price it used to pay (− newer).
  *
- * So `payback = [newer·(R−1) + summary·R − reclaimed] ÷ (reclaimed − summary)`,
- * in requests. A fold that reaches the newest content has `newer ≈ 0` and pays
- * back almost immediately; a middle fold re-sends its whole newer tail once and
- * can need hundreds of requests.
+ * So `payback = [newer·ratio − newer + summary·ratio − reclaimed] ÷ (reclaimed −
+ * summary)`, in requests. A fold that reaches the newest content has `newer ≈ 0`
+ * and pays back almost immediately; a middle fold re-sends its whole newer tail
+ * once and can need hundreds of requests.
  *
  * @param invalidatedTokens - tokens the fold moves (folded content + newer tail).
  * @param reclaimedTokens - tokens the fold removes from the context.
