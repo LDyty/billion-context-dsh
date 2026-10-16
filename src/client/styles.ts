@@ -10,7 +10,12 @@
 export const ACP_PANEL_STYLE_ID = 'billion-context-dsh/panel.css'
 
 export const ACP_PANEL_CSS = `
-.acp-panel { display: flex; flex-direction: column; gap: 14px; padding: 12px 14px 20px; font-size: 12px; line-height: 1.5; }
+/* 面板整体自己滚：内容（18 行区间表 + 已压块 + 参数）已经高过视口，宿主那块
+   tab 面板不提供滚动，所以这里给一个 78vh 的滚动框，整块内容都能滚到底。 */
+.acp-panel { display: flex; flex-direction: column; gap: 14px; padding: 0 14px 20px; font-size: 12px; line-height: 1.5; max-height: 78vh; overflow-y: auto; overscroll-behavior: contain; }
+/* 顶部留白交给第一个子元素：面板自身的 padding-top 会让吸顶表头停在内容框顶、
+   露出下面那条 12px 的缝（实测 th.top=80、panel.top=68），改成 margin 就没有缝。 */
+.acp-panel > *:first-child { margin-top: 12px; }
 .acp-panel * { box-sizing: border-box; }
 .acp-head { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: baseline; }
 .acp-head b { font-size: 15px; font-weight: 600; }
@@ -65,10 +70,9 @@ export const ACP_PANEL_CSS = `
 .acp-badge { display: inline-block; padding: 0 5px; border-radius: 7px; font-size: 10px; background: color-mix(in srgb, currentColor 14%, transparent); }
 /* 子行（行构成等）允许折行，免得一个长标签把整列撑宽。 */
 .acp-ranges .acp-sub { white-space: normal; }
-/* 每个年龄区域现在印 3 个区间（6 → 18 行），表自己带纵向滚动条；表头吸顶，
-   滚起来仍然知道哪一列是什么。背景用 Canvas，和面板底一致。 */
-.acp-ranges-scroll { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
-.acp-ranges thead th { position: sticky; top: 0; z-index: 1; background: Canvas; }
+/* 表头不做吸顶：sticky th / sticky thead / border-collapse:separate 三种写法在
+   Chrome 里都盖不住后画的 tbody（实测行文字压在列名上，z-index 无效），所以表头
+   跟着内容滚，只保留面板外层的单条滚动条（见 .acp-panel）。 */
 .acp-blocks { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
 .acp-block { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 6px; padding: 6px 8px; }
 .acp-block > summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; }

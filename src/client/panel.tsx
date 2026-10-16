@@ -185,10 +185,9 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
     // 作废/回本/被跳过 one cost cell, and the sweep line keeps its own cell.
     // Every column answers on hover too, and every English term in a tooltip
     // carries its Chinese gloss right beside it.
-    // The table grew to 18 rows (three intervals per age region), so it scrolls in
-    // its own box: the sections below it (已压块 / 参数) stay reachable instead of
-    // being pushed past the viewport, and the header sticks while scrolling.
-    h('div', { className: 'acp-ranges-scroll' },
+    // The table itself does not scroll: the PANEL does (`.acp-panel`), so the 18
+    // rows and everything below them (已压块 / 参数) scroll as one column with a
+    // single scrollbar, and the header sticks to the panel's scrollport.
     h('table', { className: 'acp-table acp-ranges' },
     h('thead', null, h('tr', null,
       h('th', { title: AGE_REGION_TIP }, '年龄区域'),
@@ -281,7 +280,6 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
         })),
       )
     })),
-    ),
     ),
   )
 }
