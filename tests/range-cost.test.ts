@@ -205,6 +205,27 @@ test('sweep proposal: it runs FORWARD from its row, uncapped, and always beats t
     assert.equal(earliest.start, ranges[at]!.start, 'the sweep starts at its own row, never before it')
     assert.ok(sweep.reclaimedTokens > ranges[at]!.tokens, 'a sweep reclaims more than its base row')
     assert.ok(sweep.breakEvenRequests < costs[at]!.breakEvenRequests, 'and pays back sooner')
+    // …and in the BILLING caliber the full forward run is optimal among forward
+    // runs: every added newer span both shrinks the one-time re-send and grows the
+    // per-request saving, so the payback never gets worse as the sweep extends.
+    const paybackOfPrefix = (length: number): number => {
+      const entries = sweep.entries.slice(0, length)
+      const reclaimed = entries.reduce((sum, entry) => sum + entry.tokens, 0)
+      const summary = entries.reduce((sum, entry) => sum + summaryTokenAllowance(entry.tokens), 0)
+      return billingPaybackRequests(sweep.invalidatedTokens, reclaimed, 50, summary)
+    }
+    let previous = paybackOfPrefix(1)
+    assert.equal(
+      Number(previous.toFixed(6)),
+      Number(billingPaybackRequests(costs[at]!.invalidatedTokens, ranges[at]!.tokens, 50).toFixed(6)),
+      'a one-entry sweep prices exactly like the row alone',
+    )
+    for (let length = 2; length <= sweep.entries.length; length += 1) {
+      const current = paybackOfPrefix(length)
+      assert.ok(current <= previous + 1e-9, `entry ${String(length)} does not worsen the billing payback`)
+      assert.ok(current < previous || current === 0, `entry ${String(length)} improves it (or is already free)`)
+      previous = current
+    }
     assert.ok(sweep.entries.some((entry) => entry.start === ranges[at]!.start), 'the base row is in its own sweep')
     // Uncapped: everything newer that does not overlap is inside.
     const newerDisjoint = ranges.slice(at + 1).filter((candidate) => candidate.start > ranges[at]!.end)

@@ -550,6 +550,14 @@ export interface RangeBatchProposal {
  * @param baseIndex - position of the base range in `ranges`.
  * @param opts - extension limits and the improvement floor.
  * @returns the chosen batch, or `undefined` when no extension is worth printing.
+ *
+ * LEGACY (2026-10-16): the nudge table no longer calls this — every row prints
+ * {@link sweepFromBaseRange} instead, the full forward run, which needs no
+ * selection rule (the rewrite is pinned by the earliest entry, so adding a newer
+ * span strictly improves the payback). This bounded search survives as the
+ * reference the invariants in `tests/range-batch-invariants` pin, and its
+ * objective is still the TOKEN caliber (`breakEvenRequests`): nothing the model
+ * sees depends on it any more.
  */
 export declare function bestBatchProposal(ranges: readonly SeqCompressibleRange[], costs: readonly RangeFoldCost[], baseIndex: number, opts: {
     maxOld: number;
