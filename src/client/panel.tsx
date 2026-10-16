@@ -24,6 +24,19 @@ const INSPECT_ROUTE = '/api/billion-context/inspect'
  */
 const WARN_BREAK_EVEN = 6
 
+/**
+ * 被跳过 is a property of the AGE REGION (src/age-region-skips.ts), not of one
+ * interval: the counter moves when a fold CHOOSES a start outside the region, and
+ * a sweep that folds through it gives the count back. A region now prints up to
+ * three intervals, so the badge is printed once — next to the region's name —
+ * instead of repeating on every row.
+ */
+const SKIP_TIP = '被跳过次数（年龄区域的属性）：模型每次选择折叠起点（sweep（清扫）算一次），起点没落在本年龄区域（ageRegion）里就 +1；如果这一次是 sweep（清扫，一拍折多个连着的区间），其中别的区间落进了本区域，就把这次的 +1 收回去（折穿就不算跳过）。爬得越高说明模型一直从别的年龄区域开始折、且从没折穿本区域；最小的那个数就是它反复选中的年龄区域。同一年龄区域印出的每一行共享这个数字。'
+
+/** The 年龄区域 header: what a region is, and what the badge beside its name means. */
+const AGE_REGION_TIP = 'ageRegion（年龄区域）：可压内容按年龄等分成 6 个年龄区域，1 最老、6 最新；折叠的起点落在哪个年龄区域，它下面的行就属于哪个区域。每个区域印它最大的 3 个区间（按大小取）。'
+  + SKIP_TIP
+
 const KIND_LABEL: Record<AcpInspectNode['kind'], string> = {
   tool: 'tool 工具输出',
   text: 'text 对话',
@@ -172,16 +185,20 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
     // 作废/回本/被跳过 one cost cell, and the sweep line keeps its own cell.
     // Every column answers on hover too, and every English term in a tooltip
     // carries its Chinese gloss right beside it.
+    // The table grew to 18 rows (three intervals per age region), so it scrolls in
+    // its own box: the sections below it (已压块 / 参数) stay reachable instead of
+    // being pushed past the viewport, and the header sticks while scrolling.
+    h('div', { className: 'acp-ranges-scroll' },
     h('table', { className: 'acp-table acp-ranges' },
     h('thead', null, h('tr', null,
-      h('th', { title: 'ageRegion（年龄区域）：可压内容按年龄等分成 6 个年龄区域，1 最老、6 最新；折叠的起点落在哪个年龄区域，这一行就属于哪个年龄区域。' }, '年龄区域'),
+      h('th', { title: AGE_REGION_TIP }, '年龄区域'),
       // 列名不叫「范围」：这个说法会和整张表的「可压范围」撞车，读者分不清是
-      // 「这一行要折的那个区间」还是「整张表所有可压的区间」。一行就是一个年龄区域；
-      // 那个年龄区域只印它最大的一个区间。
-      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本年龄区域折叠时实际覆盖的那个区间——每个年龄区域只印它最大的那一个。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
+      // 「这一行要折的那个区间」还是「整张表所有可压的区间」。一行 = 一个区间；
+      // 每个年龄区域印它最大的 3 个区间。
+      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本行折叠时实际覆盖的那个区间。每个年龄区域印它最大的 3 个（按大小取，行仍按 seq 从老到新排）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
       h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
       h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
-      h('th', { title: 'invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数见那一格自己的提示。' }, '代价'),
+      h('th', { title: 'invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数是年龄区域的属性，印在「年龄区域」那一格。' }, '代价'),
       h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 回本倍数）；与 nudge（提醒文本）里那一行是同一组数字。' }, '清扫'),
       h('th', { title: '复制一条可直接粘贴的 compress（压缩）调用。' }, ''))),
     h('tbody', null, rows.map((row, rowIndex) => {
@@ -195,9 +212,15 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
         h('td', {
           className: 'acp-age-region',
           title: `ageRegion（年龄区域）${String(row.ageRegion)}：${row.ageRegion === 1 ? '最老的年龄区域' : `从老到新数第 ${String(row.ageRegion)} 个年龄区域`}`
-            + `；本行是它印出的第 ${String(row.rankInAgeRegion)} 大区间（每个年龄区域最多印 3 个，按大小取，行的先后仍按 seq 从老到新）`,
+            + `；本行是它印出的第 ${String(row.rankInAgeRegion)} 大区间（每个年龄区域最多印 3 个，按大小取，行的先后仍按 seq 从老到新）。${SKIP_TIP}`,
         }, firstOfRegion
-          ? (row.ageRegion === 1 ? '1 最老' : String(row.ageRegion))
+          ? h('div', null,
+            h('div', null, row.ageRegion === 1 ? '1 最老' : String(row.ageRegion)),
+            // The region's pass-over count, printed where the region is named.
+            h('div', null, h('span', {
+              className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
+              title: SKIP_TIP,
+            }, `被跳过 ${String(row.skipped)}×`)))
           : h('span', { className: 'acp-muted' }, '〃')),
         h('td', { className: 'acp-range' },
           h('span', {
@@ -223,14 +246,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
           h('div', {
             className: row.expensive ? 'acp-warn acp-cost-rate' : 'acp-muted acp-cost-rate',
             title: `breakEven（回本）${row.breakEven.toFixed(1)}×：约这么多次请求之后，省下的内容才盖过这次重写的浪费${row.expensive ? '；≥6 次标黄 ⚠' : ''}。`,
-          }, `${row.expensive ? '⚠ ' : ''}回本 ${row.breakEven.toFixed(1)}×`),
-          // The age region's pass-over count: how many model choices started a fold
-          // OUTSIDE this age region (src/age-region-skips.ts). Always printed, 0
-          // included — the label keeps it from reading as another multiplier.
-          h('div', null, h('span', {
-            className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
-            title: '被跳过次数：模型每次选择折叠起点（sweep（清扫）算一次），起点没落在本年龄区域（ageRegion）里就 +1；如果这一次是 sweep（清扫：一拍折的是一串连着的可压区间，中间没有漏掉的可压区间），其中别的区间落进了本年龄区域，就把这次的 +1 收回去（折穿就不算跳过）。爬得越高说明模型一直从别的年龄区域开始折、且从没折穿本区域；最小的那个数就是它反复选中的年龄区域。',
-          }, `被跳过 ${String(row.skipped)}×`))),
+          }, `${row.expensive ? '⚠ ' : ''}回本 ${row.breakEven.toFixed(1)}×`)),
         h('td', {
           className: 'acp-sweep',
           // Same figures the nudge's sweep line carries: the panel is a view of
@@ -265,6 +281,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
         })),
       )
     })),
+    ),
     ),
   )
 }

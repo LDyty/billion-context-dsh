@@ -65,6 +65,10 @@ export const ACP_PANEL_CSS = `
 .acp-badge { display: inline-block; padding: 0 5px; border-radius: 7px; font-size: 10px; background: color-mix(in srgb, currentColor 14%, transparent); }
 /* 子行（行构成等）允许折行，免得一个长标签把整列撑宽。 */
 .acp-ranges .acp-sub { white-space: normal; }
+/* 每个年龄区域现在印 3 个区间（6 → 18 行），表自己带纵向滚动条；表头吸顶，
+   滚起来仍然知道哪一列是什么。背景用 Canvas，和面板底一致。 */
+.acp-ranges-scroll { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
+.acp-ranges thead th { position: sticky; top: 0; z-index: 1; background: Canvas; }
 .acp-blocks { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
 .acp-block { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 6px; padding: 6px 8px; }
 .acp-block > summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
