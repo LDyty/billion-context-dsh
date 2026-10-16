@@ -45,7 +45,7 @@ import {
   type ResolvedSurfaceRange,
 } from './region.ts'
 import { allLogMessages, attachmentsOfEvent, buildToolCallIndex, eventsToCoreMessages, extractEventText, isAgentInstructionsRow, isCheckpointNode, isRealUserTurn, isSkillCatalogRow, reasoningForToolCall, surfaceEventsOf, toolCallsOf } from './messages.ts'
-import { shadowedTokensViaMeter } from './host-tokens.ts'
+import { hostPriceEvent, shadowedTokensViaMeter } from './host-tokens.ts'
 import { eventAtOf, sessionEventsOf } from './session-events.ts'
 import { DEFAULT_RESOLVED, type ResolvedPrompts } from './prompts.ts'
 import type { SettingsCommandSurface } from './settings.ts'
@@ -179,7 +179,7 @@ export const compressParameters = {
         },
         summary: {
           type: 'string' as const,
-          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed; junk-only spans are cheapest folded as their own call). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
+          description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. How short it may be is judged PER ENTRY by the SIZE of the span you are folding: a span over ~500 tokens owes at least 50 characters, and so does any block-ref distillation whatever its size, while a span under ~500 tokens may be a single honest sentence. A span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result) gets exactly that short honest summary — say what it was and that nothing was kept (e.g. "retry logs — nothing kept; decompress for the raw output") — rather than an invented one. Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.',
         },
         topic: { type: 'string' as const, description: 'Short label (3-5 words) for this range.' },
         // B3 (2026-09-08 governance plan): the handler and region.ts have
@@ -217,22 +217,65 @@ function parseSeq(value: number | string): number {
   return seq
 }
 
-/** The marker every discard summary starts with (see the compress description). */
-export const DISCARD_SUMMARY_MARKER = '(discarded)'
+/**
+ * How small a folded span has to be before its summary may go UNDER the kernel
+ * floor (owner rule, 2026-10-16). A few hundred tokens of junk have nothing to
+ * be substantive about, and padding them into 50+ characters is filler the
+ * model then has to read back.
+ */
+export const SHORT_SPAN_SUMMARY_TOKENS = 500
 
 /**
- * Whether one entry is the DISCARD form — a range with nothing worth keeping,
- * folded with a marker instead of an invented summary. The marker is the whole
- * contract: the model writes it deliberately, and the engine only widens the
- * kernel's summary floor for calls where EVERY entry carries it (see
- * `handleCompress`), so the marker cannot be used to smuggle a stub past the
- * floor for content that was supposed to be summarized.
- *
- * @param summary - the entry's summary text.
- * @returns true when the trimmed summary opens with the marker.
+ * The host price of one folded span: every surface event between its edges,
+ * inclusive. This is the size the summary floor is judged against.
  */
-export function isDiscardSummary(summary: string): boolean {
-  return summary.trimStart().toLowerCase().startsWith(DISCARD_SUMMARY_MARKER)
+function foldedSpanTokens(session: Session, start: number, end: number): number {
+  let total = 0
+  for (let seq = start; seq <= end; seq += 1) {
+    const event = eventAtOf(session, seq)
+    if (event !== undefined) total += hostPriceEvent(event)
+  }
+  return total
+}
+
+/**
+ * The summary floor is the HOST's rule, and it is per ENTRY — not per call and
+ * not per marker (the 2026-10-16 owner ruling replaced the `(discarded)` /
+ * whole-call-waiver shape):
+ *
+ *  - a fold of a small span may carry a genuinely short summary;
+ *  - a fold of a large span still owes a real one, whatever else the call folds
+ *    (mixing junk with real content must not force filler on the junk, and must
+ *    not let the real content off either);
+ *  - a block-ref fold (tier 2/3 distillation) ALWAYS owes the floor: its input
+ *    is already a summary, so it is the one place where a stub would break the
+ *    tier chain that carries information upward.
+ *
+ * The kernel reads `minSummaryLength` per call, so `handleCompress` hands it 0
+ * and applies this policy itself, refusing an entry with the kernel's own
+ * message shape when it is too short.
+ *
+ * @param session - the session being folded.
+ * @param range - the accepted range, with its surface edges and refs.
+ * @param floor - the configured floor (`config.compress.minSummaryLength`).
+ * @returns `undefined` when the entry may fold, otherwise the refusal note.
+ */
+export function summaryFloorRefusal(
+  session: Session,
+  range: { start: number; end: number; startSeq: number; endSeq: number; summary: string },
+  floor: number,
+): string | undefined {
+  if (floor <= 0) return undefined
+  // `blockRefForSummarySeq` returns `null` (not undefined) for a plain message.
+  const distilled = blockRefForSummarySeq(session, range.start) !== null
+    || blockRefForSummarySeq(session, range.end) !== null
+  const tokens = foldedSpanTokens(session, range.start, range.end)
+  const length = range.summary.trim().length
+  const bound = distilled || tokens > SHORT_SPAN_SUMMARY_TOKENS
+  if (!bound || length >= floor) return undefined
+  return `  seqs ${String(range.startSeq)}..${String(range.endSeq)} skipped — Summary too short (${String(length)} chars, min ${String(floor)}). `
+    + `${distilled ? 'A block-ref distillation' : `This span is ~${String(tokens)} tokens`} needs a real summary; `
+    + `only spans under ~${String(SHORT_SPAN_SUMMARY_TOKENS)} tokens may fold with a shorter one.`
 }
 
 /**
@@ -913,32 +956,41 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     })
   }
 
+  // The summary floor, applied ENTRY BY ENTRY (see summaryFloorRefusal): this is
+  // the one thing the kernel cannot do, because it takes the floor per call —
+  // so a call that mixes junk slivers with real content waives it for the small
+  // spans and keeps it for the large ones, exactly as written.
+  const floorNotes: string[] = []
+  const foldable = ranges.filter((range) => {
+    const refusal = summaryFloorRefusal(session, range, config.compress.minSummaryLength)
+    if (refusal === undefined) return true
+    floorNotes.push(refusal)
+    return false
+  })
+
   // Nothing to do: every requested range was already compressed, rejected, or
   // a duplicate of an earlier range in the same call.
-  if (ranges.length === 0) {
-    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes]
+  if (foldable.length === 0) {
+    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes]
     if (alreadyCompressedNotes.length > 0) {
       text.push('  (all requested ranges were already compressed — decompress a block to recover its originals)')
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
       text.push('  (nothing compressed — every range resolved to a span an earlier range in this call already covers)')
     } else if (rejectedNotes.length > 0) {
       text.push('  (nothing compressed — every range covered a current guarded row, an injected policy row or the active user turn; see the rejections above)')
+    } else if (floorNotes.length > 0) {
+      text.push('  (nothing compressed — every range was too big to fold as a stub; give those spans a real summary)')
     }
     return { text: text.join('\n') }
   }
 
-  // The kernel's 50-character summary floor exists to stop a fold from being
-  // written as a stub. A DISCARD — every entry in this call is the `(discarded)`
-  // form, i.e. content with nothing to keep — has nothing to be substantive
-  // about, so the floor is waived FOR THIS CALL ONLY (the kernel takes the floor
-  // per call via its config). A mixed call, or any call without the marker,
-  // keeps the floor: there the model is summarizing real content.
-  const allDiscard = ranges.length > 0 && ranges.every((range) => isDiscardSummary(range.summary))
   const applied = env.kernel.applyCompression({
-    ranges: ranges.map(({ startRef, endRef, summary, topic }) => ({ startRef, endRef, summary, topic })),
+    ranges: foldable.map(({ startRef, endRef, summary, topic }) => ({ startRef, endRef, summary, topic })),
     messages: coreMessages,
     state: turn.state,
-    config: allDiscard ? { ...config, compress: { ...config.compress, minSummaryLength: 0 } } : config,
+    // The floor is the host's now (summaryFloorRefusal already refused the
+    // entries that owe one), so the kernel's per-call copy is switched off.
+    config: { ...config, compress: { ...config.compress, minSummaryLength: 0 } },
     // Deliberately NOT overriding protectedMessageIds: with the full log the
     // kernel's recent/last-user protection is computed over the same
     // non-block-covered messages as the visible feed, so default behavior is
@@ -966,8 +1018,8 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     // the model committed to, not each of its entries — and the spans it folds
     // past the start take the count back from every age region they reached into
     // (only for a contiguous run of offers: see src/age-region-skips.ts).
-    if (ranges.length > 0) {
-      noteAgeRegionChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })))
+    if (foldable.length > 0) {
+      noteAgeRegionChoice(String(session.id), foldable.map((range) => ({ start: range.startSeq, end: range.endSeq })))
     }
   }
 
@@ -1077,7 +1129,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   }
 
   const summaryLine = `Compressed ${applied.result.blocksCreated} block(s), ~${applied.result.tokensCompressed} tokens reclaimed.`
-  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length
+  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length + floorNotes.length
   const failedLines = applied.result.errors.map((error) => `  ${error}`)
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
@@ -1086,6 +1138,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     ...duplicateRangeNotes,
     ...rejectedNotes,
     ...splitNotes,
+    ...floorNotes,
     ...lines,
   ]
   const footer = totalSkipped > 0

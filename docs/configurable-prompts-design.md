@@ -333,7 +333,7 @@ rangeTable: {
 
 > **投递位置(2026-10-16,规则 21)**:下面的 `systemPromptTemplate` 是 P6 的**文本**,不再是它的**投递位置**。默认 `guidanceDelivery: 'message'` 把同一份渲染结果作为一条持久化注入行(`plugin:acp-guidance`)投递,只在文本变化时**追加**新副本、旧行保持逐字节不变——因为宿主的 system prompt 与工具定义位于请求头部,而 provider 缓存的是**前缀**:改一个字就会让后面整段上下文按未命中重发(实测 533K 会话 hit 0.7%)。`guidanceDelivery: 'system'` 才回到本节描述的 section 形态。
 
-> **工具描述的去向(2026-10-16,规则 22,P1–P5)**:下表 P1–P5 的四个**默认**工具描述已改为**短契约**(做什么 + 调用形状 + seq/bN 边界 + 指向指导文本),原先住在描述里的规则(压缩时机、re-verify 自检、DISCARD 形态、摘要唯一记录、`verifiedReadings`)搬进 P6 的 `systemPromptTemplate`。原因:工具描述在**每个请求**的 tools 数组里,改一次 = 从 tools 段起整段缓存失效(隔离 HOME 实测 hit 4.7%/未命中 23,401),而指导文本改动只是尾部追加(实测 hit 85.6%/未命中 2,867)。`config.prompts.tools.*` 覆盖通道不变,但覆盖长的描述文案会重新引入这个问题。
+> **工具描述的去向(2026-10-16,规则 22,P1–P5)**:下表 P1–P5 的四个**默认**工具描述已改为**短契约**(做什么 + 调用形状 + seq/bN 边界 + 指向指导文本),原先住在描述里的规则(压缩时机、re-verify 自检、摘要可以有多短、摘要唯一记录、`verifiedReadings`)搬进 P6 的 `systemPromptTemplate`。原因:工具描述在**每个请求**的 tools 数组里,改一次 = 从 tools 段起整段缓存失效(隔离 HOME 实测 hit 4.7%/未命中 23,401),而指导文本改动只是尾部追加(实测 hit 85.6%/未命中 2,867)。`config.prompts.tools.*` 覆盖通道不变,但覆盖长的描述文案会重新引入这个问题。
 
 把现有 `ACP_SYSTEM_PROMPT` 的可变段换成占位符(K4):
 

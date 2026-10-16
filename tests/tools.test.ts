@@ -11,7 +11,7 @@ import { edgeRefForSeq, makeTools, mnRefIndex, type ToolEnvironment } from '../s
 import { blockRegistry, rebuildBlockLedger, reasoningOf, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
 import { rangeTable } from '../src/nudge.ts'
 import { SUMMARY_FRAME_PREFIX, reasoningForToolCall } from '../src/messages.ts'
-import { appendTurn, appendToolResult, appendEmptyToolResult, appendToolCall, appendMultiToolCall, appendUser, appendAssistant, buildTextSession, buildShortTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
+import { appendTurn, appendToolResult, appendEmptyToolResult, appendToolCall, appendMultiToolCall, appendUser, appendAssistant, buildTextSession, buildMediumTextSession, buildShortTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
 
 function makeEnv(limit = 128000): ToolEnvironment {
   return {
@@ -149,48 +149,86 @@ test('M3: a content array that arrives as JSON text is unwrapped, not rejected',
 })
 
 /**
- * The kernel's 50-character summary floor is waived for ONE shape of call: every
- * entry a discard. Junk fragments are exactly where a floor does the least good
- * (there is nothing to be substantive about, and padding it into a paragraph is
- * pure noise the model then has to write) and the most harm (the model either
- * refuses or writes filler). The exemption is per CALL and keyed on the marker,
- * so a mixed call — or any call without the marker — keeps the floor.
+ * The summary floor is the HOST's rule and it is per ENTRY (owner ruling,
+ * 2026-10-16): the kernel takes `minSummaryLength` per call, so a call that
+ * mixes junk slivers with real content used to have to pick one floor for both.
+ * Now the size of the span each entry folds decides — small spans may carry a
+ * one-sentence honest summary, large ones (and block-ref distillations) owe a
+ * real one, in the same call.
  */
-test('M3: an all-discard call may carry a short summary; a mixed call may not', async () => {
+/**
+ * The fixture the per-entry floor needs: an old run of BIG messages, then a run
+ * of SMALL ones (a few hundred characters — junk-sliver sized), then a tail big
+ * enough to be the protected zone. The kernel protects the last 5 messages *or
+ * 5000 tokens*, so the tail must be heavy in TOKENS: with light messages the
+ * whole session would sit inside the protected zone and nothing could fold.
+ * Layout: [turn] big 1..8 · small 9..26 · big tail 27..31.
+ */
+function buildFloorFixture(): Session {
+  const session = buildTextSession(8)
+  for (let index = 0; index < 18; index += 1) {
+    const line = `Command output ${String(index).padStart(3, '0')} ${'cmd-result '.repeat(32)}`
+    if (index % 2 === 0) appendUser(session, line)
+    else appendAssistant(session, line, 1, index)
+  }
+  for (let index = 0; index < 5; index += 1) {
+    if (index % 2 === 0) appendUser(session, longText('tail', index))
+    else appendAssistant(session, longText('tail-reply', index), 1, index)
+  }
+  return session
+}
+
+test('M3: the summary floor is judged per entry by the size of the folded span', async () => {
   // A fresh env per case: one store/kernel per session keeps the sub-cases
   // independent (the kernel state is per session, but the tool holds the env).
-  const compressFor = (): { compress: ReturnType<typeof toolOf>; exec: ReturnType<typeof fakeExec> } => {
-    const session = buildTextSession(12)
-    return { compress: toolOf(makeEnv(), 'compress'), exec: fakeExec(session) }
-  }
+  const compressFor = (session: Session = buildTextSession(12)): { compress: ReturnType<typeof toolOf>; exec: ReturnType<typeof fakeExec> } => ({
+    compress: toolOf(makeEnv(), 'compress'),
+    exec: fakeExec(session),
+  })
 
-  // (a) Every entry a discard → the floor is waived, and the fold lands.
-  const allDiscard = compressFor()
-  const discardOnly = await allDiscard.compress.execute({
+  // (a) Small spans may fold with one short honest sentence — junk slivers have
+  // nothing to pad. Each span here is ~300 tokens (under the waiver), and six of
+  // them in one call clear the kernel's own 1250-token compress gate.
+  const small = compressFor(buildFloorFixture())
+  const smallResult = await small.compress.execute({
     content: [
-      { startSeq: 1, endSeq: 3, summary: '(discarded) two retry rounds — nothing kept' },
-      { startSeq: 4, endSeq: 5, summary: '(discarded) duplicate tool output — nothing kept' },
+      { startSeq: 9, endSeq: 11, summary: 'retry logs — nothing kept' },
+      { startSeq: 12, endSeq: 14, summary: 'duplicate probe output — nothing kept' },
+      { startSeq: 15, endSeq: 17, summary: 'empty directory listing — nothing kept' },
+      { startSeq: 18, endSeq: 20, summary: 'no-op status check — nothing kept' },
+      { startSeq: 21, endSeq: 23, summary: 'third retry of the same probe — nothing kept' },
+      { startSeq: 24, endSeq: 26, summary: 'same listing again — nothing kept' },
     ],
-  } as never, allDiscard.exec)
-  const discardText = (discardResultText(discardOnly))
-  assert.match(discardText, /Compressed 2 block/, `both short discards landed (${discardText.slice(0, 120)})`)
+  } as never, small.exec)
+  const smallText = discardResultText(smallResult)
+  assert.match(smallText, /Compressed 6 block/, `all six short summaries landed (${smallText.slice(0, 140)})`)
 
-  // (b) A short NON-discard summary still trips the kernel floor.
+  // (b) A LARGE span still owes the floor (~1K-token fixture messages).
   const plain = compressFor()
   const shortReal = await plain.compress.execute({
     content: [{ startSeq: 1, endSeq: 5, summary: 'auth work' }],
   } as never, plain.exec)
   assert.match(discardResultText(shortReal), /Summary too short/, 'a lazy stub on real content is refused')
 
-  // (c) Mixed call: the discard marker does not carry the other entry past the floor.
-  const mixed = compressFor()
+  // (c) …and the two rules hold in ONE call: the junk slivers fold with one
+  // sentence each while the big span in the same call is refused for being a
+  // stub. (Five slivers, not one: the kernel's own "compressible content too
+  // small" gate is measured over the ranges that survive — refuse the big entry
+  // and only 279 tokens of slivers are left, which the kernel will not fold.)
+  const mixed = compressFor(buildFloorFixture())
   const mixedResult = await mixed.compress.execute({
     content: [
-      { startSeq: 1, endSeq: 3, summary: '(discarded) retries — nothing kept' },
-      { startSeq: 4, endSeq: 5, summary: 'auth work' },
+      { startSeq: 9, endSeq: 11, summary: 'retry logs — nothing kept' },
+      { startSeq: 12, endSeq: 14, summary: 'duplicate probe output — nothing kept' },
+      { startSeq: 15, endSeq: 17, summary: 'empty directory listing — nothing kept' },
+      { startSeq: 18, endSeq: 20, summary: 'no-op status check — nothing kept' },
+      { startSeq: 21, endSeq: 23, summary: 'third retry of the same probe — nothing kept' },
+      { startSeq: 1, endSeq: 3, summary: 'auth work' },
     ],
   } as never, mixed.exec)
-  assert.match(discardResultText(mixedResult), /Summary too short/, 'the floor stands in a mixed call')
+  const mixedText = discardResultText(mixedResult)
+  assert.match(mixedText, /Compressed 5 block/, `the five slivers still folded (${mixedText.slice(0, 160)})`)
+  assert.match(mixedText, /Summary too short/, 'and the large one was refused in the same call')
 })
 
 /** The result text, whether the handler returned text or an error payload. */

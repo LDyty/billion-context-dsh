@@ -7074,14 +7074,14 @@ var DEFAULT_PROMPTS = {
   },
   tools: {
     // Short, STABLE contracts. The rules these used to carry (timing, the
-    // re-verify self-check, the DISCARD form, the summary contract) now live in
+    // re-verify self-check, how short a summary may be, the summary contract) now live in
     // the ACP guidance text (rule 22, see src/guidance.ts) — that text is
     // delivered ONCE and APPENDED on change, so a wording edit there costs a
     // tail append instead of re-sending the whole context, which is what an
     // edit to a tool description (request HEAD) does. Keep these lines short
     // and until-now-untrue of churn: every word here is paid for by every
     // request of every session.
-    compress: "Compress conversation ranges into dense summaries you write. compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array (one entry per block; keep entries disjoint). Boundaries are SURFACE SEQS (acp_status / the latest nudge table), never the bN block refs. Before you compress, read the standing ACP guidance delivered in this session (the plugin:acp-guidance block, or the ACP system-prompt section): it carries the timing rules, the re-verify self-check, the DISCARD form, the summary contract, and optional verifiedReadings.",
+    compress: "Compress conversation ranges into dense summaries you write. compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array (one entry per block; keep entries disjoint). Boundaries are SURFACE SEQS (acp_status / the latest nudge table), never the bN block refs. Before you compress, read the standing ACP guidance delivered in this session (the plugin:acp-guidance block, or the ACP system-prompt section): it carries the timing rules, the re-verify self-check, how short a summary may be, the summary contract, and optional verifiedReadings.",
     decompress: "Recover a compressed block's original content, read-only: decompress({ blockId }) \u2014 the `bN` ref shown by acp_status (e.g. b1) or a compaction id from search_context. Large blocks are paged: pass offset/limit and follow the continue hint in the result.",
     searchContext: "Search inside compressed blocks (summaries and original content) for information the model no longer sees in context. When a summary lacks a detail you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST \u2014 never guess or reconstruct from memory: search_context(query) locates the right block, then decompress only that block to recover the original.",
     acpStatus: "Context status and the live compressible-range table (the seqs to hand to compress): no args = overview; scope/view/tool/sort/limit drill down. Overview percentages are shares of the visible content, not the context window. COMPRESSED BLOCKS refs (bN, e.g. b1) are for decompress \u2014 compress boundaries are the Surface: seqs. Drilldown row refs are kernel ids (mN), which compress accepts directly (auto-mapped to the live surface seq)."
@@ -7114,7 +7114,7 @@ Compression tools (refs are SURFACE SEQS, not ids):
   Good compression moments: stage or subtask completion whose details you have fully consumed and will not re-check, strategy switches, intermediate milestones, and wrapping up failed exploration \u2014 when the details are consumed and no longer critical for the task ahead.
   Before compressing, ask: will I need to re-verify any detail from this range in this task? If yes, keep it live. Never compress content the current step is actively using.
   When you write a summary, turn dead-end exploration into a conclusion (what was tried, why it failed, the next step) \u2014 not a blow-by-blow; and keep the summary the ONLY record: self-contained, so a later reader (or you, after decompress) can continue without the original.
-  NOT every range deserves that treatment: a span that held only noise, duplicated tool output, retries, or output already superseded by a later result gets the DISCARD form instead \u2014 summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." Never pad a junk range into a fake summary, and never silently skip it \u2014 the entry is what frees the tokens. The 50-character summary floor is waived only when EVERY entry of the call is a discard, so fold junk-only spans as their own call (a few words each is enough); in a mixed call every entry still needs the full summary.
+  NOT every range deserves that treatment: a span that held only noise, duplicated tool output, retries, or output already superseded by a later result gets a short HONEST summary instead \u2014 say what it was and that nothing was kept, and let decompress be the way back to the raw bytes (e.g. "retry logs \u2014 nothing kept; decompress for the raw output"). How short is judged per ENTRY by the SIZE of the span you are folding: a span under ~500 tokens may be a single sentence, while a span over that \u2014 and any block-ref distillation \u2014 still owes a real summary of at least 50 characters. So junk slivers stay short inside a call that also folds real content; there is no whole-call switch. Never pad a junk range into a fake summary, and never silently skip it \u2014 the entry is what frees the tokens.
   Optional verifiedReadings: string[] per content entry records acceptance readings that are already green (e.g. "t0-fastpath 8/8") \u2014 stored structurally on the compaction event so later steps need not re-run them.
 - decompress: recover a compressed block's original content, read-only. decompress({ blockId }) \u2014 accept the bN ref shown by acp_status (e.g. b1) or a compaction id. Large blocks page (each page sized to stay under the host tool-result trim budget, up to 100 messages): pass offset/limit and follow the continue hint in the result.
 - search_context: when a summary lacks the details you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST \u2014 never guess or reconstruct from memory; search_context(query) locates the right block, decompress only that block.
@@ -7126,7 +7126,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age region that start did NOT fall into was counted once; when that same call folded a CONTIGUOUS RUN of more than one compressible range (a sweep \u2014 consecutive offers with nothing compressible left unfolded in between), every age region those other spans reached into gave that count back \u2014 a fold that went through an age region did not pass it over, while a batch of unrelated scattered segments counts as the pass-overs it made. So a climbing number marks an age region your folds keep starting somewhere else AND never fold through, and the smallest number is the age region you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on an age region whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets a SHORT HONEST summary rather than an invented one \u2014 say what it was and that nothing was kept. The summary floor (50 characters) is judged PER ENTRY against the SIZE of the span being folded: a span under ~500 tokens may take a single sentence, while a larger span \u2014 and any block-ref distillation \u2014 still owes a real summary. A call that mixes junk slivers with real content therefore keeps each entry's own rule; there is no whole-call switch to game. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age region that start did NOT fall into was counted once; when that same call folded a CONTIGUOUS RUN of more than one compressible range (a sweep \u2014 consecutive offers with nothing compressible left unfolded in between), every age region those other spans reached into gave that count back \u2014 a fold that went through an age region did not pass it over, while a batch of unrelated scattered segments counts as the pass-overs it made. So a climbing number marks an age region your folds keep starting somewhere else AND never fold through, and the smallest number is the age region you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on an age region whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -9136,7 +9136,7 @@ var compressParameters = {
             },
             summary: {
               type: "string",
-              description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters \u2014 the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed; junk-only spans are cheapest folded as their own call). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.'
+              description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. How short it may be is judged PER ENTRY by the SIZE of the span you are folding: a span over ~500 tokens owes at least 50 characters, and so does any block-ref distillation whatever its size, while a span under ~500 tokens may be a single honest sentence. A span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result) gets exactly that short honest summary \u2014 say what it was and that nothing was kept (e.g. "retry logs \u2014 nothing kept; decompress for the raw output") \u2014 rather than an invented one. Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.'
             },
             topic: { type: "string", description: "Short label (3-5 words) for this range." },
             // B3 (2026-09-08 governance plan): the handler and region.ts have
@@ -9171,9 +9171,23 @@ function parseSeq(value) {
   }
   return seq;
 }
-var DISCARD_SUMMARY_MARKER = "(discarded)";
-function isDiscardSummary(summary) {
-  return summary.trimStart().toLowerCase().startsWith(DISCARD_SUMMARY_MARKER);
+var SHORT_SPAN_SUMMARY_TOKENS = 500;
+function foldedSpanTokens(session, start, end) {
+  let total = 0;
+  for (let seq = start; seq <= end; seq += 1) {
+    const event = eventAtOf(session, seq);
+    if (event !== void 0) total += hostPriceEvent(event);
+  }
+  return total;
+}
+function summaryFloorRefusal(session, range, floor) {
+  if (floor <= 0) return void 0;
+  const distilled = blockRefForSummarySeq(session, range.start) !== null || blockRefForSummarySeq(session, range.end) !== null;
+  const tokens = foldedSpanTokens(session, range.start, range.end);
+  const length = range.summary.trim().length;
+  const bound = distilled || tokens > SHORT_SPAN_SUMMARY_TOKENS;
+  if (!bound || length >= floor) return void 0;
+  return `  seqs ${String(range.startSeq)}..${String(range.endSeq)} skipped \u2014 Summary too short (${String(length)} chars, min ${String(floor)}). ${distilled ? "A block-ref distillation" : `This span is ~${String(tokens)} tokens`} needs a real summary; only spans under ~${String(SHORT_SPAN_SUMMARY_TOKENS)} tokens may fold with a shorter one.`;
 }
 var MN_RE = /^m0*(\d{1,7})(?:#.*)?$/i;
 function mnRefIndex(value) {
@@ -9485,23 +9499,33 @@ async function handleCompress(env, args, exec) {
       ...(range.topic ?? args.topic) === void 0 ? {} : { topic: range.topic ?? args.topic }
     });
   }
-  if (ranges.length === 0) {
-    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes];
+  const floorNotes = [];
+  const foldable = ranges.filter((range) => {
+    const refusal = summaryFloorRefusal(session, range, config.compress.minSummaryLength);
+    if (refusal === void 0) return true;
+    floorNotes.push(refusal);
+    return false;
+  });
+  if (foldable.length === 0) {
+    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes];
     if (alreadyCompressedNotes.length > 0) {
       text.push("  (all requested ranges were already compressed \u2014 decompress a block to recover its originals)");
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
       text.push("  (nothing compressed \u2014 every range resolved to a span an earlier range in this call already covers)");
     } else if (rejectedNotes.length > 0) {
       text.push("  (nothing compressed \u2014 every range covered a current guarded row, an injected policy row or the active user turn; see the rejections above)");
+    } else if (floorNotes.length > 0) {
+      text.push("  (nothing compressed \u2014 every range was too big to fold as a stub; give those spans a real summary)");
     }
     return { text: text.join("\n") };
   }
-  const allDiscard = ranges.length > 0 && ranges.every((range) => isDiscardSummary(range.summary));
   const applied = env.kernel.applyCompression({
-    ranges: ranges.map(({ startRef, endRef, summary, topic }) => ({ startRef, endRef, summary, topic })),
+    ranges: foldable.map(({ startRef, endRef, summary, topic }) => ({ startRef, endRef, summary, topic })),
     messages: coreMessages,
     state: turn.state,
-    config: allDiscard ? { ...config, compress: { ...config.compress, minSummaryLength: 0 } } : config
+    // The floor is the host's now (summaryFloorRefusal already refused the
+    // entries that owe one), so the kernel's per-call copy is switched off.
+    config: { ...config, compress: { ...config.compress, minSummaryLength: 0 } }
     // Deliberately NOT overriding protectedMessageIds: with the full log the
     // kernel's recent/last-user protection is computed over the same
     // non-block-covered messages as the visible feed, so default behavior is
@@ -9513,8 +9537,8 @@ async function handleCompress(env, args, exec) {
   env.store.set(session, applied.state);
   if (applied.result.blocksCreated > 0) {
     env.compressCallIdsToHide?.add(exec.callId);
-    if (ranges.length > 0) {
-      noteAgeRegionChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })));
+    if (foldable.length > 0) {
+      noteAgeRegionChoice(String(session.id), foldable.map((range) => ({ start: range.startSeq, end: range.endSeq })));
     }
   }
   const previousIds = new Set(turn.state.blocks.map((block) => block.blockId));
@@ -9586,7 +9610,7 @@ async function handleCompress(env, args, exec) {
     );
   }
   const summaryLine = `Compressed ${applied.result.blocksCreated} block(s), ~${applied.result.tokensCompressed} tokens reclaimed.`;
-  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length;
+  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length + floorNotes.length;
   const failedLines = applied.result.errors.map((error) => `  ${error}`);
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
@@ -9595,6 +9619,7 @@ async function handleCompress(env, args, exec) {
     ...duplicateRangeNotes,
     ...rejectedNotes,
     ...splitNotes,
+    ...floorNotes,
     ...lines
   ];
   const footer = totalSkipped > 0 ? `  (${totalSkipped} range(s) skipped or failed \u2014 see above)` : "";

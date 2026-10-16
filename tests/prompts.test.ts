@@ -273,38 +273,36 @@ test('M4/prompts 5: tool descriptions render the defaults byte-identical', () =>
   const descriptions = Object.fromEntries(makeTools(makeEnv(128000)).map((t) => [t.name, t.description]))
   assert.equal(
     descriptions['compress'],
-    'Compress conversation ranges into dense summaries you write. compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array (one entry per block; keep entries disjoint). Boundaries are SURFACE SEQS (acp_status / the latest nudge table), never the bN block refs. Before you compress, read the standing ACP guidance delivered in this session (the plugin:acp-guidance block, or the ACP system-prompt section): it carries the timing rules, the re-verify self-check, the DISCARD form, the summary contract, and optional verifiedReadings.',
+    'Compress conversation ranges into dense summaries you write. compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array (one entry per block; keep entries disjoint). Boundaries are SURFACE SEQS (acp_status / the latest nudge table), never the bN block refs. Before you compress, read the standing ACP guidance delivered in this session (the plugin:acp-guidance block, or the ACP system-prompt section): it carries the timing rules, the re-verify self-check, how short a summary may be, the summary contract, and optional verifiedReadings.',
   )
   assert.equal(descriptions['decompress'], 'Recover a compressed block\'s original content, read-only: decompress({ blockId }) — the `bN` ref shown by acp_status (e.g. b1) or a compaction id from search_context. Large blocks are paged: pass offset/limit and follow the continue hint in the result.')
   assert.equal(descriptions['search_context'], 'Search inside compressed blocks (summaries and original content) for information the model no longer sees in context. When a summary lacks a detail you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST — never guess or reconstruct from memory: search_context(query) locates the right block, then decompress only that block to recover the original.')
   assert.equal(descriptions['acp_status'], 'Context status and the live compressible-range table (the seqs to hand to compress): no args = overview; scope/view/tool/sort/limit drill down. Overview percentages are shares of the visible content, not the context window. COMPRESSED BLOCKS refs (bN, e.g. b1) are for decompress — compress boundaries are the Surface: seqs. Drilldown row refs are kernel ids (mN), which compress accepts directly (auto-mapped to the live surface seq).')
 })
 
-test('M4/prompts 5f: the discard form is sanctioned in the guidance (and the tool points at it)', () => {
-  // A sweep can carry dozens of spans, most of them dead weight, and the kernel
-  // rejects any summary under 50 characters (`minSummaryLength`). Without a
-  // sanctioned cheap form the model has three bad options: pad junk into a fake
-  // high-fidelity summary, skip the span (the sweep reclaims nothing), or refuse.
-  // The rule therefore has to be stated where the model reads it — the guidance
-  // text and the summary field itself — not only in the schema, which is what
-  // the tool-call form shows only after the choice. Rule 22 moved the long form
-  // OUT of the tool description (request HEAD) into the guidance text; the tool
-  // description keeps a pointer so a reader always finds it.
+test('M4/prompts 5f: how short a summary may be is stated where the model reads it', () => {
+  // A sweep can carry dozens of spans, most of them dead weight, and a summary
+  // under the floor is refused. The rule (owner ruling, 2026-10-16) is per ENTRY
+  // and judged by the SIZE of the span folded — a small sliver may be one
+  // sentence, a large span (or a block-ref distillation) still owes a real
+  // summary, in the same call. It has to be stated where the model reads it: the
+  // guidance text and the summary field itself, not only in the schema. Rule 22
+  // keeps the long form in the guidance; the tool description keeps a pointer.
   const rendered = renderSystemPrompt(resolvePrompts())
   const descriptions = Object.fromEntries(makeTools(makeEnv(128000)).map((t) => [t.name, t.description]))
   const compress = descriptions['compress']
   assert.ok(
-    rendered.includes('gets the DISCARD form instead'),
-    'the guidance names the discard form',
+    rendered.includes('gets a short HONEST summary instead'),
+    'the guidance names the short honest summary',
   )
   assert.ok(
-    rendered.includes('decompress this block only if the raw output is needed'),
-    'and spells out the exact shape to write',
+    rendered.includes('a span under ~500 tokens may be a single sentence'),
+    'and states the size rule',
   )
   assert.ok(rendered.includes('never silently skip it'), 'and forbids dropping the entry instead')
   assert.ok(
-    compressParameters.content.oneOf[0].items.properties.summary.description.includes('(discarded)'),
-    'the summary field itself shows the form (that is what the model sees while writing it)',
+    compressParameters.content.oneOf[0].items.properties.summary.description.includes('~500 tokens'),
+    'the summary field itself states the rule (that is what the model sees while writing it)',
   )
   assert.ok(
     compress.includes('plugin:acp-guidance'),

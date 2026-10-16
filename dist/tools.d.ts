@@ -96,7 +96,7 @@ export declare const compressParameters: {
                     };
                     readonly summary: {
                         readonly type: 'string';
-                        readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. Minimum 50 characters — the kernel rejects shorter, EXCEPT when every entry in your call is the discard form below (then a few words are enough, no padding needed; junk-only spans are cheapest folded as their own call). For a span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result), use the discard form instead of inventing content: "(discarded) <what it was> — no findings kept; decompress this block only if the raw output is needed." Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.';
+                        readonly description: 'Complete technical summary replacing the range; keep paths, decisions, values verbatim. How short it may be is judged PER ENTRY by the SIZE of the span you are folding: a span over ~500 tokens owes at least 50 characters, and so does any block-ref distillation whatever its size, while a span under ~500 tokens may be a single honest sentence. A span with NO durable value (pure noise, duplicated tool output, retries, output already superseded by a later result) gets exactly that short honest summary — say what it was and that nothing was kept (e.g. "retry logs — nothing kept; decompress for the raw output") — rather than an invented one. Never pad a junk span into a fake summary, and never leave the entry out: the entry is what frees the tokens.';
                     };
                     readonly topic: {
                         readonly type: 'string';
@@ -118,20 +118,42 @@ export declare const compressParameters: {
         }];
     };
 };
-/** The marker every discard summary starts with (see the compress description). */
-export declare const DISCARD_SUMMARY_MARKER = "(discarded)";
 /**
- * Whether one entry is the DISCARD form — a range with nothing worth keeping,
- * folded with a marker instead of an invented summary. The marker is the whole
- * contract: the model writes it deliberately, and the engine only widens the
- * kernel's summary floor for calls where EVERY entry carries it (see
- * `handleCompress`), so the marker cannot be used to smuggle a stub past the
- * floor for content that was supposed to be summarized.
- *
- * @param summary - the entry's summary text.
- * @returns true when the trimmed summary opens with the marker.
+ * How small a folded span has to be before its summary may go UNDER the kernel
+ * floor (owner rule, 2026-10-16). A few hundred tokens of junk have nothing to
+ * be substantive about, and padding them into 50+ characters is filler the
+ * model then has to read back.
  */
-export declare function isDiscardSummary(summary: string): boolean;
+export declare const SHORT_SPAN_SUMMARY_TOKENS = 500;
+/**
+ * The summary floor is the HOST's rule, and it is per ENTRY — not per call and
+ * not per marker (the 2026-10-16 owner ruling replaced the `(discarded)` /
+ * whole-call-waiver shape):
+ *
+ *  - a fold of a small span may carry a genuinely short summary;
+ *  - a fold of a large span still owes a real one, whatever else the call folds
+ *    (mixing junk with real content must not force filler on the junk, and must
+ *    not let the real content off either);
+ *  - a block-ref fold (tier 2/3 distillation) ALWAYS owes the floor: its input
+ *    is already a summary, so it is the one place where a stub would break the
+ *    tier chain that carries information upward.
+ *
+ * The kernel reads `minSummaryLength` per call, so `handleCompress` hands it 0
+ * and applies this policy itself, refusing an entry with the kernel's own
+ * message shape when it is too short.
+ *
+ * @param session - the session being folded.
+ * @param range - the accepted range, with its surface edges and refs.
+ * @param floor - the configured floor (`config.compress.minSummaryLength`).
+ * @returns `undefined` when the entry may fold, otherwise the refusal note.
+ */
+export declare function summaryFloorRefusal(session: Session, range: {
+    start: number;
+    end: number;
+    startSeq: number;
+    endSeq: number;
+    summary: string;
+}, floor: number): string | undefined;
 /** Exported so the ref-width contract test can pin it without a 100K-message fixture. */
 export declare function mnRefIndex(value: string): number | null;
 /**
