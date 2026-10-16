@@ -7064,7 +7064,7 @@ var DEFAULT_PROMPTS = {
     // model's to weigh, so the line must not argue for compressing. The price
     // ratio is a fact too — the billing weight of one uncached token.
     context: "Context: {used} / {window} tokens used ({pct}%) \xB7 cache-miss/cache-hit price ratio {ratio}\xD7",
-    title: "Compressible ranges ({count} \u2014 up to 3 of each age region's largest intervals, oldest first; exact surface seqs \u2014 usable as-is):",
+    title: "Compressible ranges ({count} \u2014 up to 3 of each age region, the cheapest to fold, printed oldest first; exact surface seqs \u2014 usable as-is):",
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: "[age region {region}{age} \xB7 skipped {skipped}\xD7]",
     // Two figures, two units, each printed where it belongs: the row MIX rides
@@ -8699,11 +8699,11 @@ function partitionOfferableIntoAgeRegions(all, ageRegions = RANGE_TABLE_AGE_REGI
   close();
   return groups;
 }
-function rangeTableRowsOfGroups(groups, perRegion = RANGE_TABLE_ROWS_PER_AGE_REGION) {
+function rangeTableRowsOfGroups(groups, perRegion = RANGE_TABLE_ROWS_PER_AGE_REGION, rankKey = (range) => -range.tokens) {
   const rows = [];
   const take = Math.max(1, perRegion);
   for (const [index, group] of groups.entries()) {
-    const ranked = [...group].sort((left, right) => right.tokens - left.tokens || left.start - right.start).slice(0, take);
+    const ranked = [...group].sort((left, right) => rankKey(left) - rankKey(right) || left.start - right.start).slice(0, take);
     const rankOf = new Map(ranked.map((range, position) => [range, position + 1]));
     for (const range of ranked.sort((left, right) => left.start - right.start)) {
       rows.push({ range, ageRegion: index + 1, rank: rankOf.get(range) ?? 1 });
@@ -8717,17 +8717,27 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     kernelView,
     mediaPriceOf === void 0 ? {} : { mediaPriceOf }
   );
-  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges);
-  const rangeRows = rangeTableRowsOfGroups(ageRegionGroups);
-  if (rangeRows.length === 0) return "";
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf);
+  const missHitRatioForRank = context?.missHitRatio ?? 50;
+  const paybackOfRange = /* @__PURE__ */ new Map();
+  for (const [index, range] of ranges.entries()) {
+    const cost = costs[index];
+    paybackOfRange.set(range, cost === void 0 ? Number.POSITIVE_INFINITY : billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatioForRank));
+  }
+  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges);
+  const rangeRows = rangeTableRowsOfGroups(
+    ageRegionGroups,
+    RANGE_TABLE_ROWS_PER_AGE_REGION,
+    (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY
+  );
+  if (rangeRows.length === 0) return "";
   noteAgeRegions(String(session.id), ageRegionGroups.map((group) => ({
     start: group[0].start,
     end: group[group.length - 1].end
   })));
   noteOfferableSpans(String(session.id), ranges.map((range) => ({ start: range.start, end: range.end })));
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id));
-  const missHitRatio = context?.missHitRatio ?? 50;
+  const missHitRatio = missHitRatioForRank;
   const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };

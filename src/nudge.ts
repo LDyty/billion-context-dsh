@@ -202,11 +202,14 @@ export function meterMediaPriceResolver(
 export const RANGE_TABLE_AGE_REGIONS = 6
 
 /**
- * Rows printed PER age region (owner ruling, 2026-10-16): that region's three
- * largest intervals, oldest-first. One row per age region gave the model a
- * single choice per age, and the only way to see anything finer was to leave
- * the table; three rows make the table the place the choice is made, without
- * changing what the age regions are or how a fold start is attributed to one.
+ * Rows printed PER age region (owner ruling, 2026-10-16; caliber changed to the
+ * billing payback on 2026-10-17): that region's three CHEAPEST-to-fold intervals
+ * (lowest billing payback), printed oldest-first. One row per age region gave the
+ * model a single choice per age, and the only way to see anything finer was to
+ * leave the table; three rows make the table the place the choice is made,
+ * without changing what the age regions are or how a fold start is attributed.
+ * Ranking by payback rather than size matters: inside one age region a smaller,
+ * later-starting interval can re-send far less of the prefix than the largest one.
  */
 export const RANGE_TABLE_ROWS_PER_AGE_REGION = 3
 
@@ -351,7 +354,7 @@ export interface RangeTableRow<T> {
   readonly range: T
   /** 1-based age region; every row of one region carries the same number. */
   readonly ageRegion: number
-  /** 1-based rank by size inside the age region (1 = that region's largest). */
+  /** 1-based rank inside the age region by the caller's key (1 = cheapest to fold). */
   readonly rank: number
 }
 
@@ -372,25 +375,28 @@ export interface RangeTableContext {
 }
 
 /**
- * The rows the table prints: the LARGEST {@link RANGE_TABLE_ROWS_PER_AGE_REGION}
- * intervals of every age region. Within a region the rows are printed in surface
- * order (oldest first), so the whole table stays the timeline it is; the rank is
- * still decided by size, because the largest interval of a region is the one the
- * region's sweep is priced from.
+ * The rows the table prints: the {@link RANGE_TABLE_ROWS_PER_AGE_REGION} intervals
+ * of every age region that rank best under `rankKey` — the billing payback in
+ * production, so the three rows a region offers are its CHEAPEST folds. Within a
+ * region the rows are printed in surface order (oldest first), so the whole table
+ * stays the timeline it is; the rank itself follows the key.
  *
  * @param groups - the age regions, oldest first (see {@link partitionOfferableIntoAgeRegions}).
  * @param perRegion - rows per age region (defaults to {@link RANGE_TABLE_ROWS_PER_AGE_REGION}).
+ * @param rankKey - lower is better; defaults to size (the largest intervals), which
+ *   is what the pure-geometry callers and the range-selection invariants pin.
  * @returns one row per printed interval, oldest first.
  */
 export function rangeTableRowsOfGroups<T extends { start: number; end: number; tokens: number }>(
   groups: readonly (readonly T[])[],
   perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
+  rankKey: (range: T) => number = (range) => -range.tokens,
 ): RangeTableRow<T>[] {
   const rows: RangeTableRow<T>[] = []
   const take = Math.max(1, perRegion)
   for (const [index, group] of groups.entries()) {
     const ranked = [...group]
-      .sort((left, right) => right.tokens - left.tokens || left.start - right.start)
+      .sort((left, right) => rankKey(left) - rankKey(right) || left.start - right.start)
       .slice(0, take)
     const rankOf = new Map(ranked.map((range, position) => [range, position + 1]))
     for (const range of ranked.sort((left, right) => left.start - right.start)) {
@@ -412,8 +418,9 @@ export function selectRangeTableRows<T extends { start: number; end: number; tok
   all: readonly T[],
   ageRegions: number = RANGE_TABLE_AGE_REGIONS,
   perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
+  rankKey?: (range: T) => number,
 ): RangeTableRow<T>[] {
-  return rangeTableRowsOfGroups(partitionOfferableIntoAgeRegions(all, ageRegions), perRegion)
+  return rangeTableRowsOfGroups(partitionOfferableIntoAgeRegions(all, ageRegions), perRegion, rankKey)
 }
 
 /** Just the offered ranges, in the order the table prints them (tests, scratch tools). */
@@ -421,8 +428,9 @@ export function selectRangeTableRanges<T extends { start: number; end: number; t
   all: readonly T[],
   ageRegions: number = RANGE_TABLE_AGE_REGIONS,
   perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
+  rankKey?: (range: T) => number,
 ): T[] {
-  return selectRangeTableRows(all, ageRegions, perRegion).map((row) => row.range)
+  return selectRangeTableRows(all, ageRegions, perRegion, rankKey).map((row) => row.range)
 }
 
 /**
@@ -446,18 +454,29 @@ export function rangeTable(
     kernelView,
     mediaPriceOf === undefined ? {} : { mediaPriceOf },
   )
+  // What each offerable span would cost to fold — needed BEFORE the rows are
+  // picked, because the rows are chosen by billing payback (2026-10-17).
+  const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
+  const missHitRatioForRank = context?.missHitRatio ?? 50
+  const paybackOfRange = new Map<SeqCompressibleRange, number>()
+  for (const [index, range] of ranges.entries()) {
+    const cost = costs[index]
+    paybackOfRange.set(range, cost === undefined
+      ? Number.POSITIVE_INFINITY
+      : billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatioForRank))
+  }
   // The age regions are cut ONCE: their spans are what a later fold start is
   // attributed against (src/age-region-skips.ts), and the printed rows are the
-  // largest intervals inside them. Panel rebuilds record the same regions as a
-  // nudge does — a build is never a choice, so there is nothing to skip counting.
+  // cheapest-to-fold intervals inside them. Panel rebuilds record the same
+  // regions as a nudge does — a build is never a choice, so nothing increments.
   const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges)
-  const rangeRows = rangeTableRowsOfGroups(ageRegionGroups)
+  const rangeRows = rangeTableRowsOfGroups(
+    ageRegionGroups,
+    RANGE_TABLE_ROWS_PER_AGE_REGION,
+    (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY,
+  )
   // 零范围:整块省略(保留现状的提前返回与 nudge 尾部 '\n')。
   if (rangeRows.length === 0) return ''
-  // Each row carries its own fold cost: reclaiming a span makes every node at
-  // and after its start re-send uncached once, so the model needs that number to
-  // weigh a cheap-but-tiny span against an expensive-but-satisfying one.
-  const costs = foldCostsOfRanges(session, ranges, mediaPriceOf)
   // Publish this build's age region regions, then read the per-age region pass-over counts
   // (src/age-region-skips.ts): an age region's number moves only when a fold CHOOSES a start
   // outside it, never because the table was rebuilt or its span drifted.
@@ -472,7 +491,7 @@ export function rangeTable(
   // Billing caliber (owner ruling, 2026-10-17): every cost number the table
   // prints is the payback in REQUESTS at the provider's cache pricing — the
   // ratio rides the context line, the summary size is the stated allowance.
-  const missHitRatio = context?.missHitRatio ?? 50
+  const missHitRatio = missHitRatioForRank
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
   const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {

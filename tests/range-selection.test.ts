@@ -50,6 +50,28 @@ test('range selection: one age region offers its three largest intervals, oldest
   assert.equal(rangeTableRowsOfGroups([[range(10, 100), range(20, 200)]]).length, 2)
 })
 
+/**
+ * The production ranker is the BILLING PAYBACK (owner ruling, 2026-10-17), not
+ * size: inside one age region a smaller, later-starting interval can re-send far
+ * less of the prefix than the largest one, so the region must offer the cheapest
+ * three. The default ranker stays size-based for the pure-geometry callers.
+ */
+test('range selection: a payback ranker makes a region offer its cheapest intervals, not its largest', () => {
+  const groups = [[range(10, 300), range(20, 100)]]
+  assert.deepEqual(
+    rangeTableRowsOfGroups(groups).map((row) => row.range.start),
+    [10, 20],
+    'by default the larger interval ranks first (both fit)',
+  )
+  const payback = new Map([[10, 5], [20, 1]])
+  const cheapest = rangeTableRowsOfGroups(groups, 1, (entry) => payback.get(entry.start) ?? Number.POSITIVE_INFINITY)
+  assert.deepEqual(cheapest.map((row) => row.range.start), [20], 'the cheapest interval is the one offered')
+  assert.equal(cheapest[0]!.rank, 1, 'and it is rank 1 of its region')
+  // Ties fall back to surface order, so a region never shuffles between builds.
+  const tied = rangeTableRowsOfGroups(groups, 2, () => 1)
+  assert.deepEqual(tied.map((row) => row.range.start), [10, 20], 'equal paybacks keep the oldest-first print order')
+})
+
 test('range selection: an older age region keeps a row instead of losing it to the biggest spans', () => {
   // The discriminating shape: six medium spans early, six larger ones late. A
   // size-first table prints the six larger ones and nothing early; the age region

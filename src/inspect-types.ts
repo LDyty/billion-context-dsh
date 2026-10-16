@@ -37,8 +37,9 @@ export interface AcpInspectRow {
   /** 1-based age region index; age region 1 is the oldest sixth of the reclaimable content. */
   readonly ageRegion: number
   /**
-   * 1-based rank of this row's interval inside its age region, by size (1 = that
-   * region's largest). Every age region prints up to three intervals
+   * 1-based rank of this row's interval inside its age region by BILLING PAYBACK
+   * (1 = that region's cheapest to fold; owner ruling 2026-10-17). Every age
+   * region prints up to three intervals
    * ({@link RANGE_TABLE_ROWS_PER_AGE_REGION} in src/nudge.ts).
    */
   readonly rankInAgeRegion: number

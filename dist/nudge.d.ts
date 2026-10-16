@@ -65,11 +65,14 @@ export declare function meterMediaPriceResolver(agent: Agent, session: import('@
 /** Age regions the offerable list is cut into — the six 年龄区域. */
 export declare const RANGE_TABLE_AGE_REGIONS = 6;
 /**
- * Rows printed PER age region (owner ruling, 2026-10-16): that region's three
- * largest intervals, oldest-first. One row per age region gave the model a
- * single choice per age, and the only way to see anything finer was to leave
- * the table; three rows make the table the place the choice is made, without
- * changing what the age regions are or how a fold start is attributed to one.
+ * Rows printed PER age region (owner ruling, 2026-10-16; caliber changed to the
+ * billing payback on 2026-10-17): that region's three CHEAPEST-to-fold intervals
+ * (lowest billing payback), printed oldest-first. One row per age region gave the
+ * model a single choice per age, and the only way to see anything finer was to
+ * leave the table; three rows make the table the place the choice is made,
+ * without changing what the age regions are or how a fold start is attributed.
+ * Ranking by payback rather than size matters: inside one age region a smaller,
+ * later-starting interval can re-send far less of the prefix than the largest one.
  */
 export declare const RANGE_TABLE_ROWS_PER_AGE_REGION = 3;
 /** Rows the nudge range table prints, at most. */
@@ -141,7 +144,7 @@ export interface RangeTableRow<T> {
     readonly range: T;
     /** 1-based age region; every row of one region carries the same number. */
     readonly ageRegion: number;
-    /** 1-based rank by size inside the age region (1 = that region's largest). */
+    /** 1-based rank inside the age region by the caller's key (1 = cheapest to fold). */
     readonly rank: number;
 }
 /**
@@ -160,21 +163,23 @@ export interface RangeTableContext {
     readonly missHitRatio: number;
 }
 /**
- * The rows the table prints: the LARGEST {@link RANGE_TABLE_ROWS_PER_AGE_REGION}
- * intervals of every age region. Within a region the rows are printed in surface
- * order (oldest first), so the whole table stays the timeline it is; the rank is
- * still decided by size, because the largest interval of a region is the one the
- * region's sweep is priced from.
+ * The rows the table prints: the {@link RANGE_TABLE_ROWS_PER_AGE_REGION} intervals
+ * of every age region that rank best under `rankKey` — the billing payback in
+ * production, so the three rows a region offers are its CHEAPEST folds. Within a
+ * region the rows are printed in surface order (oldest first), so the whole table
+ * stays the timeline it is; the rank itself follows the key.
  *
  * @param groups - the age regions, oldest first (see {@link partitionOfferableIntoAgeRegions}).
  * @param perRegion - rows per age region (defaults to {@link RANGE_TABLE_ROWS_PER_AGE_REGION}).
+ * @param rankKey - lower is better; defaults to size (the largest intervals), which
+ *   is what the pure-geometry callers and the range-selection invariants pin.
  * @returns one row per printed interval, oldest first.
  */
 export declare function rangeTableRowsOfGroups<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(groups: readonly (readonly T[])[], perRegion?: number): RangeTableRow<T>[];
+}>(groups: readonly (readonly T[])[], perRegion?: number, rankKey?: (range: T) => number): RangeTableRow<T>[];
 /**
  * The same rows, straight from the offerable list.
  *
@@ -187,13 +192,13 @@ export declare function selectRangeTableRows<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(all: readonly T[], ageRegions?: number, perRegion?: number): RangeTableRow<T>[];
+}>(all: readonly T[], ageRegions?: number, perRegion?: number, rankKey?: (range: T) => number): RangeTableRow<T>[];
 /** Just the offered ranges, in the order the table prints them (tests, scratch tools). */
 export declare function selectRangeTableRanges<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(all: readonly T[], ageRegions?: number, perRegion?: number): T[];
+}>(all: readonly T[], ageRegions?: number, perRegion?: number, rankKey?: (range: T) => number): T[];
 /**
  * Render the compressible-range table as seq refs for the model.
  *

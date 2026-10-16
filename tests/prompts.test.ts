@@ -191,7 +191,7 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
   assert.equal(
     rangeTable(paged, wholeSurfaceRangeView(paged)),
     `\nSurface: 12 nodes, seqs 1..12
-Compressible ranges (1 — up to 3 of each age region's largest intervals, oldest first; exact surface seqs — usable as-is):
+Compressible ranges (1 — up to 3 of each age region, the cheapest to fold, printed oldest first; exact surface seqs — usable as-is):
 [age region 1 (oldest) · skipped 0×]
     - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens [tool 0% | reasoning 0% | text 100%]
         fold cost: reclaims ~7283 · re-sends 5204 tok newer uncached once · pays back in ~38.0 request(s)

@@ -228,7 +228,7 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
     // model's to weigh, so the line must not argue for compressing. The price
     // ratio is a fact too — the billing weight of one uncached token.
     context: 'Context: {used} / {window} tokens used ({pct}%) · cache-miss/cache-hit price ratio {ratio}×',
-    title: 'Compressible ranges ({count} — up to 3 of each age region\'s largest intervals, oldest first; exact surface seqs — usable as-is):',
+    title: 'Compressible ranges ({count} — up to 3 of each age region, the cheapest to fold, printed oldest first; exact surface seqs — usable as-is):',
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: '[age region {region}{age} · skipped {skipped}×]',
     // Two figures, two units, each printed where it belongs: the row MIX rides
