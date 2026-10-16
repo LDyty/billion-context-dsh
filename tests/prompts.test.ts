@@ -489,6 +489,10 @@ test('M4/prompts 14: engine-level — config.prompts reaches system prompt secti
   ctx.provide('tools' as never, { register: (tool: never) => tools.push(tool as never) } as never)
   ctx.plugin(AcpCompactionEngine as never, {
     modelContextLimit: 16000,
+    // This test exercises the 'system' delivery path (the pre-2026-10-16
+    // shape): the default 'message' delivery injects the same rendered text as
+    // a durable row and registers NO section — covered by tests/guidance.test.ts.
+    guidanceDelivery: 'system',
     prompts: {
       nudge: { normal: '引擎级自定义 {pct}' },
       systemPrompt: '引擎级系统提示\n{philosophy}',

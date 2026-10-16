@@ -37,6 +37,11 @@ const updateSeqs = (events, seqs) => {
   const counts = { users: 0, assistants: 0 }
   for (const event of events) {
   if (event.type === 'user/message') {
+  // `{{U1}}` means the first REAL user turn. Injected control rows are also
+  // user/message events (the engine's `plugin:acp-guidance` guidance row is the
+  // very first node of a session), and numbering them as a turn would make a
+  // scenario address the guidance row instead of the conversation.
+  if (event.data?.source?.kind !== 'user') continue
   counts.users = counts.users + 1
   if (!seqs['U' + counts.users]) seqs['U' + counts.users] = event.seq
   }

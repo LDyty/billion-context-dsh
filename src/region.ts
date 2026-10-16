@@ -39,6 +39,7 @@ import {
 import { hostMediaStructuralPrice, hostPriceEvent } from './host-tokens.ts'
 import { eventAtOf, sessionEventsOf } from './session-events.ts'
 import { decodeAcpBlockLedger, encodeAcpBlockLedger, type AcpBlockLedgerPayload } from './block-ledger.ts'
+import { newestAcpGuidanceSeqOf } from './guidance.ts'
 
 /**
  * A surface sequence number as the INSTALLED `dsh-session` sees it. Since the
@@ -1260,11 +1261,16 @@ export function guardedSurfaceSeqsOf(session: Session): Set<number> {
   const guarded = new Set<number>()
   const newestInstructions = newestInstructionSeqsOf(session)
   const newestCatalog = newestSkillCatalogSeqOf(session)
+  const newestGuidance = newestAcpGuidanceSeqOf(session)
   for (const seq of session.surface.nodes) {
     const event = eventAtOf(session, seq)
     if (event === undefined) continue
     if (isAgentInstructionsRow(event) && newestInstructions.has(seq)) guarded.add(seq)
     else if (newestCatalog !== null && seq === newestCatalog) guarded.add(seq)
+    // The CURRENT ACP guidance row (src/guidance.ts): policy the model must
+    // keep seeing, and nothing re-injects it when it disappears — same
+    // treatment as the current AGENTS.md row, for the opposite reason.
+    else if (newestGuidance !== null && seq === newestGuidance) guarded.add(seq)
   }
   for (let index = session.surface.nodes.length - 1; index >= 0; index -= 1) {
     const seq = session.surface.nodes[index]!
@@ -1347,6 +1353,13 @@ function protectedSurfaceSeqs(session: Session, preserve: number): Set<number> {
   // out of every offered range even if its shape recognition regresses.
   const newestCatalog = newestSkillCatalogSeqOf(session)
   if (newestCatalog !== null) protectedSeqs.add(newestCatalog)
+  // The delivered ACP guidance row (src/guidance.ts) is standing policy, not
+  // content: nothing re-injects it when it disappears (unlike AGENTS.md), so a
+  // fold that swallowed it would silently drop the compression instructions for
+  // the rest of the session. The newest copy is a hard-reject; the classifier
+  // already makes it (and any older copy) a barrier that is never offered.
+  const newestGuidance = newestAcpGuidanceSeqOf(session)
+  if (newestGuidance !== null) protectedSeqs.add(newestGuidance)
   return protectedSeqs
 }
 

@@ -331,6 +331,8 @@ rangeTable: {
 
 ### 5.3 system prompt
 
+> **投递位置(2026-10-16,规则 21)**:下面的 `systemPromptTemplate` 是 P6 的**文本**,不再是它的**投递位置**。默认 `guidanceDelivery: 'message'` 把同一份渲染结果作为一条持久化注入行(`plugin:acp-guidance`)投递,只在文本变化时**追加**新副本、旧行保持逐字节不变——因为宿主的 system prompt 与工具定义位于请求头部,而 provider 缓存的是**前缀**:改一个字就会让后面整段上下文按未命中重发(实测 533K 会话 hit 0.7%)。`guidanceDelivery: 'system'` 才回到本节描述的 section 形态。
+
 把现有 `ACP_SYSTEM_PROMPT` 的可变段换成占位符(K4):
 
 ```ts

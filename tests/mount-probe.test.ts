@@ -153,11 +153,14 @@ test('M1: tool/result preceding its assistant tool-call still resolves the name 
 // on cold start when the engine activates before the systemPrompt service.
 // Verifies the `internal/service` retry listener registers the section once
 // the service appears later.
+//
+// This is the `guidanceDelivery: 'system'` path; the default 'message'
+// delivery deliberately registers NO section (tests/guidance.test.ts).
 test('M4: ACP system prompt section registers when systemPrompt service appears after engine', async () => {
   const ctx = new Context()
   // Mount the engine FIRST — systemPrompt is not yet available, so the retry
   // listener is registered in the else branch.
-  ctx.plugin(AcpCompactionEngine as never)
+  ctx.plugin(AcpCompactionEngine as never, { guidanceDelivery: 'system' } as never)
   await new Promise((resolve) => setTimeout(resolve, 20))
 
   // Confirm engine mounted and systemPrompt is still absent.

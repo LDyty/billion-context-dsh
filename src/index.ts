@@ -60,6 +60,7 @@ import { shadowedTokensViaMeter } from './host-tokens.ts'
 import { handleInspectRequest } from './inspect.ts'
 import { inspectCacheOf, invalidateInspectTable, rememberBreakdown, rememberPressure } from './inspect.ts'
 import { noteFoldLanded } from './offer-count.ts'
+import { acpGuidanceMessageToInject } from './guidance.ts'
 import { kernelConfigFor } from './config.ts'
 import {
   ACP_SETTINGS_NAMESPACE,
@@ -249,6 +250,24 @@ export interface AcpConfig {
    * block-id recipe. Composition-layer switch (not a settings knob).
    */
   readonly carrierSpans?: 'split' | 'reject'
+  /**
+   * Where the ACP guidance (the load-bearing compression instructions) is
+   * delivered.
+   *
+   * - `message` (default): injected as a durable row once per session, and
+   *   APPENDED again only when the rendered text changes. The request HEAD —
+   *   the harness system prompt and the tool definitions, the two parts a
+   *   plugin cannot keep stable — then never changes with a wording edit, so
+   *   the provider prefix cache survives it (measured: a wording-only edit used
+   *   to cost a full-price re-send of the whole context — hit 0.7% on a 533K
+   *   session — while an unchanged restart stayed at 99.6%). See src/guidance.ts.
+   * - `system`: the pre-2026-10-16 shape — a harness system-prompt section,
+   *   re-rendered on every request, i.e. one full-price re-send per edit.
+   *
+   * Composition-layer switch (not a settings knob): it decides how a build
+   * delivers its prompt text, not how eagerly to compress.
+   */
+  readonly guidanceDelivery?: 'message' | 'system'
   /** Per-stage prompt template overrides (nudge / range table / system prompt / tool descriptions). See docs/configurable-prompts-design.md. */
   readonly prompts?: AcpPrompts
 }
@@ -262,6 +281,9 @@ const DEFAULT_CONFIG: AcpConfig = {
   // model reads those ranges off acp_status (which does not break at carriers)
   // and otherwise retries the same span (live-measured, 2026-10-13).
   carrierSpans: 'split',
+  // Guidance rides in a durable row (see the config field + src/guidance.ts):
+  // the head of the request stays byte-stable across wording edits.
+  guidanceDelivery: 'message',
   // Same default as the host's compaction-basic policy: one owned retry per
   // unrelieved overflow, then the original error is preserved.
   maxOverflowRetries: 1,
@@ -932,9 +954,23 @@ export class AcpCompactionEngine extends CompactionEngine {
       // the forms line, writes committed between steps land in our volatile
       // refs with no event we receive — this re-read is what applies them.
       engine.resyncSettings()
-      if (!engine.readSettingsSource().autoNudge) return next()
+      const autoNudge = engine.readSettingsSource().autoNudge
       const decision = await next()
       if (decision.kind === 'reject') return decision
+      // ACP guidance delivery (src/guidance.ts). With the default 'message'
+      // delivery the standing instructions ride in as a durable row: injected
+      // once, and APPENDED again only when the rendered text changes — a
+      // wording edit then never touches the request HEAD (harness system prompt
+      // + tool definitions) and the provider's cached prefix survives it. It is
+      // NOT a nudge, so `autoNudge: false` does not switch it off.
+      const guidance = engine.config.guidanceDelivery === 'system'
+        ? undefined
+        : acpGuidanceMessageToInject(payload.agent.session, engine.prompts)
+      if (!autoNudge) {
+        return guidance === undefined
+          ? decision
+          : { kind: 'enter', messages: [guidance, ...decision.messages] }
+      }
       const window = await this.windowFor(payload.agent)
       const outcome = buildNudge(
         payload.agent,
@@ -959,8 +995,22 @@ export class AcpCompactionEngine extends CompactionEngine {
           )
         },
       )
-      if (outcome === null) return decision
-      return { kind: 'enter', messages: [...decision.messages, outcome.message] }
+      // Guidance goes BEFORE the step's own messages, the nudge AFTER them:
+      // - before: a standing instruction row that lands after the user's turn
+      //   would sit INSIDE the exchange the model later wants to compress, and
+      //   the range geometry has to cut around it (live: the e2e's first
+      //   exchange came back split and nothing folded). Ahead of the batch the
+      //   row is the conversation's first node, so ordinary spans never cross
+      //   it — and it reads as standing context rather than a user turn.
+      // - nudge last: the notice is about the CURRENT step, and the model reads
+      //   the tail first.
+      const messages = [
+        ...(guidance === undefined ? [] : [guidance]),
+        ...decision.messages,
+        ...(outcome === null ? [] : [outcome.message]),
+      ]
+      if (messages.length === decision.messages.length) return decision
+      return { kind: 'enter', messages }
     })
     // ── Context-overflow recovery (M5) ─────────────────────────────────
     // The seam rethrows a failed request unless a listener answers
@@ -1023,36 +1073,45 @@ export class AcpCompactionEngine extends CompactionEngine {
       this.overflowRetries.set(agent, retries + 1)
       return { kind: 'retry' }
     })
-    // The load-bearing ACP guidance lives in the system prompt ONCE; nudges
-    // stay short and advisory (model-driven: the model decides). The
-    // systemPrompt service may not be registered yet on cold start (cordis
-    // starts unrelated composition rows concurrently), so apply the same
-    // retry pattern as tools and commands: eager registration, then
-    // re-attempt when the service appears via `internal/service`; guard so a
-    // late callback never double-registers.
-    const systemPrompt = ctx.get('systemPrompt')
-    if (systemPrompt !== undefined) {
-      systemPrompt.section({
-        name: 'billion-context-dsh',
-        order: ACP_SYSTEM_PROMPT_ORDER,
-        text: renderSystemPrompt(this.prompts),
-      })
-    } else {
-      let done = false
-      const registerSystemPrompt = (): void => {
-        if (done) return
-        const registry = ctx.get('systemPrompt')
-        if (registry === undefined) return
-        done = true
-        registry.section({
+    // The load-bearing ACP guidance lives ONCE; nudges stay short and advisory
+    // (model-driven: the model decides). WHERE it lives is the
+    // `guidanceDelivery` switch (see the config field + src/guidance.ts):
+    //
+    //  - 'message' (default): a durable injected row — see the pre-step
+    //    listener, which injects it once and re-appends it only when the text
+    //    changes. Nothing is registered here, so the system prompt (and with it
+    //    the cached request head) stays byte-identical across wording edits.
+    //  - 'system': the pre-2026-10-16 section. The systemPrompt service may not
+    //    be registered yet on cold start (cordis starts unrelated composition
+    //    rows concurrently), so apply the same retry pattern as tools and
+    //    commands: eager registration, then re-attempt when the service appears
+    //    via `internal/service`; guard so a late callback never
+    //    double-registers.
+    if (this.config.guidanceDelivery === 'system') {
+      const systemPrompt = ctx.get('systemPrompt')
+      if (systemPrompt !== undefined) {
+        systemPrompt.section({
           name: 'billion-context-dsh',
           order: ACP_SYSTEM_PROMPT_ORDER,
           text: renderSystemPrompt(this.prompts),
         })
+      } else {
+        let done = false
+        const registerSystemPrompt = (): void => {
+          if (done) return
+          const registry = ctx.get('systemPrompt')
+          if (registry === undefined) return
+          done = true
+          registry.section({
+            name: 'billion-context-dsh',
+            order: ACP_SYSTEM_PROMPT_ORDER,
+            text: renderSystemPrompt(this.prompts),
+          })
+        }
+        ctx.on('internal/service', (name: unknown) => {
+          if (name === 'systemPrompt') registerSystemPrompt()
+        })
       }
-      ctx.on('internal/service', (name: unknown) => {
-        if (name === 'systemPrompt') registerSystemPrompt()
-      })
     }
   }
 

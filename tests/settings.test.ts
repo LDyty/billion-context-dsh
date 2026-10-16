@@ -726,7 +726,7 @@ test('M6: static Config schema exposes the six volatile knobs plus non-volatile 
     'nudgeEmergencyThresholdPct',
     'autoNudge',
   ]
-  const compositionKeys = ['carrierSpans']
+  const compositionKeys = ['carrierSpans', 'guidanceDelivery']
   assert.deepEqual(Object.keys(AcpPluginConfigSchema.dict), [...settingsKeys, ...compositionKeys])
   // The volatile marker exists from the 0.2.0 line's schemastery onward; the
   // 0.1.5/0.1.6 lines ship schemastery 3.18.2, which has no `.volatile()`

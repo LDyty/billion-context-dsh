@@ -138,6 +138,24 @@ export interface AcpConfig {
      * block-id recipe. Composition-layer switch (not a settings knob).
      */
     readonly carrierSpans?: 'split' | 'reject';
+    /**
+     * Where the ACP guidance (the load-bearing compression instructions) is
+     * delivered.
+     *
+     * - `message` (default): injected as a durable row once per session, and
+     *   APPENDED again only when the rendered text changes. The request HEAD —
+     *   the harness system prompt and the tool definitions, the two parts a
+     *   plugin cannot keep stable — then never changes with a wording edit, so
+     *   the provider prefix cache survives it (measured: a wording-only edit used
+     *   to cost a full-price re-send of the whole context — hit 0.7% on a 533K
+     *   session — while an unchanged restart stayed at 99.6%). See src/guidance.ts.
+     * - `system`: the pre-2026-10-16 shape — a harness system-prompt section,
+     *   re-rendered on every request, i.e. one full-price re-send per edit.
+     *
+     * Composition-layer switch (not a settings knob): it decides how a build
+     * delivers its prompt text, not how eagerly to compress.
+     */
+    readonly guidanceDelivery?: 'message' | 'system';
     /** Per-stage prompt template overrides (nudge / range table / system prompt / tool descriptions). See docs/configurable-prompts-design.md. */
     readonly prompts?: AcpPrompts;
 }
@@ -166,6 +184,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
         carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
+        guidanceDelivery: import("@deepseek-ai/schemastery").default<"message" | "system", "message" | "system", "plain">;
     }>>, Schemastery.ObjectT<NoInfer<{
         modelContextLimit: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoModelContextLimit: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
@@ -174,6 +193,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
         carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
+        guidanceDelivery: import("@deepseek-ai/schemastery").default<"message" | "system", "message" | "system", "plain">;
     }>>, "plain">;
     /** The framework-agnostic ACP compression core, reused verbatim. */
     readonly kernel: CompressionCore;

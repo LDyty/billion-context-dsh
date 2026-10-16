@@ -20,6 +20,9 @@ declare module '@deepseek-ai/dsh-llm' {
         acpPrune: {
             kind: 'plugin:billion-context-dsh';
         };
+        acpGuidance: {
+            kind: 'plugin:acp-guidance';
+        };
         compactCheckpoint: {
             kind: 'compact-checkpoint';
             compactionId: string;

@@ -6403,7 +6403,7 @@ var LruMap = class extends Map {
 // src/region.ts
 import { randomUUID } from "crypto";
 import { CompactionId, compactCheckpointSource, toolPairingBalancedAfter, toolPairingBalancedBefore } from "@deepseek-ai/dsh-compaction";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createUserMessage as createUserMessage2 } from "@deepseek-ai/dsh-llm";
 
 // src/session-events.ts
 function sessionEventsOf(session) {
@@ -6964,6 +6964,190 @@ function shadowedTokensViaMeter(session, seqs, ctx) {
   return shadowedHostTokens(session, seqs);
 }
 
+// src/guidance.ts
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+
+// src/prompts.ts
+var NUDGE_ALLOWED = {
+  normal: /* @__PURE__ */ new Set(["pct", "philosophy"]),
+  emergency: /* @__PURE__ */ new Set(["pct", "philosophy"]),
+  guidance: /* @__PURE__ */ new Set(),
+  tier: /* @__PURE__ */ new Set(["tier", "count", "prevTier", "tokens", "seqs", "firstSeq", "lastSeq"]),
+  breakdown: /* @__PURE__ */ new Set(["system", "tool", "summaries", "code", "text"]),
+  growth: /* @__PURE__ */ new Set(["growth"]),
+  tip: /* @__PURE__ */ new Set()
+};
+var RANGE_TABLE_ALLOWED = {
+  header: /* @__PURE__ */ new Set(["surface"]),
+  title: /* @__PURE__ */ new Set(["count"]),
+  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "media", "offered"]),
+  cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
+  batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
+  footer: /* @__PURE__ */ new Set()
+};
+var TOOLS_ALLOWED = {
+  compress: /* @__PURE__ */ new Set(),
+  decompress: /* @__PURE__ */ new Set(),
+  searchContext: /* @__PURE__ */ new Set(),
+  acpStatus: /* @__PURE__ */ new Set()
+};
+var SYSTEM_ALLOWED = /* @__PURE__ */ new Set(["philosophy", "howToCompressRules", "tier2DistillRules", "tier3CondenseRules"]);
+function validateTemplate(template, allowed, path) {
+  const re = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  let match;
+  while ((match = re.exec(template)) !== null) {
+    const name = match[1];
+    if (!allowed.has(name)) {
+      throw new Error(
+        `${path} contains unknown placeholder {${name}} \u2014 allowed: ${[...allowed].join(", ") || "(none)"}`
+      );
+    }
+  }
+  return template;
+}
+function renderTemplate(template, vars) {
+  return template.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name) => {
+    const value = vars[name];
+    if (value === void 0) {
+      throw new Error(
+        `renderTemplate: missing value for placeholder {${name}} in template "${template.slice(0, 60)}\u2026"`
+      );
+    }
+    return String(value);
+  });
+}
+function mergeGroup(defaults, override, allowed, path) {
+  if (override == null) return defaults;
+  const out = {};
+  for (const key of Object.keys(defaults)) {
+    const value = override[key];
+    out[key] = value === null || value === void 0 ? defaults[key] : validateTemplate(value, allowed[key], `${path}.${String(key)}`);
+  }
+  return out;
+}
+function resolvePrompts2(input) {
+  if (input === void 0) return DEFAULT_RESOLVED;
+  return {
+    nudge: mergeGroup(DEFAULT_PROMPTS.nudge, input.nudge, NUDGE_ALLOWED, "prompts.nudge"),
+    rangeTable: mergeGroup(DEFAULT_PROMPTS.rangeTable, input.rangeTable, RANGE_TABLE_ALLOWED, "prompts.rangeTable"),
+    tools: mergeGroup(DEFAULT_PROMPTS.tools, input.tools, TOOLS_ALLOWED, "prompts.tools"),
+    systemPromptTemplate: input.systemPrompt === null || input.systemPrompt === void 0 ? DEFAULT_PROMPTS.systemPromptTemplate : validateTemplate(input.systemPrompt, SYSTEM_ALLOWED, "prompts.systemPrompt")
+  };
+}
+function renderSystemPrompt(prompts) {
+  return renderTemplate(prompts.systemPromptTemplate, {
+    philosophy: COMPRESS_PHILOSOPHY,
+    howToCompressRules: HOW_TO_COMPRESS_RULES,
+    tier2DistillRules: TIER2_DISTILL_RULES,
+    tier3CondenseRules: TIER3_CONDENSE_RULES
+  });
+}
+var DEFAULT_PROMPTS = {
+  nudge: {
+    // 与 kernel nudge-text.ts EFFICIENCY_NOTE 逐字对齐——不含 "Context usage is at X%"
+    // 陈述(usage 只通过 breakdown 传达);{pct} 仍可用作自定义占位符。
+    // B6（2026-09-08）：正文 ≤300 B——philosophy 段移出 nudge（已住系统提示与工具描述），
+    // 每拍复读同一份 6 KB 文本=重复计费。
+    normal: "Efficiency nudge: compress consumed ranges early to keep context lean \u2014 not an overflow warning. A stronger alert appears only if the context is actually full.",
+    emergency: "\u26A0\uFE0F Context limit reached \u2014 compress now. Prioritize consumed tool outputs.",
+    guidance: HOW_TO_COMPRESS_RULES,
+    tier: "Tier {tier}: {count} tier-{prevTier} block(s) distillable ({tokens} tokens) \u2014 distill them by compressing their checkpoint seq(s) [seqs {seqs}] as one range: compress({ content: [{ startSeq: {firstSeq}, endSeq: {lastSeq}, summary }] }).",
+    breakdown: "Context breakdown: {system}K system | {tool}K tool | {summaries}K summaries | {code}K code | {text}K text",
+    growth: "+{growth}K since last nudge",
+    tip: "\u{1F4A1} Compress all ranges in one call (pass multiple content entries: `content: [{...}, {...}]`)."
+  },
+  rangeTable: {
+    header: "Surface: {surface}",
+    title: "Compressible ranges ({count}, one per age band \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
+    line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}{offered}",
+    cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
+    batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
+    footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
+  },
+  tools: {
+    compress: 'Replace older conversation ranges with dense summaries you write. Each message seq is a surface reference. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated ranges in one call (each content entry becomes its own block); keep ranges disjoint. Never compress content the current step is actively using. Compress boundaries are SURFACE SEQS (acp_status Surface: row, latest nudge table) \u2014 NOT the block refs (bN, e.g. b1) that acp_status COMPRESSED BLOCKS shows, which are for decompress only. Drilldown mN refs (e.g. m00306) are ALSO accepted as startSeq/endSeq \u2014 they are auto-mapped to the live surface seq; an unknown mN (never assigned on the current surface) fails with guidance. Seq refs must come from the CURRENT surface (acp_status or the latest nudge): a span whose edges were shadowed by an earlier compress is auto-remapped to its still-live content, a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. Good compression moments: stage or subtask completion whose details you have fully consumed and will not re-check, strategy switches, intermediate milestones, and wrapping up failed exploration \u2014 when the details are consumed and no longer critical for the task ahead. Before compressing, ask: will I need to re-verify any detail from this range in this task? If yes, keep it live. When you write a summary, turn dead-end exploration into a conclusion (what was tried, why it failed, the next step) \u2014 not a blow-by-blow; and keep the summary the ONLY record: self-contained, so a later reader (or you, after decompress) can continue without the original. NOT every range deserves that treatment: a span that held only noise, duplicated tool output, retries, or output already superseded by a later result gets the DISCARD form instead \u2014 summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." When EVERY entry in the call is a discard, a short line is enough: the kernel summary floor (50 characters) is waived for that call. In a mixed call (any entry summarizing real content) the floor stands for every entry, discard lines included. Never pad a junk range into a fake summary, and never silently skip it \u2014 the entry is what frees the tokens. Optional verifiedReadings: string[] per content entry records acceptance readings that are already green (e.g. "t0-fastpath 8/8") \u2014 stored structurally on the compaction event so later steps need not re-run them.',
+    decompress: "Recover the original content of a compressed block by its blockId \u2014 the kernel block ref `bN` shown by acp_status (e.g. b1), or a compaction id from search_context (read-only; does not unshadow the range). Large blocks are paged so each page stays under the host tool-result trim budget (up to 100 messages per call): pass offset/limit to walk them and follow the continue hint in the result.",
+    searchContext: "Search inside compressed blocks (summaries and original content) for information the model no longer sees in context. When a summary lacks a detail you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST \u2014 never guess or reconstruct from memory: search_context(query) locates the right block, then decompress only that block to recover the original.",
+    acpStatus: 'Context status: overview of the current context \u2014 CONTEXT BREAKDOWN (tool/text/summaries token shares of the visible total), COMPRESSED BLOCKS ledger, and the nudge decision. No args = overview. Percentages are shares of the visible content, not the context window. Note: the block refs in COMPRESSED BLOCKS (bN, e.g. b1) are for decompress; compress uses the Surface: seq range, not bN. Drilldown: pass scope:"compressed" for a per-block list, or scope:"uncompressed" with view:"messages" (every visible message) / view:"ranges" (merged ranges); tool filters to one tool name, sort reorders (size/time/tool; age for compressed), limit caps rows (default 30). Drilldown row refs are kernel ids (mN) \u2014 feed them straight to compress as startSeq/endSeq (auto-mapped to the live surface seq); bN is for decompress, Surface: seqs also work in compress.'
+  },
+  systemPromptTemplate: `Active Context Pruning \u2014 model-driven context management
+
+YOU decide whether and when to compress context. The nudge is an efficiency notification: when you see one, consider which ranges you have genuinely consumed and could summarise to keep working context lean.
+
+{philosophy}
+
+WHEN TO COMPRESS:
+- A sub-agent or delegated task has returned a large result that you have already extracted the key facts from.
+- Verbose command output (build/test logs, git diff, directory listings) where you have already used the information you need.
+- Exploration that led nowhere.
+- Repeated reads of the same file or repeated status checks once the decision is recorded.
+- Resolved discussion threads where a decision has been captured in summary or in code.
+- Intermediate steps of a completed multi-step task, once the final result is recorded.
+- A task phase has ended \u2014 bug hunt complete, root cause found, exploration done, research sprint wrapped.
+
+WHEN NOT TO COMPRESS:
+- Content the current step is actively reading or reasoning about.
+- Important user messages \u2014 preserve their exact intent, constraints, and acceptance criteria.
+- Protected tool outputs \u2014 hard-excluded from compression ranges, survive intact in visible context.
+- Content you will still need to cite verbatim \u2014 in review/audit/verification tasks, keep source reads un-compressed until the final report is written. If you compressed it and now need the exact detail, decompress costs a full round-trip; prefer delaying the compress.
+
+{howToCompressRules}
+
+Compression tools (refs are SURFACE SEQS, not ids):
+- compress: replace one or more seq ranges, each with your own dense summary. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated segments in one call (each entry becomes its own block): compress({ content: [{ startSeq: 1, endSeq: 5, summary: '...' }, { startSeq: 12, endSeq: 18, summary: '...' }] }). Keep ranges disjoint \u2014 overlapping entries in one batch are skipped. Edges are auto-balanced to tool-call/result boundaries; a trailing #callId fragment in a seq is ignored. Seq refs must be on the current surface: seqs from older nudges or earlier compresses go stale as the surface moves, so a stale span is auto-remapped to its still-live remainder (the result reports the adjusted span), a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. The block refs (bN, e.g. b1) in acp_status COMPRESSED BLOCKS are for decompress, NOT compress boundaries.
+- decompress: recover a compressed block's original content, read-only. decompress({ blockId }) \u2014 accept the bN ref shown by acp_status (e.g. b1) or a compaction id. Large blocks page (each page sized to stay under the host tool-result trim budget, up to 100 messages): pass offset/limit and follow the continue hint in the result.
+- search_context: when a summary lacks the details you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST \u2014 never guess or reconstruct from memory; search_context(query) locates the right block, decompress only that block.
+- acp_status: current context usage and the live compressible-range list. Run it right before compressing \u2014 the only seqs that never go stale are the ones you just read. Drilldown (scope/view/tool/sort/limit) lists per-message or per-block sizes; drilldown rows are kernel ids (mN) \u2014 compress accepts them directly (auto-mapped to the live surface seq).
+
+Tiered compression: each compressed block appears on the surface as one summary node. Compressing that node again DISTILLS the block (tier 2): the parent summary folds into your new summary and the original messages are freed. Distilling a tier-2 block yields tier 3. Distill when a summary itself is consumed \u2014 decompress on the tier-2 block recovers the full originals.
+
+{tier2DistillRules}
+
+{tier3CondenseRules}
+
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row may carry 'offered N\xD7': that is how many times the table has put that span in front of you and you have not folded it, counted since the last fold that touched the area (it says nothing about wall-clock age). A high count on a span whose content is finished is a standing invitation to sweep it \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+};
+var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
+
+// src/guidance.ts
+var ACP_GUIDANCE_PLUGIN = "acp-guidance";
+var ACP_GUIDANCE_SOURCE_KIND = `plugin:${ACP_GUIDANCE_PLUGIN}`;
+var ACP_GUIDANCE_FRAME = "[plugin:acp-guidance \u2014 standing ACP instructions for this session, not a user turn]";
+function acpGuidanceText(prompts) {
+  return `${ACP_GUIDANCE_FRAME}
+${renderSystemPrompt(prompts)}`;
+}
+function isAcpGuidanceRow(event) {
+  if (event.type !== "user/message") return false;
+  const source = event.data.source;
+  return sourcePluginOf(source) === ACP_GUIDANCE_PLUGIN;
+}
+function newestAcpGuidanceSeqOf(session) {
+  const events = sessionEventsOf(session);
+  for (let seq = events.length - 1; seq >= 0; seq -= 1) {
+    const event = events[seq];
+    if (event !== void 0 && isAcpGuidanceRow(event)) return seq;
+  }
+  return null;
+}
+function newestAcpGuidanceText(session) {
+  const events = sessionEventsOf(session);
+  for (let seq = events.length - 1; seq >= 0; seq -= 1) {
+    const event = events[seq];
+    if (event === void 0 || !isAcpGuidanceRow(event)) continue;
+    return extractText(event.data.content);
+  }
+  return void 0;
+}
+function acpGuidanceMessageToInject(session, prompts) {
+  const text = acpGuidanceText(prompts);
+  if (newestAcpGuidanceText(session) === text) return void 0;
+  return createUserMessage({
+    content: [{ type: "text", text }],
+    source: { kind: ACP_GUIDANCE_SOURCE_KIND }
+  });
+}
+
 // src/region.ts
 function findOpenTurn(events) {
   let open = null;
@@ -7196,7 +7380,7 @@ function runCompactionTransaction(session, input) {
       model: input.model,
       rawOutput: encodeAcpBlockLedger(ledgerPayload)
     }).seq);
-    const message = createUserMessage({
+    const message = createUserMessage2({
       content: framedSummary,
       // Normalized for v4 writers when the resolved dsh-compaction copy still
       // emits the retired wrapper shape (issue #181); verbatim otherwise.
@@ -7317,7 +7501,7 @@ function hideSurfaceSeqs(session, seqs, text, priceEvent = hostPriceEvent) {
     shadowedTokenCount
   });
   const body = text !== void 0 && text.trim().length > 0 ? text : PRUNE_NOTE;
-  session.append("user/message", createUserMessage({
+  session.append("user/message", createUserMessage2({
     content: [{ type: "text", text: body }],
     // V4 producer kind (issue #163): DSH ≥0.1.7's V4 admission rejects the
     // legacy wrapper `{ kind: 'plugin', plugin: … }`; `plugin:<name>` is what
@@ -7525,11 +7709,13 @@ function guardedSurfaceSeqsOf(session) {
   const guarded = /* @__PURE__ */ new Set();
   const newestInstructions = newestInstructionSeqsOf(session);
   const newestCatalog = newestSkillCatalogSeqOf(session);
+  const newestGuidance = newestAcpGuidanceSeqOf(session);
   for (const seq of session.surface.nodes) {
     const event = eventAtOf(session, seq);
     if (event === void 0) continue;
     if (isAgentInstructionsRow(event) && newestInstructions.has(seq)) guarded.add(seq);
     else if (newestCatalog !== null && seq === newestCatalog) guarded.add(seq);
+    else if (newestGuidance !== null && seq === newestGuidance) guarded.add(seq);
   }
   for (let index = session.surface.nodes.length - 1; index >= 0; index -= 1) {
     const seq = session.surface.nodes[index];
@@ -7563,6 +7749,8 @@ function protectedSurfaceSeqs(session, preserve) {
   for (const seq of newestInstructionSeqsOf(session)) protectedSeqs.add(seq);
   const newestCatalog = newestSkillCatalogSeqOf(session);
   if (newestCatalog !== null) protectedSeqs.add(newestCatalog);
+  const newestGuidance = newestAcpGuidanceSeqOf(session);
+  if (newestGuidance !== null) protectedSeqs.add(newestGuidance);
   return protectedSeqs;
 }
 function surfaceNodeTokens(event, seq, attachments, mediaPriceOf) {
@@ -8007,7 +8195,7 @@ function kernelConfigFor(input) {
 }
 
 // src/nudge.ts
-import { createUserMessage as createUserMessage2 } from "@deepseek-ai/dsh-llm";
+import { createUserMessage as createUserMessage3 } from "@deepseek-ai/dsh-llm";
 
 // src/inspect.ts
 var caches = /* @__PURE__ */ new Map();
@@ -8196,148 +8384,6 @@ function noteFoldLanded(sessionId, shadowed) {
   const kept = history.map((build2) => build2.filter((span) => span.end < low || span.start > high)).filter((build2) => build2.length > 0);
   putHistory(sessionId, kept);
 }
-
-// src/prompts.ts
-var NUDGE_ALLOWED = {
-  normal: /* @__PURE__ */ new Set(["pct", "philosophy"]),
-  emergency: /* @__PURE__ */ new Set(["pct", "philosophy"]),
-  guidance: /* @__PURE__ */ new Set(),
-  tier: /* @__PURE__ */ new Set(["tier", "count", "prevTier", "tokens", "seqs", "firstSeq", "lastSeq"]),
-  breakdown: /* @__PURE__ */ new Set(["system", "tool", "summaries", "code", "text"]),
-  growth: /* @__PURE__ */ new Set(["growth"]),
-  tip: /* @__PURE__ */ new Set()
-};
-var RANGE_TABLE_ALLOWED = {
-  header: /* @__PURE__ */ new Set(["surface"]),
-  title: /* @__PURE__ */ new Set(["count"]),
-  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "media", "offered"]),
-  cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
-  batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
-  footer: /* @__PURE__ */ new Set()
-};
-var TOOLS_ALLOWED = {
-  compress: /* @__PURE__ */ new Set(),
-  decompress: /* @__PURE__ */ new Set(),
-  searchContext: /* @__PURE__ */ new Set(),
-  acpStatus: /* @__PURE__ */ new Set()
-};
-var SYSTEM_ALLOWED = /* @__PURE__ */ new Set(["philosophy", "howToCompressRules", "tier2DistillRules", "tier3CondenseRules"]);
-function validateTemplate(template, allowed, path) {
-  const re = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-  let match;
-  while ((match = re.exec(template)) !== null) {
-    const name = match[1];
-    if (!allowed.has(name)) {
-      throw new Error(
-        `${path} contains unknown placeholder {${name}} \u2014 allowed: ${[...allowed].join(", ") || "(none)"}`
-      );
-    }
-  }
-  return template;
-}
-function renderTemplate(template, vars) {
-  return template.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name) => {
-    const value = vars[name];
-    if (value === void 0) {
-      throw new Error(
-        `renderTemplate: missing value for placeholder {${name}} in template "${template.slice(0, 60)}\u2026"`
-      );
-    }
-    return String(value);
-  });
-}
-function mergeGroup(defaults, override, allowed, path) {
-  if (override == null) return defaults;
-  const out = {};
-  for (const key of Object.keys(defaults)) {
-    const value = override[key];
-    out[key] = value === null || value === void 0 ? defaults[key] : validateTemplate(value, allowed[key], `${path}.${String(key)}`);
-  }
-  return out;
-}
-function resolvePrompts2(input) {
-  if (input === void 0) return DEFAULT_RESOLVED;
-  return {
-    nudge: mergeGroup(DEFAULT_PROMPTS.nudge, input.nudge, NUDGE_ALLOWED, "prompts.nudge"),
-    rangeTable: mergeGroup(DEFAULT_PROMPTS.rangeTable, input.rangeTable, RANGE_TABLE_ALLOWED, "prompts.rangeTable"),
-    tools: mergeGroup(DEFAULT_PROMPTS.tools, input.tools, TOOLS_ALLOWED, "prompts.tools"),
-    systemPromptTemplate: input.systemPrompt === null || input.systemPrompt === void 0 ? DEFAULT_PROMPTS.systemPromptTemplate : validateTemplate(input.systemPrompt, SYSTEM_ALLOWED, "prompts.systemPrompt")
-  };
-}
-function renderSystemPrompt(prompts) {
-  return renderTemplate(prompts.systemPromptTemplate, {
-    philosophy: COMPRESS_PHILOSOPHY,
-    howToCompressRules: HOW_TO_COMPRESS_RULES,
-    tier2DistillRules: TIER2_DISTILL_RULES,
-    tier3CondenseRules: TIER3_CONDENSE_RULES
-  });
-}
-var DEFAULT_PROMPTS = {
-  nudge: {
-    // 与 kernel nudge-text.ts EFFICIENCY_NOTE 逐字对齐——不含 "Context usage is at X%"
-    // 陈述(usage 只通过 breakdown 传达);{pct} 仍可用作自定义占位符。
-    // B6（2026-09-08）：正文 ≤300 B——philosophy 段移出 nudge（已住系统提示与工具描述），
-    // 每拍复读同一份 6 KB 文本=重复计费。
-    normal: "Efficiency nudge: compress consumed ranges early to keep context lean \u2014 not an overflow warning. A stronger alert appears only if the context is actually full.",
-    emergency: "\u26A0\uFE0F Context limit reached \u2014 compress now. Prioritize consumed tool outputs.",
-    guidance: HOW_TO_COMPRESS_RULES,
-    tier: "Tier {tier}: {count} tier-{prevTier} block(s) distillable ({tokens} tokens) \u2014 distill them by compressing their checkpoint seq(s) [seqs {seqs}] as one range: compress({ content: [{ startSeq: {firstSeq}, endSeq: {lastSeq}, summary }] }).",
-    breakdown: "Context breakdown: {system}K system | {tool}K tool | {summaries}K summaries | {code}K code | {text}K text",
-    growth: "+{growth}K since last nudge",
-    tip: "\u{1F4A1} Compress all ranges in one call (pass multiple content entries: `content: [{...}, {...}]`)."
-  },
-  rangeTable: {
-    header: "Surface: {surface}",
-    title: "Compressible ranges ({count}, one per age band \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
-    line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | text {textPct}%]{media}{offered}",
-    cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
-    batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
-    footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
-  },
-  tools: {
-    compress: 'Replace older conversation ranges with dense summaries you write. Each message seq is a surface reference. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated ranges in one call (each content entry becomes its own block); keep ranges disjoint. Never compress content the current step is actively using. Compress boundaries are SURFACE SEQS (acp_status Surface: row, latest nudge table) \u2014 NOT the block refs (bN, e.g. b1) that acp_status COMPRESSED BLOCKS shows, which are for decompress only. Drilldown mN refs (e.g. m00306) are ALSO accepted as startSeq/endSeq \u2014 they are auto-mapped to the live surface seq; an unknown mN (never assigned on the current surface) fails with guidance. Seq refs must come from the CURRENT surface (acp_status or the latest nudge): a span whose edges were shadowed by an earlier compress is auto-remapped to its still-live content, a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. Good compression moments: stage or subtask completion whose details you have fully consumed and will not re-check, strategy switches, intermediate milestones, and wrapping up failed exploration \u2014 when the details are consumed and no longer critical for the task ahead. Before compressing, ask: will I need to re-verify any detail from this range in this task? If yes, keep it live. When you write a summary, turn dead-end exploration into a conclusion (what was tried, why it failed, the next step) \u2014 not a blow-by-blow; and keep the summary the ONLY record: self-contained, so a later reader (or you, after decompress) can continue without the original. NOT every range deserves that treatment: a span that held only noise, duplicated tool output, retries, or output already superseded by a later result gets the DISCARD form instead \u2014 summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." When EVERY entry in the call is a discard, a short line is enough: the kernel summary floor (50 characters) is waived for that call. In a mixed call (any entry summarizing real content) the floor stands for every entry, discard lines included. Never pad a junk range into a fake summary, and never silently skip it \u2014 the entry is what frees the tokens. Optional verifiedReadings: string[] per content entry records acceptance readings that are already green (e.g. "t0-fastpath 8/8") \u2014 stored structurally on the compaction event so later steps need not re-run them.',
-    decompress: "Recover the original content of a compressed block by its blockId \u2014 the kernel block ref `bN` shown by acp_status (e.g. b1), or a compaction id from search_context (read-only; does not unshadow the range). Large blocks are paged so each page stays under the host tool-result trim budget (up to 100 messages per call): pass offset/limit to walk them and follow the continue hint in the result.",
-    searchContext: "Search inside compressed blocks (summaries and original content) for information the model no longer sees in context. When a summary lacks a detail you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST \u2014 never guess or reconstruct from memory: search_context(query) locates the right block, then decompress only that block to recover the original.",
-    acpStatus: 'Context status: overview of the current context \u2014 CONTEXT BREAKDOWN (tool/text/summaries token shares of the visible total), COMPRESSED BLOCKS ledger, and the nudge decision. No args = overview. Percentages are shares of the visible content, not the context window. Note: the block refs in COMPRESSED BLOCKS (bN, e.g. b1) are for decompress; compress uses the Surface: seq range, not bN. Drilldown: pass scope:"compressed" for a per-block list, or scope:"uncompressed" with view:"messages" (every visible message) / view:"ranges" (merged ranges); tool filters to one tool name, sort reorders (size/time/tool; age for compressed), limit caps rows (default 30). Drilldown row refs are kernel ids (mN) \u2014 feed them straight to compress as startSeq/endSeq (auto-mapped to the live surface seq); bN is for decompress, Surface: seqs also work in compress.'
-  },
-  systemPromptTemplate: `Active Context Pruning \u2014 model-driven context management
-
-YOU decide whether and when to compress context. The nudge is an efficiency notification: when you see one, consider which ranges you have genuinely consumed and could summarise to keep working context lean.
-
-{philosophy}
-
-WHEN TO COMPRESS:
-- A sub-agent or delegated task has returned a large result that you have already extracted the key facts from.
-- Verbose command output (build/test logs, git diff, directory listings) where you have already used the information you need.
-- Exploration that led nowhere.
-- Repeated reads of the same file or repeated status checks once the decision is recorded.
-- Resolved discussion threads where a decision has been captured in summary or in code.
-- Intermediate steps of a completed multi-step task, once the final result is recorded.
-- A task phase has ended \u2014 bug hunt complete, root cause found, exploration done, research sprint wrapped.
-
-WHEN NOT TO COMPRESS:
-- Content the current step is actively reading or reasoning about.
-- Important user messages \u2014 preserve their exact intent, constraints, and acceptance criteria.
-- Protected tool outputs \u2014 hard-excluded from compression ranges, survive intact in visible context.
-- Content you will still need to cite verbatim \u2014 in review/audit/verification tasks, keep source reads un-compressed until the final report is written. If you compressed it and now need the exact detail, decompress costs a full round-trip; prefer delaying the compress.
-
-{howToCompressRules}
-
-Compression tools (refs are SURFACE SEQS, not ids):
-- compress: replace one or more seq ranges, each with your own dense summary. Single range: compress({ content: [{ startSeq, endSeq, summary }] }). Batch multiple unrelated segments in one call (each entry becomes its own block): compress({ content: [{ startSeq: 1, endSeq: 5, summary: '...' }, { startSeq: 12, endSeq: 18, summary: '...' }] }). Keep ranges disjoint \u2014 overlapping entries in one batch are skipped. Edges are auto-balanced to tool-call/result boundaries; a trailing #callId fragment in a seq is ignored. Seq refs must be on the current surface: seqs from older nudges or earlier compresses go stale as the surface moves, so a stale span is auto-remapped to its still-live remainder (the result reports the adjusted span), a fully compressed span is reported as already compressed, and invented/other-session seqs fail with guidance. The block refs (bN, e.g. b1) in acp_status COMPRESSED BLOCKS are for decompress, NOT compress boundaries.
-- decompress: recover a compressed block's original content, read-only. decompress({ blockId }) \u2014 accept the bN ref shown by acp_status (e.g. b1) or a compaction id. Large blocks page (each page sized to stay under the host tool-result trim budget, up to 100 messages): pass offset/limit and follow the continue hint in the result.
-- search_context: when a summary lacks the details you need (exact values, error strings, decisions, verbatim code), SEARCH the compressed blocks FIRST \u2014 never guess or reconstruct from memory; search_context(query) locates the right block, decompress only that block.
-- acp_status: current context usage and the live compressible-range list. Run it right before compressing \u2014 the only seqs that never go stale are the ones you just read. Drilldown (scope/view/tool/sort/limit) lists per-message or per-block sizes; drilldown rows are kernel ids (mN) \u2014 compress accepts them directly (auto-mapped to the live surface seq).
-
-Tiered compression: each compressed block appears on the surface as one summary node. Compressing that node again DISTILLS the block (tier 2): the parent summary folds into your new summary and the original messages are freed. Distilling a tier-2 block yields tier 3. Distill when a summary itself is consumed \u2014 decompress on the tier-2 block recovers the full originals.
-
-{tier2DistillRules}
-
-{tier3CondenseRules}
-
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row may carry 'offered N\xD7': that is how many times the table has put that span in front of you and you have not folded it, counted since the last fold that touched the area (it says nothing about wall-clock age). A high count on a span whose content is finished is a standing invitation to sweep it \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
-};
-var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
 // src/nudge.ts
 var GUIDANCE_BLOCKS = [COMPRESS_PHILOSOPHY, HOW_TO_COMPRESS_RULES, TIER2_DISTILL_RULES, TIER3_CONDENSE_RULES];
@@ -8596,7 +8642,7 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
     env.prompts,
     mediaPriceOf
   );
-  const message = createUserMessage2({
+  const message = createUserMessage3({
     content: [{ type: "text", text }],
     // V4 producer kind (issue #163): DSH ≥0.1.7's V4 admission rejects the
     // legacy wrapper shape `{ kind: 'plugin', plugin: … }` outright (a wedged
@@ -9657,7 +9703,16 @@ var AcpPluginConfigSchema = z.object({
    * a behavior switch, not a tuning knob, so it stays out of the settings form
    * and is edited in the profile patch like `autoTools` / `settingsEnabled`.
    */
-  carrierSpans: z.union([z.const("split"), z.const("reject")])
+  carrierSpans: z.union([z.const("split"), z.const("reject")]),
+  /**
+   * Composition-layer policy for HOW the ACP guidance text is delivered —
+   * `message` (default: a durable injected row, so a wording edit never
+   * invalidates the cached request head) or `system` (the pre-2026-10-16
+   * system-prompt section, re-rendered per request). NOT volatile: a behavior
+   * switch, not a tuning knob, so it stays out of the settings form and is
+   * edited in the profile patch like `carrierSpans`. See src/guidance.ts.
+   */
+  guidanceDelivery: z.union([z.const("message"), z.const("system")])
 });
 function describeSettingsChange(prev, next) {
   const warnings = [];
@@ -10128,6 +10183,9 @@ var DEFAULT_CONFIG = {
   // model reads those ranges off acp_status (which does not break at carriers)
   // and otherwise retries the same span (live-measured, 2026-10-13).
   carrierSpans: "split",
+  // Guidance rides in a durable row (see the config field + src/guidance.ts):
+  // the head of the request stays byte-stable across wording edits.
+  guidanceDelivery: "message",
   // Same default as the host's compaction-basic policy: one owned retry per
   // unrelieved overflow, then the original error is preserved.
   maxOverflowRetries: 1,
@@ -10532,9 +10590,13 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
     ctx.on("agent/pre-step", async (payload, next) => {
       stripOrphanedSurfaceToolMessages(payload.agent.session);
       engine.resyncSettings();
-      if (!engine.readSettingsSource().autoNudge) return next();
+      const autoNudge = engine.readSettingsSource().autoNudge;
       const decision = await next();
       if (decision.kind === "reject") return decision;
+      const guidance = engine.config.guidanceDelivery === "system" ? void 0 : acpGuidanceMessageToInject(payload.agent.session, engine.prompts);
+      if (!autoNudge) {
+        return guidance === void 0 ? decision : { kind: "enter", messages: [guidance, ...decision.messages] };
+      }
       const window = await this.windowFor(payload.agent);
       const outcome = buildNudge(
         payload.agent,
@@ -10552,8 +10614,13 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
           );
         }
       );
-      if (outcome === null) return decision;
-      return { kind: "enter", messages: [...decision.messages, outcome.message] };
+      const messages = [
+        ...guidance === void 0 ? [] : [guidance],
+        ...decision.messages,
+        ...outcome === null ? [] : [outcome.message]
+      ];
+      if (messages.length === decision.messages.length) return decision;
+      return { kind: "enter", messages };
     });
     ctx.on("agent/status", ({ agent, status }) => {
       if (status !== "idle") return;
@@ -10598,29 +10665,31 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
       this.overflowRetries.set(agent, retries + 1);
       return { kind: "retry" };
     });
-    const systemPrompt = ctx.get("systemPrompt");
-    if (systemPrompt !== void 0) {
-      systemPrompt.section({
-        name: "billion-context-dsh",
-        order: ACP_SYSTEM_PROMPT_ORDER,
-        text: renderSystemPrompt(this.prompts)
-      });
-    } else {
-      let done = false;
-      const registerSystemPrompt = () => {
-        if (done) return;
-        const registry3 = ctx.get("systemPrompt");
-        if (registry3 === void 0) return;
-        done = true;
-        registry3.section({
+    if (this.config.guidanceDelivery === "system") {
+      const systemPrompt = ctx.get("systemPrompt");
+      if (systemPrompt !== void 0) {
+        systemPrompt.section({
           name: "billion-context-dsh",
           order: ACP_SYSTEM_PROMPT_ORDER,
           text: renderSystemPrompt(this.prompts)
         });
-      };
-      ctx.on("internal/service", (name) => {
-        if (name === "systemPrompt") registerSystemPrompt();
-      });
+      } else {
+        let done = false;
+        const registerSystemPrompt = () => {
+          if (done) return;
+          const registry3 = ctx.get("systemPrompt");
+          if (registry3 === void 0) return;
+          done = true;
+          registry3.section({
+            name: "billion-context-dsh",
+            order: ACP_SYSTEM_PROMPT_ORDER,
+            text: renderSystemPrompt(this.prompts)
+          });
+        };
+        ctx.on("internal/service", (name) => {
+          if (name === "systemPrompt") registerSystemPrompt();
+        });
+      }
     }
   }
   /**

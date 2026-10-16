@@ -36,6 +36,10 @@ declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     acpNudge: { kind: 'plugin:acp-nudge' }
     acpPrune: { kind: 'plugin:billion-context-dsh' }
+    // Delivered ACP guidance row (src/guidance.ts): the standing compression
+    // instructions ride in as a durable row instead of a system-prompt section,
+    // so a wording edit cannot invalidate the cached request head.
+    acpGuidance: { kind: 'plugin:acp-guidance' }
     // V4 checkpoint producer kind (issue #181): emitted by checkpointSourceFor
     // when the resolved dsh-compaction copy predates the host's v4 writer and
     // its wrapper-shaped compactCheckpointSource() output is normalized.

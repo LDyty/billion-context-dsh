@@ -216,6 +216,15 @@ export const AcpPluginConfigSchema = z.object({
    * and is edited in the profile patch like `autoTools` / `settingsEnabled`.
    */
   carrierSpans: z.union([z.const('split'), z.const('reject')]),
+  /**
+   * Composition-layer policy for HOW the ACP guidance text is delivered —
+   * `message` (default: a durable injected row, so a wording edit never
+   * invalidates the cached request head) or `system` (the pre-2026-10-16
+   * system-prompt section, re-rendered per request). NOT volatile: a behavior
+   * switch, not a tuning knob, so it stays out of the settings form and is
+   * edited in the profile patch like `carrierSpans`. See src/guidance.ts.
+   */
+  guidanceDelivery: z.union([z.const('message'), z.const('system')]),
 })
 
 /** What changed between two settings snapshots, and what the engine must do about it. */
