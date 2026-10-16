@@ -629,19 +629,17 @@ export declare function summaryTokenAllowance(foldedTokens: number): number;
  * PRICING (owner ruling, 2026-10-17) — the caliber the nudge table prints.
  *
  * One token has two prices: a cache HIT costs 1, a cache MISS costs
- * `missHitRatio` (DeepSeek-style prompt caching; 50 by default). In hit-price
- * units, one fold does three things:
+ * `missHitRatio` (DeepSeek-style prompt caching; 50 by default). A fold does
+ * three things to the very next request:
  *
- *  - everything the fold RE-SENDS — the newer tail (it still exists, but now sits
- *    after the cache's first mismatch) plus the summary that replaces the folded
- *    content — is billed at the miss price once:
- *    `(newerTokens + summaryTokens) × missHitRatio`;
- *  - the folded content is GONE, so it is no longer sent at all: it gives back its
- *    own size, `reclaimedTokens`;
- *  - from then on every request carries `reclaimed − summary` fewer tokens, each
- *    at the hit price — that is the per-request saving.
+ *  - the folded content is GONE (it would have been read at the hit price) —
+ *    that is the saving, `reclaimedTokens` per request from now on;
+ *  - the summary that replaces it is NEW input — `summaryTokens × missHitRatio`;
+ *  - everything NEWER than the fold start still exists but now sits after the
+ *    cache's first mismatch, so it is re-sent uncached ONCE:
+ *    `newerTokens × (missHitRatio − 1)` in extra cost (it used to be a hit).
  *
- * So `payback = [(newer + summary) × ratio − reclaimed] ÷ (reclaimed − summary)`,
+ * So `payback = [newer·(R−1) + summary·R − reclaimed] ÷ (reclaimed − summary)`,
  * in requests. A fold that reaches the newest content has `newer ≈ 0` and pays
  * back almost immediately; a middle fold re-sends its whole newer tail once and
  * can need hundreds of requests.

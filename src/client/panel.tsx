@@ -30,12 +30,7 @@ const WARN_PAYBACK_REQUESTS = 50
  * summary a fold writes is assumed to be 4.5% of what it folds (80…1000 tokens),
  * measured over 338 folds in the live session.
  */
-const BILLING_TIP = '计费口径（缓存未命中价 ÷ 命中价 = 参数里那个倍数，默认 50）：把「命中价」当成 1 块钱算——'
-  + '①折叠那一发要把「更新的尾部 + 摘要」按未命中价重发一次，也就是它们的 token 数 × 倍数；'
-  + '②被折掉的内容从此不用再发，等于把它自己的 token 数省回来；'
-  + '③之后每一发都少带「被折内容 − 摘要」这么多 token，按命中价省。'
-  + '回本次数 =（重发量 × 倍数 − 被折内容）÷（被折内容 − 摘要），其中重发量 = 尾部 + 摘要。'
-  + '摘要按被折内容的 4.5%（80…1000 token）估——实测 338 次折叠的摘要中位数。'
+const BILLING_TIP = '计费口径（缓存未命中 ÷ 命中 = 参数里那个倍数，默认 50×）：折叠一次性重发「本行起点之后仍然存在的部分」= 被折内容 + 更新的尾部；此后每次请求省下「被折内容 − 摘要」。回本次数 = [尾部 ×（倍数−1）+ 摘要 × 倍数 − 被折内容] ÷（被折内容 − 摘要）。摘要按被折内容的 4.5%（80…1000 token）估——实测 338 次折叠的摘要中位数。'
 
 /**
  * 被跳过 is a property of the AGE REGION (src/age-region-skips.ts), not of one
