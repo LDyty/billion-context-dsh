@@ -18,12 +18,17 @@
  *    +1; the age region it lands in does not.
  *  - a start that lands in NO age region (older than the first age region's span,
  *    newer than the last) counts for every age region.
- *  - SWEEP RETRACTION (owner rule, 2026-10-16): when one call folds MORE than
- *    one span, every age region those OTHER spans reach into gets −1 — the call
- *    did not pass that age region over, it folded through it. Every such age
- *    region was +1'd a line earlier, so the sweep leaves its count where it was
- *    (floored at 0). A single-span call never retracts: it cannot cover an age
- *    region it did not start in.
+ *  - SWEEP RETRACTION (owner rule, 2026-10-16): when one call folds a
+ *    CONTIGUOUS RUN of more than one span — a sweep, i.e. the run of
+ *    compressible ranges the table offers from one start, with nothing
+ *    compressible left unfolded in between — every age region those OTHER spans
+ *    reach into gets −1: the call did not pass that age region over, it folded
+ *    through it. Every such age region was +1'd a line earlier, so the sweep
+ *    leaves its count where it was (floored at 0). A single-span call never
+ *    retracts (it cannot cover an age region it did not start in), and neither
+ *    does a batch of unrelated scattered segments — those really did pass the
+ *    age regions between them over. "Contiguous" is judged against the
+ *    offerable spans of the LAST build, which is the table the model read.
  *
  * So a climbing number reads "the model keeps choosing a start somewhere else",
  * and the age region with the smallest number is the one folds keep starting in.
@@ -48,15 +53,34 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-/** The span one age region covers on the surface: its first offerable span's start .. its last span's end. */
-export interface AgeRegionSpan {
+/**
+ * One seq span (inclusive), used for the two things that share the shape: the
+ * stretch an age region covers on the surface, and one compressible range the
+ * model folds.
+ */
+export interface SeqSpan {
   readonly start: number
   readonly end: number
 }
 
 /** Does a folded span reach into this age region's span? (Spans overlap; one span can cross several.) */
-function reaches(ageRegion: AgeRegionSpan, span: AgeRegionSpan): boolean {
+function reaches(ageRegion: SeqSpan, span: SeqSpan): boolean {
   return span.start <= ageRegion.end && span.end >= ageRegion.start
+}
+
+/**
+ * Is there an offerable range sitting unfolded BETWEEN any two of these spans?
+ * This is what separates a sweep (one contiguous run of the table's offers) from
+ * a batch of unrelated segments: only the sweep may retract a count.
+ */
+function somethingOfferableBetween(offerable: readonly SeqSpan[], folded: readonly SeqSpan[]): boolean {
+  const ordered = [...folded].sort((left, right) => left.start - right.start)
+  for (let index = 1; index < ordered.length; index += 1) {
+    const previous = ordered[index - 1]!
+    const current = ordered[index]!
+    if (offerable.some((span) => span.start > previous.end && span.end < current.start)) return true
+  }
+  return false
 }
 
 /** How many sessions are tracked at once (the engine has no disposal hook on this line). */
@@ -190,7 +214,14 @@ function persistedSkips(sessionId: string): number[] | undefined {
 }
 
 /** The regions the LAST build printed, per session — how a later choice is attributed. */
-const regions = new Map<string, readonly AgeRegionSpan[]>()
+const regions = new Map<string, readonly SeqSpan[]>()
+
+/**
+ * The offerable spans of the LAST build, per session — what "contiguous" is
+ * judged against (see {@link somethingOfferableBetween}). Recorded next to the
+ * age regions by the same build, so both describe the table the model read.
+ */
+const offerable = new Map<string, readonly SeqSpan[]>()
 
 /** The counters, per session, aligned with {@link regions} (index 0 = age region 1). */
 const skips = new Map<string, number[]>()
@@ -203,6 +234,8 @@ function touch<T>(map: Map<string, T>, sessionId: string, value: T): void {
     const oldest = map.keys().next()
     if (oldest.done === true) break
     map.delete(oldest.value)
+    regions.delete(oldest.value)
+    offerable.delete(oldest.value)
     skips.delete(oldest.value)
   }
 }
@@ -214,7 +247,7 @@ function touch<T>(map: Map<string, T>, sessionId: string, value: T): void {
  * @param sessionId - the session the table was built for.
  * @param ageRegions - one span per printed age region, oldest first.
  */
-export function noteAgeRegions(sessionId: string, ageRegions: readonly AgeRegionSpan[]): void {
+export function noteAgeRegions(sessionId: string, ageRegions: readonly SeqSpan[]): void {
   touch(regions, sessionId, ageRegions.map((ageRegion) => ({ start: ageRegion.start, end: ageRegion.end })))
   if (skips.has(sessionId)) {
     touch(skips, sessionId, skips.get(sessionId)!)
@@ -227,25 +260,46 @@ export function noteAgeRegions(sessionId: string, ageRegions: readonly AgeRegion
 }
 
 /**
- * One model CHOICE: every age region whose region does not contain the fold's start is
- * counted as passed over; when the call folded more than one span, the age regions
- * those other spans reach into get that count taken back.
+ * Record every compressible range the build offered, in table order. Pure
+ * bookkeeping, like {@link noteAgeRegions}: it exists only so a later choice can
+ * tell a sweep (one contiguous run of offers) from a batch of unrelated
+ * segments, without re-deriving the table at compress time.
+ *
+ * @param sessionId - the session the table was built for.
+ * @param spans - every offerable span of that build, oldest first.
+ */
+export function noteOfferableSpans(sessionId: string, spans: readonly SeqSpan[]): void {
+  touch(offerable, sessionId, spans.map((span) => ({ start: span.start, end: span.end })))
+}
+
+/**
+ * One model CHOICE: every age region whose span does not contain the fold's start
+ * is counted as passed over; when the call folded a CONTIGUOUS RUN of more than
+ * one span (a sweep), the age regions those other spans reach into get that count
+ * taken back.
  *
  * @param sessionId - the session the fold belongs to.
  * @param folded - every seq span this compress call folds, in call order. The
  *   START of the choice is the earliest `start` among them (a sweep is ONE
  *   choice); the rest are what a sweep retracts with.
  */
-export function noteAgeRegionChoice(sessionId: string, folded: readonly AgeRegionSpan[]): void {
+export function noteAgeRegionChoice(sessionId: string, folded: readonly SeqSpan[]): void {
   const ageRegions = regions.get(sessionId)
   if (ageRegions === undefined || ageRegions.length === 0) return
   if (folded.length === 0) return
   const first = folded.reduce((best, span) => (span.start < best.start ? span : best))
   const chosenSeq = first.start
-  // Sweep mode: this call committed to a start AND folded through somewhere
-  // else. The spans it covered are evidence the model did not pass those age regions
-  // over, so each of them gives back the +1 the start handed it.
-  const swept = folded.length > 1 ? folded.filter((span) => span !== first) : []
+  // Sweep mode = one contiguous run of offers (owner rule, 2026-10-16): the call
+  // committed to a start AND kept folding straight through the table with
+  // nothing compressible left unfolded between its spans. A batch of unrelated
+  // scattered segments is NOT a sweep — those really did pass the age regions
+  // between them over — and a hand-written pair with no table on record cannot be
+  // called contiguous, so it does not retract either.
+  const spans = offerable.get(sessionId) ?? []
+  const sweep = folded.length > 1
+    && spans.length > 0
+    && !somethingOfferableBetween(spans, folded)
+  const swept = sweep ? folded.filter((span) => span !== first) : []
   const counters = skips.get(sessionId) ?? ageRegions.map(() => 0)
   const next = ageRegions.map((ageRegion, index) => {
     const inside = ageRegion.start <= chosenSeq && chosenSeq <= ageRegion.end
@@ -266,9 +320,10 @@ export function lastAgeRegionSkipsOf(sessionId: string): readonly number[] {
   return skips.get(sessionId) ?? []
 }
 
-/** Drop one session's regions and counters. */
+/** Drop one session's regions, offerable order and counters. */
 export function forgetAgeRegionSkips(sessionId: string): void {
   regions.delete(sessionId)
+  offerable.delete(sessionId)
   skips.delete(sessionId)
   const store = sidecar()
   if (store !== undefined && store.sessions[sessionId] !== undefined) {

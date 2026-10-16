@@ -964,7 +964,8 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     // that start does not fall into is counted as passed over (src/age-region-skips.ts).
     // A sweep is deliberately ONE choice — the earliest seq it folds is the point
     // the model committed to, not each of its entries — and the spans it folds
-    // past the start take the count back from every age region they reached into.
+    // past the start take the count back from every age region they reached into
+    // (only for a contiguous run of offers: see src/age-region-skips.ts).
     if (ranges.length > 0) {
       noteAgeRegionChoice(String(session.id), ranges.map((range) => ({ start: range.startSeq, end: range.endSeq })))
     }
@@ -1396,7 +1397,7 @@ async function handleStatus(env: ToolEnvironment, rawArgs: StatusArgs, exec: Too
     if (skippedAgeRegions.length > 0) {
       lines.push(
         '',
-        `Age regions your folds keep passing over (nudge column \`skipped N×\`; every choice of a fold start outside the age region counts once, and a sweep gives that count back to every age region it folded through): `
+        `Age regions your folds keep passing over (nudge column \`skipped N×\`; every choice of a fold start outside the age region counts once, and a sweep — one contiguous run of compressible ranges — gives that count back to every age region it folded through): `
         + skippedAgeRegions.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}×`).join(', '),
       )
     }

@@ -216,7 +216,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
           // included — the label keeps it from reading as another multiplier.
           h('div', null, h('span', {
             className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
-            title: '被跳过次数：模型每次选择折叠起点（sweep（清扫）算一次），起点没落在本年龄区域（ageRegion）里就 +1；如果这一次是 sweep（清扫，一拍折多个区间），其中别的区间落进了本年龄区域，就把这次的 +1 收回去（折穿就不算跳过）。爬得越高说明模型一直从别的年龄区域开始折、且从没折穿本区域；最小的那个数就是它反复选中的年龄区域。',
+            title: '被跳过次数：模型每次选择折叠起点（sweep（清扫）算一次），起点没落在本年龄区域（ageRegion）里就 +1；如果这一次是 sweep（清扫：一拍折的是一串连着的可压区间，中间没有漏掉的可压区间），其中别的区间落进了本年龄区域，就把这次的 +1 收回去（折穿就不算跳过）。爬得越高说明模型一直从别的年龄区域开始折、且从没折穿本区域；最小的那个数就是它反复选中的年龄区域。',
           }, `被跳过 ${String(row.skipped)}×`))),
         h('td', {
           className: 'acp-sweep',

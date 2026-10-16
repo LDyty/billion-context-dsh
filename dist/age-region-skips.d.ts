@@ -18,12 +18,17 @@
  *    +1; the age region it lands in does not.
  *  - a start that lands in NO age region (older than the first age region's span,
  *    newer than the last) counts for every age region.
- *  - SWEEP RETRACTION (owner rule, 2026-10-16): when one call folds MORE than
- *    one span, every age region those OTHER spans reach into gets −1 — the call
- *    did not pass that age region over, it folded through it. Every such age
- *    region was +1'd a line earlier, so the sweep leaves its count where it was
- *    (floored at 0). A single-span call never retracts: it cannot cover an age
- *    region it did not start in.
+ *  - SWEEP RETRACTION (owner rule, 2026-10-16): when one call folds a
+ *    CONTIGUOUS RUN of more than one span — a sweep, i.e. the run of
+ *    compressible ranges the table offers from one start, with nothing
+ *    compressible left unfolded in between — every age region those OTHER spans
+ *    reach into gets −1: the call did not pass that age region over, it folded
+ *    through it. Every such age region was +1'd a line earlier, so the sweep
+ *    leaves its count where it was (floored at 0). A single-span call never
+ *    retracts (it cannot cover an age region it did not start in), and neither
+ *    does a batch of unrelated scattered segments — those really did pass the
+ *    age regions between them over. "Contiguous" is judged against the
+ *    offerable spans of the LAST build, which is the table the model read.
  *
  * So a climbing number reads "the model keeps choosing a start somewhere else",
  * and the age region with the smallest number is the one folds keep starting in.
@@ -43,8 +48,12 @@
  *
  * @module billion-context-dsh/age-region-skips
  */
-/** The span one age region covers on the surface: its first offerable span's start .. its last span's end. */
-export interface AgeRegionSpan {
+/**
+ * One seq span (inclusive), used for the two things that share the shape: the
+ * stretch an age region covers on the surface, and one compressible range the
+ * model folds.
+ */
+export interface SeqSpan {
     readonly start: number;
     readonly end: number;
 }
@@ -62,21 +71,32 @@ export declare function ageRegionSkipsPath(): string | undefined;
  * @param sessionId - the session the table was built for.
  * @param ageRegions - one span per printed age region, oldest first.
  */
-export declare function noteAgeRegions(sessionId: string, ageRegions: readonly AgeRegionSpan[]): void;
+export declare function noteAgeRegions(sessionId: string, ageRegions: readonly SeqSpan[]): void;
 /**
- * One model CHOICE: every age region whose region does not contain the fold's start is
- * counted as passed over; when the call folded more than one span, the age regions
- * those other spans reach into get that count taken back.
+ * Record every compressible range the build offered, in table order. Pure
+ * bookkeeping, like {@link noteAgeRegions}: it exists only so a later choice can
+ * tell a sweep (one contiguous run of offers) from a batch of unrelated
+ * segments, without re-deriving the table at compress time.
+ *
+ * @param sessionId - the session the table was built for.
+ * @param spans - every offerable span of that build, oldest first.
+ */
+export declare function noteOfferableSpans(sessionId: string, spans: readonly SeqSpan[]): void;
+/**
+ * One model CHOICE: every age region whose span does not contain the fold's start
+ * is counted as passed over; when the call folded a CONTIGUOUS RUN of more than
+ * one span (a sweep), the age regions those other spans reach into get that count
+ * taken back.
  *
  * @param sessionId - the session the fold belongs to.
  * @param folded - every seq span this compress call folds, in call order. The
  *   START of the choice is the earliest `start` among them (a sweep is ONE
  *   choice); the rest are what a sweep retracts with.
  */
-export declare function noteAgeRegionChoice(sessionId: string, folded: readonly AgeRegionSpan[]): void;
+export declare function noteAgeRegionChoice(sessionId: string, folded: readonly SeqSpan[]): void;
 /** The counters of the last build's age regions, oldest first (empty before any build). */
 export declare function lastAgeRegionSkipsOf(sessionId: string): readonly number[];
-/** Drop one session's regions and counters. */
+/** Drop one session's regions, offerable order and counters. */
 export declare function forgetAgeRegionSkips(sessionId: string): void;
 /** The remembered age region count for one session (tests and diagnostics). */
 export declare function trackedAgeRegionsOf(sessionId: string): number;

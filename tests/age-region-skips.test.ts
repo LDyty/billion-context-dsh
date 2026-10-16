@@ -19,6 +19,7 @@ import {
   lastAgeRegionSkipsOf,
   noteAgeRegionChoice,
   noteAgeRegions,
+  noteOfferableSpans,
   trackedAgeRegionsOf,
 } from '../src/age-region-skips.ts'
 
@@ -146,13 +147,20 @@ test('age region skips: a malformed sidecar degrades to zeros instead of throwin
   assert.deepEqual([...lastAgeRegionSkipsOf('p3')], [1, 0, 1], 'and counting still works')
 })
 
-// ── sweep retraction (owner rule, 2026-10-16): a call that folds MORE than one
-// span hands the count back to every age region its other spans reached into. ──
+// ── sweep retraction (owner rule, 2026-10-16): ONE call folding a CONTIGUOUS
+// RUN of more than one compressible range hands the count back to every age
+// region its other spans reached into. A single span, a batch of scattered
+// segments, and a call with no table on record all keep the plain +1. ──
+
+/** The offers a build printed, in table order — what "contiguous" is judged against. */
+const offerable = [at(12), at(35), at(55)]
 
 test('age region skips: a sweep hands the count back to every age region its other spans reach into', () => {
   forgetAgeRegionSkips('s1')
   noteAgeRegions('s1', ageRegions)
-  // ONE call: start in age region 2, and it also folds a span in age region 1 and one in age region 3.
+  noteOfferableSpans('s1', offerable)
+  // ONE call: start in age region 2, and it folds straight through 12 and 55 —
+  // the run 12 → 35 → 55 is exactly the table's offer order, nothing in between.
   noteAgeRegionChoice('s1', [at(35), at(12), at(55)])
   assert.deepEqual([...lastAgeRegionSkipsOf('s1')], [0, 0, 0],
     'a fold that went through an age region did not pass it over')
@@ -161,24 +169,45 @@ test('age region skips: a sweep hands the count back to every age region its oth
   assert.deepEqual([...lastAgeRegionSkipsOf('s1')], [1, 1, 0])
 })
 
-test('age region skips: only a multi-span call retracts — one span never does', () => {
+test('age region skips: a batch of scattered segments is not a sweep — it retracts nothing', () => {
   forgetAgeRegionSkips('s2')
   noteAgeRegions('s2', ageRegions)
-  noteAgeRegionChoice('s2', [at(35)])
-  noteAgeRegionChoice('s2', [at(35)])
-  assert.deepEqual([...lastAgeRegionSkipsOf('s2')], [2, 0, 2], 'two single-span choices are two pass-overs')
-  // A two-span call that starts in age region 1 and also folds inside age region 3: age region 2
-  // still pays the +1 (the start is not in it) and nothing of this call reached
-  // it, so it keeps the count.
-  noteAgeRegionChoice('s2', [at(55), at(12)])
-  assert.deepEqual([...lastAgeRegionSkipsOf('s2')], [2, 1, 2])
+  noteOfferableSpans('s2', offerable)
+  // 12 and 55 are folded, but 35 — offerable, and printed right between them —
+  // is left unfolded: that is two unrelated segments, not one sweep, so every
+  // age region the start did not land in keeps its +1.
+  noteAgeRegionChoice('s2', [at(12), at(55)])
+  assert.deepEqual([...lastAgeRegionSkipsOf('s2')], [0, 1, 1])
+  // Proof it is the gap that decided: the same start, this time folding 35 too.
+  noteAgeRegionChoice('s2', [at(12), at(35), at(55)])
+  assert.deepEqual([...lastAgeRegionSkipsOf('s2')], [0, 1, 1], 'and the contiguous run took both back')
 })
 
-test('age region skips: a span that crosses two age region regions retracts both', () => {
+test('age region skips: one span never retracts, however it is called', () => {
+  forgetAgeRegionSkips('s5')
+  noteAgeRegions('s5', ageRegions)
+  noteOfferableSpans('s5', offerable)
+  noteAgeRegionChoice('s5', [at(35)])
+  noteAgeRegionChoice('s5', [at(35)])
+  assert.deepEqual([...lastAgeRegionSkipsOf('s5')], [2, 0, 2], 'two single-span choices are two pass-overs')
+})
+
+test('age region skips: with no offerable list on record nothing retracts', () => {
+  // A hand-written multi-span call that arrives before any build (or after the
+  // build was forgotten) cannot be proven contiguous, so it is counted as the
+  // plain choice it is.
+  forgetAgeRegionSkips('s6')
+  noteAgeRegions('s6', ageRegions)
+  noteAgeRegionChoice('s6', [at(12), at(55)])
+  assert.deepEqual([...lastAgeRegionSkipsOf('s6')], [0, 1, 1])
+})
+
+test('age region skips: a span that crosses two age regions retracts both', () => {
   forgetAgeRegionSkips('s3')
   noteAgeRegions('s3', ageRegions)
-  // 40..55 leaves age region 2 and enters age region 3, so both were "passed over" by the
-  // start and both are handed back.
+  noteOfferableSpans('s3', [at(12), { start: 40, end: 55 }])
+  // 40..55 leaves age region 2 and enters age region 3, so both were "passed
+  // over" by the start and both are handed back.
   noteAgeRegionChoice('s3', [at(12), { start: 40, end: 55 }])
   assert.deepEqual([...lastAgeRegionSkipsOf('s3')], [0, 0, 0])
 })
@@ -191,6 +220,7 @@ test('age region skips: a retraction can only ever cancel its own call\'s +1', (
   // age region 1 is handed back by the span at 12.
   forgetAgeRegionSkips('s4')
   noteAgeRegions('s4', ageRegions)
+  noteOfferableSpans('s4', [at(5), at(12)])
   noteAgeRegionChoice('s4', [at(5), at(12)])
   assert.deepEqual([...lastAgeRegionSkipsOf('s4')], [0, 1, 1])
 })

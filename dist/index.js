@@ -7126,7 +7126,7 @@ Tiered compression: each compressed block appears on the surface as one summary 
 
 {tier3CondenseRules}
 
-When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age region that start did NOT fall into was counted once; when that same call folded MORE than one span (a sweep), every age region those other spans reached into gave that count back \u2014 a fold that went through an age region did not pass it over. So a climbing number marks an age region your folds keep starting somewhere else AND never fold through, and the smallest number is the age region you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on an age region whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
+When you write a summary, it becomes the ONLY record of that range: keep file paths, signatures, exact values, decisions, and error strings verbatim so a later reader (or you, after decompress) can continue without the original. A mid-task compression must also hand off STATE, not just facts: where you are in the task and what remains (open TODOs), which approaches you already ruled out (dead ends), and which intermediate artifacts are already done and where they live \u2014 so the next step continues instead of re-running work you already did. A range that held only noise, duplicated tool output, retries, or output a later result superseded gets the DISCARD form rather than an invented summary: "(discarded) <what it was> \u2014 no findings kept; decompress this block only if the raw output is needed." The kernel summary floor (50 characters) is waived when EVERY entry of a call is a discard \u2014 then a few words are enough; in a mixed call the floor stands for every entry. Never pad junk into a fake summary, and never drop the entry: the entry is what frees the tokens. A range row carries 'skipped N\xD7': every time YOU chose a fold start, each age region that start did NOT fall into was counted once; when that same call folded a CONTIGUOUS RUN of more than one compressible range (a sweep \u2014 consecutive offers with nothing compressible left unfolded in between), every age region those other spans reached into gave that count back \u2014 a fold that went through an age region did not pass it over, while a batch of unrelated scattered segments counts as the pass-overs it made. So a climbing number marks an age region your folds keep starting somewhere else AND never fold through, and the smallest number is the age region you keep committing to. It counts choices, not wall-clock age (an idle day changes nothing). A high number on an age region whose content is finished is a standing invitation to start there \u2014 the fold cost line next to it tells you what going that far back costs in re-sent prefix. Never reuse historical seqs \u2014 the surface moves as messages land and compress; verify with acp_status.`
 };
 var DEFAULT_RESOLVED = DEFAULT_PROMPTS;
 
@@ -8447,6 +8447,15 @@ import path from "path";
 function reaches(ageRegion, span) {
   return span.start <= ageRegion.end && span.end >= ageRegion.start;
 }
+function somethingOfferableBetween(offerable2, folded) {
+  const ordered = [...folded].sort((left, right) => left.start - right.start);
+  for (let index = 1; index < ordered.length; index += 1) {
+    const previous = ordered[index - 1];
+    const current = ordered[index];
+    if (offerable2.some((span) => span.start > previous.end && span.end < current.start)) return true;
+  }
+  return false;
+}
 var SESSION_LIMIT = 50;
 var SIDECAR_FILE = "dsh-acp-age-region-skips.json";
 var LEGACY_SIDECAR_FILE = "dsh-acp-band-skips.json";
@@ -8532,6 +8541,7 @@ function persistedSkips(sessionId) {
   return sidecar()?.sessions[sessionId]?.skips;
 }
 var regions = /* @__PURE__ */ new Map();
+var offerable = /* @__PURE__ */ new Map();
 var skips = /* @__PURE__ */ new Map();
 function touch(map, sessionId, value) {
   map.delete(sessionId);
@@ -8540,6 +8550,8 @@ function touch(map, sessionId, value) {
     const oldest = map.keys().next();
     if (oldest.done === true) break;
     map.delete(oldest.value);
+    regions.delete(oldest.value);
+    offerable.delete(oldest.value);
     skips.delete(oldest.value);
   }
 }
@@ -8551,13 +8563,18 @@ function noteAgeRegions(sessionId, ageRegions) {
   }
   touch(skips, sessionId, ageRegions.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0));
 }
+function noteOfferableSpans(sessionId, spans) {
+  touch(offerable, sessionId, spans.map((span) => ({ start: span.start, end: span.end })));
+}
 function noteAgeRegionChoice(sessionId, folded) {
   const ageRegions = regions.get(sessionId);
   if (ageRegions === void 0 || ageRegions.length === 0) return;
   if (folded.length === 0) return;
   const first = folded.reduce((best, span) => span.start < best.start ? span : best);
   const chosenSeq = first.start;
-  const swept = folded.length > 1 ? folded.filter((span) => span !== first) : [];
+  const spans = offerable.get(sessionId) ?? [];
+  const sweep = folded.length > 1 && spans.length > 0 && !somethingOfferableBetween(spans, folded);
+  const swept = sweep ? folded.filter((span) => span !== first) : [];
   const counters = skips.get(sessionId) ?? ageRegions.map(() => 0);
   const next = ageRegions.map((ageRegion, index) => {
     const inside = ageRegion.start <= chosenSeq && chosenSeq <= ageRegion.end;
@@ -8662,6 +8679,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     start: group[0].start,
     end: group[group.length - 1].end
   })));
+  noteOfferableSpans(String(session.id), ranges.map((range) => ({ start: range.start, end: range.end })));
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id));
   const baseRows = shown.map((range, ageRegion) => {
     const at = ranges.indexOf(range);
@@ -9787,7 +9805,7 @@ async function handleStatus(env, rawArgs, exec) {
     if (skippedAgeRegions.length > 0) {
       lines.push(
         "",
-        `Age regions your folds keep passing over (nudge column \`skipped N\xD7\`; every choice of a fold start outside the age region counts once, and a sweep gives that count back to every age region it folded through): ` + skippedAgeRegions.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}\xD7`).join(", ")
+        `Age regions your folds keep passing over (nudge column \`skipped N\xD7\`; every choice of a fold start outside the age region counts once, and a sweep \u2014 one contiguous run of compressible ranges \u2014 gives that count back to every age region it folded through): ` + skippedAgeRegions.map((entry) => `seq ${String(entry.row.start)}..${String(entry.row.end)} skipped ${String(entry.skipped)}\xD7`).join(", ")
       );
     }
   }

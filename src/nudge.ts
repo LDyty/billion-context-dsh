@@ -41,7 +41,7 @@ import { mediaPriceViaMeter } from './host-tokens.ts'
 import { sessionEventsOf } from './session-events.ts'
 import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { rememberBreakdown, rememberPressure, rememberRangeTable } from './inspect.ts'
-import { lastAgeRegionSkipsOf, noteAgeRegions } from './age-region-skips.ts'
+import { lastAgeRegionSkipsOf, noteAgeRegions, noteOfferableSpans } from './age-region-skips.ts'
 import type { AcpInspectSweep } from './inspect-types.ts'
 import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompts.ts'
 
@@ -336,6 +336,9 @@ export function rangeTable(
     start: group[0]!.start,
     end: group[group.length - 1]!.end,
   })))
+  // …and every offerable span of this same build, which is what lets a later
+  // choice tell a sweep (one contiguous run) from a batch of scattered segments.
+  noteOfferableSpans(String(session.id), ranges.map((range) => ({ start: range.start, end: range.end })))
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id))
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
