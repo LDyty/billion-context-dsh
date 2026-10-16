@@ -7058,7 +7058,7 @@ var DEFAULT_PROMPTS = {
   },
   rangeTable: {
     header: "Surface: {surface}",
-    title: "Compressible ranges ({count}, one per age region \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
+    title: "Compressible ranges ({count} \u2014 up to 3 of each age region's largest intervals, oldest first; exact surface seqs \u2014 usable as-is):",
     // Two figures, two units, each printed where it belongs: the row MIX rides
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
@@ -8630,7 +8630,9 @@ function meterMediaPriceResolver(agent, session) {
     return prices.get(seq) ?? 0;
   };
 }
-var RANGE_TABLE_LIMIT = 6;
+var RANGE_TABLE_AGE_REGIONS = 6;
+var RANGE_TABLE_ROWS_PER_AGE_REGION = 3;
+var RANGE_TABLE_LIMIT = RANGE_TABLE_AGE_REGIONS * RANGE_TABLE_ROWS_PER_AGE_REGION;
 var RANGE_TABLE_COST_WARN_BREAK_EVEN = 6;
 var RANGE_TABLE_COST_WARN_FLAG = " \u2014 \u26A0 expensive: this span starts early, so most of the context is re-sent";
 function skippedLabel(count) {
@@ -8639,7 +8641,7 @@ function skippedLabel(count) {
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
-function partitionOfferableIntoAgeRegions(all, ageRegions = RANGE_TABLE_LIMIT) {
+function partitionOfferableIntoAgeRegions(all, ageRegions = RANGE_TABLE_AGE_REGIONS) {
   const ordered = [...all].sort((a, b) => a.start - b.start);
   if (ordered.length === 0) return [];
   const count = Math.max(1, Math.min(ageRegions, ordered.length));
@@ -8665,6 +8667,18 @@ function partitionOfferableIntoAgeRegions(all, ageRegions = RANGE_TABLE_LIMIT) {
   close();
   return groups;
 }
+function rangeTableRowsOfGroups(groups, perRegion = RANGE_TABLE_ROWS_PER_AGE_REGION) {
+  const rows = [];
+  const take = Math.max(1, perRegion);
+  for (const [index, group] of groups.entries()) {
+    const ranked = [...group].sort((left, right) => right.tokens - left.tokens || left.start - right.start).slice(0, take);
+    const rankOf = new Map(ranked.map((range, position) => [range, position + 1]));
+    for (const range of ranked.sort((left, right) => left.start - right.start)) {
+      rows.push({ range, ageRegion: index + 1, rank: rankOf.get(range) ?? 1 });
+    }
+  }
+  return rows;
+}
 function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
   const ranges = buildCompressibleSeqRanges(
     session,
@@ -8672,8 +8686,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     mediaPriceOf === void 0 ? {} : { mediaPriceOf }
   );
   const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges);
-  const shown = ageRegionGroups.map((group) => group.reduce((best, range) => range.tokens > best.tokens ? range : best));
-  if (shown.length === 0) return "";
+  const rangeRows = rangeTableRowsOfGroups(ageRegionGroups);
+  if (rangeRows.length === 0) return "";
   const costs = foldCostsOfRanges(session, ranges, mediaPriceOf);
   noteAgeRegions(String(session.id), ageRegionGroups.map((group) => ({
     start: group[0].start,
@@ -8681,10 +8695,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   })));
   noteOfferableSpans(String(session.id), ranges.map((range) => ({ start: range.start, end: range.end })));
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id));
-  const baseRows = shown.map((range, ageRegion) => {
+  const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {
     const at = ranges.indexOf(range);
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY };
-    return { range, at, ageRegion, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
+    return { range, at, ageRegion, rank, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN };
   });
   const proposalOfAt = /* @__PURE__ */ new Map();
   const sweeps = [];
@@ -8743,8 +8757,9 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         media: mediaSuffixOf(range),
         // "This age region keeps being passed over": how many model choices picked a
         // fold start outside this age region (src/age-region-skips.ts). Independent of the
-        // seq range — the number belongs to the age region slot, not the content.
-        skipped: skippedLabel(ageRegionSkips[ageRegion] ?? 0)
+        // seq range — the number belongs to the age region slot, not the content,
+        // so every row of one region prints the same count.
+        skipped: skippedLabel(ageRegionSkips[ageRegion - 1] ?? 0)
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
@@ -8759,8 +8774,9 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   });
   rememberRangeTable(
     String(session.id),
-    baseRows.map((row, index) => ({
-      ageRegion: index + 1,
+    baseRows.map((row) => ({
+      ageRegion: row.ageRegion,
+      rankInAgeRegion: row.rank,
       start: row.range.start,
       end: row.range.end,
       messages: row.range.count,
@@ -8779,7 +8795,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
-      skipped: ageRegionSkips[row.ageRegion] ?? 0
+      skipped: ageRegionSkips[row.ageRegion - 1] ?? 0
     })),
     sweeps
   );
@@ -8787,12 +8803,12 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     "",
     renderTemplate(prompts.rangeTable.header, { surface: surfaceSummary(session) }),
-    renderTemplate(prompts.rangeTable.title, { count: shown.length }),
+    renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
     // Name what the cap hid: with a fragmented surface the table used to show a
     // handful while dozens more sat unlisted, and the model had no way to know
     // (2026-10-14: 128 offerable ranges, six rows printed).
-    ...ranges.length > shown.length ? [`  (${ranges.length - shown.length} more range(s) not shown \u2014 acp_status with scope:"uncompressed", view:"ranges" lists them)`] : [],
+    ...ranges.length > rangeRows.length ? [`  (${ranges.length - rangeRows.length} more range(s) not shown \u2014 acp_status with scope:"uncompressed", view:"ranges" lists them)`] : [],
     prompts.rangeTable.footer
   ].join("\n");
 }

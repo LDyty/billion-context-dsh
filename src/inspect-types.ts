@@ -32,10 +32,16 @@ export interface AcpInspectNode {
   readonly barrier?: string
 }
 
-/** One printed range row (one per age region) with its fold cost. */
+/** One printed range row (up to three per age region) with its fold cost. */
 export interface AcpInspectRow {
   /** 1-based age region index; age region 1 is the oldest sixth of the reclaimable content. */
   readonly ageRegion: number
+  /**
+   * 1-based rank of this row's interval inside its age region, by size (1 = that
+   * region's largest). Every age region prints up to three intervals
+   * ({@link RANGE_TABLE_ROWS_PER_AGE_REGION} in src/nudge.ts).
+   */
+  readonly rankInAgeRegion: number
   readonly start: number
   readonly end: number
   readonly messages: number

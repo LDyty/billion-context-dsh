@@ -178,8 +178,20 @@ export function meterMediaPriceResolver(
   }
 }
 
-/** Rows the nudge range table prints. */
-export const RANGE_TABLE_LIMIT = 6
+/** Age regions the offerable list is cut into — the six 年龄区域. */
+export const RANGE_TABLE_AGE_REGIONS = 6
+
+/**
+ * Rows printed PER age region (owner ruling, 2026-10-16): that region's three
+ * largest intervals, oldest-first. One row per age region gave the model a
+ * single choice per age, and the only way to see anything finer was to leave
+ * the table; three rows make the table the place the choice is made, without
+ * changing what the age regions are or how a fold start is attributed to one.
+ */
+export const RANGE_TABLE_ROWS_PER_AGE_REGION = 3
+
+/** Rows the nudge range table prints, at most. */
+export const RANGE_TABLE_LIMIT = RANGE_TABLE_AGE_REGIONS * RANGE_TABLE_ROWS_PER_AGE_REGION
 
 /**
  * Break-even request count at which a row is flagged as expensive to fold.
@@ -221,7 +233,8 @@ function compactTokens(tokens: number): string {
 }
 
 /**
- * Pick the rows the nudge range table prints: **one per age region**.
+ * Cut the offerable list into age regions (the rows are picked by
+ * {@link rangeTableRowsOfGroups}: up to three per region, largest first).
  *
  * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
  * spot: on a big surface the shortlist is filled from whatever region happens to
@@ -243,12 +256,12 @@ function compactTokens(tokens: number): string {
  * so the table reads as the timeline it is.
  *
  * @param all - every offerable range, in surface position order.
- * @param age regions - how many age regions to cut (defaults to the row cap).
- * @returns one base range per age region, oldest first.
+ * @param ageRegions - how many age regions to cut (defaults to the six 年龄区域).
+ * @returns one group of ranges per age region, oldest first.
  */
 export function partitionOfferableIntoAgeRegions<T extends { start: number; end: number; tokens: number }>(
   all: readonly T[],
-  ageRegions: number = RANGE_TABLE_LIMIT,
+  ageRegions: number = RANGE_TABLE_AGE_REGIONS,
 ): T[][] {
   const ordered = [...all].sort((a, b) => a.start - b.start)
   if (ordered.length === 0) return []
@@ -281,20 +294,69 @@ export function partitionOfferableIntoAgeRegions<T extends { start: number; end:
 }
 
 /**
- * The rows the table prints: **one per age region**, each the LARGEST span of its
- * age region (the row the model reads, and the one every neighbour in the sweep is
- * priced against). See {@link partitionOfferableIntoAgeRegions} for the geometry.
+ * One printed row: the range it offers, the age region it belongs to, and its
+ * size rank inside that region.
+ */
+export interface RangeTableRow<T> {
+  readonly range: T
+  /** 1-based age region; every row of one region carries the same number. */
+  readonly ageRegion: number
+  /** 1-based rank by size inside the age region (1 = that region's largest). */
+  readonly rank: number
+}
+
+/**
+ * The rows the table prints: the LARGEST {@link RANGE_TABLE_ROWS_PER_AGE_REGION}
+ * intervals of every age region. Within a region the rows are printed in surface
+ * order (oldest first), so the whole table stays the timeline it is; the rank is
+ * still decided by size, because the largest interval of a region is the one the
+ * region's sweep is priced from.
+ *
+ * @param groups - the age regions, oldest first (see {@link partitionOfferableIntoAgeRegions}).
+ * @param perRegion - rows per age region (defaults to {@link RANGE_TABLE_ROWS_PER_AGE_REGION}).
+ * @returns one row per printed interval, oldest first.
+ */
+export function rangeTableRowsOfGroups<T extends { start: number; end: number; tokens: number }>(
+  groups: readonly (readonly T[])[],
+  perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
+): RangeTableRow<T>[] {
+  const rows: RangeTableRow<T>[] = []
+  const take = Math.max(1, perRegion)
+  for (const [index, group] of groups.entries()) {
+    const ranked = [...group]
+      .sort((left, right) => right.tokens - left.tokens || left.start - right.start)
+      .slice(0, take)
+    const rankOf = new Map(ranked.map((range, position) => [range, position + 1]))
+    for (const range of ranked.sort((left, right) => left.start - right.start)) {
+      rows.push({ range, ageRegion: index + 1, rank: rankOf.get(range) ?? 1 })
+    }
+  }
+  return rows
+}
+
+/**
+ * The same rows, straight from the offerable list.
  *
  * @param all - every offerable range, in any order.
- * @param age regions - how many age regions to cut (defaults to the row cap).
- * @returns one base range per age region, oldest first.
+ * @param ageRegions - how many age regions to cut (defaults to the six).
+ * @param perRegion - rows per age region.
+ * @returns one row per printed interval, oldest first.
  */
+export function selectRangeTableRows<T extends { start: number; end: number; tokens: number }>(
+  all: readonly T[],
+  ageRegions: number = RANGE_TABLE_AGE_REGIONS,
+  perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
+): RangeTableRow<T>[] {
+  return rangeTableRowsOfGroups(partitionOfferableIntoAgeRegions(all, ageRegions), perRegion)
+}
+
+/** Just the offered ranges, in the order the table prints them (tests, scratch tools). */
 export function selectRangeTableRanges<T extends { start: number; end: number; tokens: number }>(
   all: readonly T[],
-  ageRegions: number = RANGE_TABLE_LIMIT,
+  ageRegions: number = RANGE_TABLE_AGE_REGIONS,
+  perRegion: number = RANGE_TABLE_ROWS_PER_AGE_REGION,
 ): T[] {
-  return partitionOfferableIntoAgeRegions(all, ageRegions)
-    .map((group) => group.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
+  return selectRangeTableRows(all, ageRegions, perRegion).map((row) => row.range)
 }
 
 /**
@@ -317,14 +379,14 @@ export function rangeTable(
     kernelView,
     mediaPriceOf === undefined ? {} : { mediaPriceOf },
   )
-  // The age regions are cut ONCE: their regions are what a later fold start is
-  // attributed against (src/age-region-skips.ts), and the printed rows are their
-  // largest spans. Panel rebuilds record the same regions as a nudge does —
-  // a build is never a choice, so there is nothing to skip counting.
+  // The age regions are cut ONCE: their spans are what a later fold start is
+  // attributed against (src/age-region-skips.ts), and the printed rows are the
+  // largest intervals inside them. Panel rebuilds record the same regions as a
+  // nudge does — a build is never a choice, so there is nothing to skip counting.
   const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges)
-  const shown = ageRegionGroups.map((group) => group.reduce((best, range) => (range.tokens > best.tokens ? range : best)))
+  const rangeRows = rangeTableRowsOfGroups(ageRegionGroups)
   // 零范围:整块省略(保留现状的提前返回与 nudge 尾部 '\n')。
-  if (shown.length === 0) return ''
+  if (rangeRows.length === 0) return ''
   // Each row carries its own fold cost: reclaiming a span makes every node at
   // and after its start re-send uncached once, so the model needs that number to
   // weigh a cheap-but-tiny span against an expensive-but-satisfying one.
@@ -342,10 +404,10 @@ export function rangeTable(
   const ageRegionSkips = lastAgeRegionSkipsOf(String(session.id))
   // Costs cover every offerable range, so a row's sweep can reach spans that did
   // not fit the printed rows.
-  const baseRows = shown.map((range, ageRegion) => {
+  const baseRows = rangeRows.map(({ range, ageRegion, rank }) => {
     const at = ranges.indexOf(range)
     const cost = costs[at] ?? { invalidatedTokens: 0, breakEvenRequests: Number.POSITIVE_INFINITY }
-    return { range, at, ageRegion, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
+    return { range, at, ageRegion, rank, cost, expensive: cost.breakEvenRequests >= RANGE_TABLE_COST_WARN_BREAK_EVEN }
   })
   // EVERY row carries its own sweep, and every sweep is printed in full
   // (2026-10-16): the six rows are six STARTING POINTS and each one runs forward
@@ -418,8 +480,9 @@ export function rangeTable(
         media: mediaSuffixOf(range),
         // "This age region keeps being passed over": how many model choices picked a
         // fold start outside this age region (src/age-region-skips.ts). Independent of the
-        // seq range — the number belongs to the age region slot, not the content.
-        skipped: skippedLabel(ageRegionSkips[ageRegion] ?? 0),
+        // seq range — the number belongs to the age region slot, not the content,
+        // so every row of one region prints the same count.
+        skipped: skippedLabel(ageRegionSkips[ageRegion - 1] ?? 0),
       }),
       renderTemplate(prompts.rangeTable.cost, {
         reclaimed: compactTokens(range.tokens),
@@ -436,8 +499,9 @@ export function rangeTable(
   // once per build — the panel never recomputes (see src/inspect.ts).
   rememberRangeTable(
     String(session.id),
-    baseRows.map((row, index) => ({
-      ageRegion: index + 1,
+    baseRows.map((row) => ({
+      ageRegion: row.ageRegion,
+      rankInAgeRegion: row.rank,
       start: row.range.start,
       end: row.range.end,
       messages: row.range.count,
@@ -456,7 +520,7 @@ export function rangeTable(
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,
-      skipped: ageRegionSkips[row.ageRegion] ?? 0,
+      skipped: ageRegionSkips[row.ageRegion - 1] ?? 0,
     })),
     sweeps,
   )
@@ -464,13 +528,13 @@ export function rangeTable(
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     '',
     renderTemplate(prompts.rangeTable.header, { surface: surfaceSummary(session) }),
-    renderTemplate(prompts.rangeTable.title, { count: shown.length }),
+    renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
     // Name what the cap hid: with a fragmented surface the table used to show a
     // handful while dozens more sat unlisted, and the model had no way to know
     // (2026-10-14: 128 offerable ranges, six rows printed).
-    ...(ranges.length > shown.length
-      ? [`  (${ranges.length - shown.length} more range(s) not shown — acp_status with scope:"uncompressed", view:"ranges" lists them)`]
+    ...(ranges.length > rangeRows.length
+      ? [`  (${ranges.length - rangeRows.length} more range(s) not shown — acp_status with scope:"uncompressed", view:"ranges" lists them)`]
       : []),
     prompts.rangeTable.footer,
   ].join('\n')

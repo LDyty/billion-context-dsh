@@ -184,14 +184,21 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
       h('th', { title: 'invalidated（作废）＝ 折叠这一行会让下一发请求重发多少 prefix（前缀）；breakEven（回本）＝ 赚回这次重写需要几次请求，≥6 标黄 ⚠。被跳过次数见那一格自己的提示。' }, '代价'),
       h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 回本倍数）；与 nudge（提醒文本）里那一行是同一组数字。' }, '清扫'),
       h('th', { title: '复制一条可直接粘贴的 compress（压缩）调用。' }, ''))),
-    h('tbody', null, rows.map((row) => {
+    h('tbody', null, rows.map((row, rowIndex) => {
       const sweep = sweepOf(row.start)
       const stale = staleOf(row)
+      // Three rows share one age region, so the number is printed once per group
+      // (and the leaders of the group carry a muted ditto) — the column reads as
+      // the six 年龄区域 it is, not as eighteen unrelated rows.
+      const firstOfRegion = rows[rowIndex - 1]?.ageRegion !== row.ageRegion
       return h('tr', { key: `${row.start}-${row.end}`, className: stale ? 'acp-stale' : undefined },
         h('td', {
           className: 'acp-age-region',
-          title: `ageRegion（年龄区域）${String(row.ageRegion)}：${row.ageRegion === 1 ? '最老的年龄区域' : `从老到新数第 ${String(row.ageRegion)} 个年龄区域`}`,
-        }, row.ageRegion === 1 ? '1 最老' : String(row.ageRegion)),
+          title: `ageRegion（年龄区域）${String(row.ageRegion)}：${row.ageRegion === 1 ? '最老的年龄区域' : `从老到新数第 ${String(row.ageRegion)} 个年龄区域`}`
+            + `；本行是它印出的第 ${String(row.rankInAgeRegion)} 大区间（每个年龄区域最多印 3 个，按大小取，行的先后仍按 seq 从老到新）`,
+        }, firstOfRegion
+          ? (row.ageRegion === 1 ? '1 最老' : String(row.ageRegion))
+          : h('span', { className: 'acp-muted' }, '〃')),
         h('td', { className: 'acp-range' },
           h('span', {
             title: `seq（事件序号）${String(row.start)}..${String(row.end)}，含首尾${stale ? '；这两个 seq 已不在表面上，行已过期' : ''}。`,

@@ -60,8 +60,18 @@ export declare function hasActionableTarget(session: import('@deepseek-ai/dsh-se
  * same vocabulary as the nudge table.
  */
 export declare function meterMediaPriceResolver(agent: Agent, session: import('@deepseek-ai/dsh-session').Session): MediaPriceOf;
-/** Rows the nudge range table prints. */
-export declare const RANGE_TABLE_LIMIT = 6;
+/** Age regions the offerable list is cut into — the six 年龄区域. */
+export declare const RANGE_TABLE_AGE_REGIONS = 6;
+/**
+ * Rows printed PER age region (owner ruling, 2026-10-16): that region's three
+ * largest intervals, oldest-first. One row per age region gave the model a
+ * single choice per age, and the only way to see anything finer was to leave
+ * the table; three rows make the table the place the choice is made, without
+ * changing what the age regions are or how a fold start is attributed to one.
+ */
+export declare const RANGE_TABLE_ROWS_PER_AGE_REGION = 3;
+/** Rows the nudge range table prints, at most. */
+export declare const RANGE_TABLE_LIMIT: number;
 /**
  * Break-even request count at which a row is flagged as expensive to fold.
  * Above this the one-time prefix rewrite costs more requests than the reclaim
@@ -80,7 +90,8 @@ export declare const RANGE_TABLE_BATCH_MAX_NEW_EXPENSIVE = 6;
 /** Only print a batch when it beats its base row's break-even by this fraction. */
 export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
 /**
- * Pick the rows the nudge range table prints: **one per age region**.
+ * Cut the offerable list into age regions (the rows are picked by
+ * {@link rangeTableRowsOfGroups}: up to three per region, largest first).
  *
  * Policy (2026-10-16), replacing plain size-first. Size-first had one blind
  * spot: on a big surface the shortlist is filled from whatever region happens to
@@ -102,8 +113,8 @@ export declare const RANGE_TABLE_BATCH_MIN_IMPROVEMENT = 0.25;
  * so the table reads as the timeline it is.
  *
  * @param all - every offerable range, in surface position order.
- * @param age regions - how many age regions to cut (defaults to the row cap).
- * @returns one base range per age region, oldest first.
+ * @param ageRegions - how many age regions to cut (defaults to the six 年龄区域).
+ * @returns one group of ranges per age region, oldest first.
  */
 export declare function partitionOfferableIntoAgeRegions<T extends {
     start: number;
@@ -111,19 +122,51 @@ export declare function partitionOfferableIntoAgeRegions<T extends {
     tokens: number;
 }>(all: readonly T[], ageRegions?: number): T[][];
 /**
- * The rows the table prints: **one per age region**, each the LARGEST span of its
- * age region (the row the model reads, and the one every neighbour in the sweep is
- * priced against). See {@link partitionOfferableIntoAgeRegions} for the geometry.
+ * One printed row: the range it offers, the age region it belongs to, and its
+ * size rank inside that region.
+ */
+export interface RangeTableRow<T> {
+    readonly range: T;
+    /** 1-based age region; every row of one region carries the same number. */
+    readonly ageRegion: number;
+    /** 1-based rank by size inside the age region (1 = that region's largest). */
+    readonly rank: number;
+}
+/**
+ * The rows the table prints: the LARGEST {@link RANGE_TABLE_ROWS_PER_AGE_REGION}
+ * intervals of every age region. Within a region the rows are printed in surface
+ * order (oldest first), so the whole table stays the timeline it is; the rank is
+ * still decided by size, because the largest interval of a region is the one the
+ * region's sweep is priced from.
+ *
+ * @param groups - the age regions, oldest first (see {@link partitionOfferableIntoAgeRegions}).
+ * @param perRegion - rows per age region (defaults to {@link RANGE_TABLE_ROWS_PER_AGE_REGION}).
+ * @returns one row per printed interval, oldest first.
+ */
+export declare function rangeTableRowsOfGroups<T extends {
+    start: number;
+    end: number;
+    tokens: number;
+}>(groups: readonly (readonly T[])[], perRegion?: number): RangeTableRow<T>[];
+/**
+ * The same rows, straight from the offerable list.
  *
  * @param all - every offerable range, in any order.
- * @param age regions - how many age regions to cut (defaults to the row cap).
- * @returns one base range per age region, oldest first.
+ * @param ageRegions - how many age regions to cut (defaults to the six).
+ * @param perRegion - rows per age region.
+ * @returns one row per printed interval, oldest first.
  */
+export declare function selectRangeTableRows<T extends {
+    start: number;
+    end: number;
+    tokens: number;
+}>(all: readonly T[], ageRegions?: number, perRegion?: number): RangeTableRow<T>[];
+/** Just the offered ranges, in the order the table prints them (tests, scratch tools). */
 export declare function selectRangeTableRanges<T extends {
     start: number;
     end: number;
     tokens: number;
-}>(all: readonly T[], ageRegions?: number): T[];
+}>(all: readonly T[], ageRegions?: number, perRegion?: number): T[];
 /**
  * Render the compressible-range table as seq refs for the model.
  *

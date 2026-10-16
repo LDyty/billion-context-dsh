@@ -208,7 +208,7 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
   },
   rangeTable: {
     header: 'Surface: {surface}',
-    title: 'Compressible ranges ({count}, one per age region — oldest first; exact surface seqs — usable as-is):',
+    title: 'Compressible ranges ({count} — up to 3 of each age region\'s largest intervals, oldest first; exact surface seqs — usable as-is):',
     // Two figures, two units, each printed where it belongs: the row MIX rides
     // the message count ("7 messages (5 tool · 2 assistant)"), the character
     // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",

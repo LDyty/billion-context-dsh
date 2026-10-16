@@ -98,7 +98,7 @@ const nudgeTableChecks = (result) => {
   })
   const ascending = starts.length >= 1 && starts.every((value, i) => i === 0 || value >= starts[i - 1])
   return [
-    ['nudge range table header (one row per age region)', table.includes('Compressible ranges') && table.includes('one per age region'), ''],
+    ['nudge range table header (up to 3 rows per age region)', table.includes('Compressible ranges') && table.includes('up to 3 of each age region'), ''],
     ['nudge range rows carry [tool X% | reasoning Y% | text Z%] share', rows.length >= 1, `rows=${rows.length}`],
     ['nudge range rows oldest-first (non-decreasing start seq)', ascending, `starts=${starts.join(',')}`]
   ]
