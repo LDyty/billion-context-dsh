@@ -366,8 +366,10 @@ export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
         : '内置默认值（引擎尚未测过这条会话）'
     return h('div', { className: 'acp-panel' },
       h('div', { className: 'acp-head' },
-        h('b', null, `${String(usage.pct)}% 上下文`),
-        h('span', null, `${compact(usage.tokens)} / ${compact(usage.window)}`),
+        // 和 nudge 里那行同口径：这个数字不只是钱——缓存命中虽然单价低，量大了账单照样堆；
+        // 长上下文还会稀释模型的注意力和推理质量，所以它是「早点压」的理由，不只是告警。
+        h('b', { title: '当前上下文占用（token（词元）实测值 ÷ 可持续输入预算）。它同时是两件事：① 钱——即使按缓存命中的低价算，prefix（前缀）越大每一步的账单越高，折叠会让从起点往后的 prefix 一次性按未命中价重发，之后整体变短；② 注意力——上下文越长，模型的注意力和推理质量越容易被稀释。' }, `${String(usage.pct)}% 上下文`),
+        h('span', { title: '下一步请求要携带的 prefix（前缀）规模：宿主实测的上下文 token（词元）数 / 可持续输入预算（窗口 − 路由的输出预留）。' }, `${compact(usage.tokens)} / ${compact(usage.window)}`),
         h('span', { className: usage.windowSource === 'engine' ? 'acp-muted' : 'acp-warn' }, windowNote),
         h('span', { className: 'acp-muted' }, `表面 ${String(surface.nodes)} 节点 · ${String(surface.firstSeq)}..${String(surface.lastSeq)}`),
         h('span', { className: 'acp-muted' }, `表快照 ${stampOf(snapshot.capturedAt)}（${ageOf(snapshot.capturedAt)}）`),

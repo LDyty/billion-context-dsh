@@ -210,7 +210,11 @@ test('M4/prompts 4c: the table header carries the pressure pair the decision use
     table.includes('Context: 344.5K / 744K tokens used (46%)'),
     `the used/window pair and the share are printed (${table.split('\n')[1] ?? ''})`,
   )
-  assert.ok(table.includes('a fold rewrite re-sends it uncached'), 'and the line says what the number is for')
+  assert.ok(
+    table.includes('the bill grows with size and long context dilutes attention and reasoning quality'),
+    'and the line says what the number costs (money at any cache rate, attention)',
+  )
+  assert.ok(table.includes('a fold re-sends this prefix uncached once, then it is shorter'), 'and what a fold does to it')
   // No window on record (panel rebuild, tests): no line at all, never a blank one.
   const bare = rangeTable(session, wholeSurfaceRangeView(session))
   assert.ok(!bare.includes('Context:'), 'without a window the line is absent')
