@@ -53,6 +53,16 @@ function stampOf(ms: number): string {
   return sameDay ? clock : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`
 }
 
+/** How old the table snapshot is, in words — staleness is a fact the reader needs. */
+function ageOf(ms: number): string {
+  if (ms <= 0) return '尚未构建'
+  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  if (seconds < 90) return `${String(seconds)} 秒前`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 90) return `${String(minutes)} 分钟前`
+  return `${(minutes / 60).toFixed(1)} 小时前`
+}
+
 /** One ready-to-paste compress call for a set of spans. */
 function compressCall(spans: readonly { start: number; end: number }[], summary: string): string {
   const content = spans.map((span) => `    { startSeq: ${span.start}, endSeq: ${span.end}, summary: ${JSON.stringify(summary)} },`)
@@ -104,19 +114,33 @@ function ContextMap(props: { map: readonly AcpInspectNode[] }): ReactElement {
 }
 
 function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
-  const { rows, sweeps } = props.snapshot
+  const { rows, sweeps, map } = props.snapshot
   if (rows.length === 0) return h('div', { className: 'acp-empty' }, '还没有可压范围（等下一次 nudge 生成）')
   const sweepOf = (start: number): AcpInspectSnapshot['sweeps'][number] | undefined =>
     sweeps.find((sweep) => sweep.rowStart === start)
-  return h('table', { className: 'acp-table' },
+  // A row whose edges are no longer on the live surface describes content that
+  // was folded (or shadowed) since this table was built. Saying so beats letting
+  // the reader copy a call for seqs that do not exist any more.
+  const onSurface = new Set(map.map((node) => node.seq))
+  const staleOf = (row: AcpInspectSnapshot['rows'][number]): boolean =>
+    !onSurface.has(row.start) || !onSurface.has(row.end)
+  const staleCount = rows.filter(staleOf).length
+  return h('div', { className: 'acp-section' },
+    staleCount > 0
+      ? h('div', { className: 'acp-warn' },
+        `${String(staleCount)}/${String(rows.length)} 行已过期（这些 seq 已不在表面上——压过或表面已移动）。`
+        + '下次 nudge 或打开面板时会自动重建。')
+      : null,
+    h('table', { className: 'acp-table' },
     h('thead', null, h('tr', null,
       h('th', null, '段位'), h('th', null, '范围'), h('th', null, '条数'),
       h('th', null, '大小'), h('th', null, 'tool'), h('th', null, '作废'), h('th', null, '回本'), h('th', null, '清扫'), h('th', null, ''))),
     h('tbody', null, rows.map((row) => {
       const sweep = sweepOf(row.start)
-      return h('tr', { key: `${row.start}-${row.end}` },
+      const stale = staleOf(row)
+      return h('tr', { key: `${row.start}-${row.end}`, className: stale ? 'acp-stale' : undefined },
         h('td', null, `${row.band}${row.band === 1 ? '（最老）' : ''}`),
-        h('td', null, `${row.start}..${row.end}`),
+        h('td', null, `${row.start}..${row.end}${stale ? '（已过期）' : ''}`),
         h('td', null, String(row.messages)),
         h('td', null, `~${compact(row.tokens)}`),
         h('td', null, `${row.toolPct}%`),
@@ -133,6 +157,7 @@ function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
         })),
       )
     })),
+    ),
   )
 }
 
@@ -222,7 +247,7 @@ export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
         h('span', null, `${compact(usage.tokens)} / ${compact(usage.window)}`),
         h('span', { className: usage.windowSource === 'engine' ? 'acp-muted' : 'acp-warn' }, windowNote),
         h('span', { className: 'acp-muted' }, `表面 ${String(surface.nodes)} 节点 · ${String(surface.firstSeq)}..${String(surface.lastSeq)}`),
-        h('span', { className: 'acp-muted' }, `表快照 ${stampOf(snapshot.capturedAt)}`),
+        h('span', { className: 'acp-muted' }, `表快照 ${stampOf(snapshot.capturedAt)}（${ageOf(snapshot.capturedAt)}）`),
       ),
       h('div', { className: 'acp-bar' }, h('span', { style: { width: `${String(Math.min(100, usage.pct))}%` } })),
       // Two calibers, named: the pressure above is provider-anchored (it includes

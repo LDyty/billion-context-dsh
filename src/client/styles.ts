@@ -57,6 +57,7 @@ export const ACP_PANEL_CSS = `
 .acp-copy { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: transparent; color: inherit; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
 .acp-copy:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
 .acp-empty { opacity: .6; font-style: italic; }
+.acp-stale { opacity: .45; }
 `
 
 /** Inject the stylesheet once per document (idempotent). */

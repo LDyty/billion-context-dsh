@@ -58,7 +58,7 @@ import {
 import { allLogMessages, eventsToCoreMessages, isCheckpointNode, overflowMarkerSummary, surfaceEventsOf, toolCallIdOfResultEvent } from './messages.ts'
 import { shadowedTokensViaMeter } from './host-tokens.ts'
 import { handleInspectRequest } from './inspect.ts'
-import { inspectCacheOf, rememberBreakdown, rememberPressure } from './inspect.ts'
+import { inspectCacheOf, invalidateInspectTable, rememberBreakdown, rememberPressure } from './inspect.ts'
 import { kernelConfigFor } from './config.ts'
 import {
   ACP_SETTINGS_NAMESPACE,
@@ -445,8 +445,17 @@ export class AcpCompactionEngine extends CompactionEngine {
     }, request)
   }
 
-  /** How long a remembered table counts as fresh enough to serve as-is. */
-  private static readonly INSPECT_TABLE_TTL_MS = 15 * 60 * 1000
+  /**
+   * How long a remembered table counts as fresh enough to serve as-is.
+   *
+   * Deliberately short: the surface grows every step, so a table older than a
+   * few minutes describes a conversation that has moved on. The rebuild is one
+   * `processTurn` on a cloned state (the same work a single pre-step does), and
+   * the per-session floor below keeps a polling panel from doing it twice in a
+   * row. A landed compression invalidates the entry outright, so the common
+   * "I just folded something, show me the new table" case never waits.
+   */
+  private static readonly INSPECT_TABLE_TTL_MS = 3 * 60 * 1000
   /** Floor between two on-demand builds, so a polling panel cannot hammer the kernel. */
   private static readonly INSPECT_BUILD_FLOOR_MS = 20 * 1000
   /** Last on-demand build per session (throttle) plus the in-flight promise. */
@@ -863,6 +872,15 @@ export class AcpCompactionEngine extends CompactionEngine {
     // an assistant tool_calls block and its tool response — strict providers
     // reject that request with HTTP 400 (issue #18).
     ctx.on('session/event', (session, event) => {
+      // A landed compression moves the surface: every remembered range row may
+      // name seqs that are gone, so the panel's table is stale from this moment.
+      // Drop the throttle with it, so the next panel read rebuilds immediately
+      // instead of waiting out the build floor.
+      if (event.type === 'compaction/summary' || event.type === 'compaction/prune') {
+        const sessionId = String(session.id)
+        invalidateInspectTable(sessionId)
+        this.inspectBuilds.delete(sessionId)
+      }
       // An assistant message on a session that just overflowed means the retry
       // (or a later request) made progress: reset that agent's overflow budget
       // so a FUTURE overflow gets a fresh recovery chance (host parity).

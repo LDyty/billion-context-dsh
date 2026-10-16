@@ -95,6 +95,20 @@ export function inspectCacheOf(sessionId: string): AcpInspectCache | undefined {
   return caches.get(sessionId)
 }
 
+/**
+ * Mark one session's remembered table as stale.
+ *
+ * Called when a compression lands (the surface just moved, so EVERY remembered
+ * row may name seqs that are gone) and when the session is disposed. The rows
+ * are kept — the panel keeps showing the last offer, greyed and marked — but the
+ * age is zeroed so the next panel read (or pre-step) rebuilds instead of serving
+ * a table whose spans no longer exist.
+ */
+export function invalidateInspectTable(sessionId: string): void {
+  const cache = caches.get(sessionId)
+  if (cache !== undefined) cache.capturedAt = 0
+}
+
 /** Drop one session's cache (forget on session disposal). */
 export function forgetInspectCache(sessionId: string): void {
   caches.delete(sessionId)

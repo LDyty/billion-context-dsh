@@ -47,6 +47,16 @@ export declare function rememberPressure(sessionId: string, pressure: number, wi
 /** Remember the surface breakdown (only computed when a nudge actually fires). */
 export declare function rememberBreakdown(sessionId: string, breakdown: AcpInspectCache['breakdown']): void;
 export declare function inspectCacheOf(sessionId: string): AcpInspectCache | undefined;
+/**
+ * Mark one session's remembered table as stale.
+ *
+ * Called when a compression lands (the surface just moved, so EVERY remembered
+ * row may name seqs that are gone) and when the session is disposed. The rows
+ * are kept — the panel keeps showing the last offer, greyed and marked — but the
+ * age is zeroed so the next panel read (or pre-step) rebuilds instead of serving
+ * a table whose spans no longer exist.
+ */
+export declare function invalidateInspectTable(sessionId: string): void;
 /** Drop one session's cache (forget on session disposal). */
 export declare function forgetInspectCache(sessionId: string): void;
 /** The structural slice of the host `sessions` service the route needs. */

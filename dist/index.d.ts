@@ -211,7 +211,16 @@ export declare class AcpCompactionEngine extends CompactionEngine {
      * @returns `{ ok: true, value }` with a snapshot, or a typed failure.
      */
     private handleInspectRequest;
-    /** How long a remembered table counts as fresh enough to serve as-is. */
+    /**
+     * How long a remembered table counts as fresh enough to serve as-is.
+     *
+     * Deliberately short: the surface grows every step, so a table older than a
+     * few minutes describes a conversation that has moved on. The rebuild is one
+     * `processTurn` on a cloned state (the same work a single pre-step does), and
+     * the per-session floor below keeps a polling panel from doing it twice in a
+     * row. A landed compression invalidates the entry outright, so the common
+     * "I just folded something, show me the new table" case never waits.
+     */
     private static readonly INSPECT_TABLE_TTL_MS;
     /** Floor between two on-demand builds, so a polling panel cannot hammer the kernel. */
     private static readonly INSPECT_BUILD_FLOOR_MS;

@@ -8033,6 +8033,10 @@ function rememberBreakdown(sessionId, breakdown) {
 function inspectCacheOf(sessionId) {
   return caches.get(sessionId);
 }
+function invalidateInspectTable(sessionId) {
+  const cache2 = caches.get(sessionId);
+  if (cache2 !== void 0) cache2.capturedAt = 0;
+}
 async function handleInspectRequest(host, request) {
   const reply = (body, status = 200) => new Response(JSON.stringify(body), {
     status,
@@ -10149,8 +10153,17 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
       defaultContextWindow: DEFAULT_CONTEXT_WINDOW
     }, request);
   }
-  /** How long a remembered table counts as fresh enough to serve as-is. */
-  static INSPECT_TABLE_TTL_MS = 15 * 60 * 1e3;
+  /**
+   * How long a remembered table counts as fresh enough to serve as-is.
+   *
+   * Deliberately short: the surface grows every step, so a table older than a
+   * few minutes describes a conversation that has moved on. The rebuild is one
+   * `processTurn` on a cloned state (the same work a single pre-step does), and
+   * the per-session floor below keeps a polling panel from doing it twice in a
+   * row. A landed compression invalidates the entry outright, so the common
+   * "I just folded something, show me the new table" case never waits.
+   */
+  static INSPECT_TABLE_TTL_MS = 3 * 60 * 1e3;
   /** Floor between two on-demand builds, so a polling panel cannot hammer the kernel. */
   static INSPECT_BUILD_FLOOR_MS = 20 * 1e3;
   /** Last on-demand build per session (throttle) plus the in-flight promise. */
@@ -10407,6 +10420,11 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
       }
     }
     ctx.on("session/event", (session, event) => {
+      if (event.type === "compaction/summary" || event.type === "compaction/prune") {
+        const sessionId = String(session.id);
+        invalidateInspectTable(sessionId);
+        this.inspectBuilds.delete(sessionId);
+      }
       if (event.type === "assistant/message") {
         const overflowAgent = this.overflowSessions.get(session);
         if (overflowAgent !== void 0) {
