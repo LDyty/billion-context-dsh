@@ -133,6 +133,19 @@ export interface RangeTableRow<T> {
     readonly rank: number;
 }
 /**
+ * The pressure pair the range table's context line prints — the same measurement
+ * the nudge decision uses (see `rememberPressure` in buildNudge):
+ * `tokens` is what the next request carries, `limit` the sustainable input budget
+ * it is measured against. Absent in paths that have no window (panel rebuilds and
+ * tests): the line is then simply not printed.
+ */
+export interface RangeTableContext {
+    /** Provider-anchored context tokens (system + tools + surface). */
+    readonly tokens: number;
+    /** Sustainable input budget: window minus the route's output reservation. */
+    readonly limit: number;
+}
+/**
  * The rows the table prints: the LARGEST {@link RANGE_TABLE_ROWS_PER_AGE_REGION}
  * intervals of every age region. Within a region the rows are printed in surface
  * order (oldest first), so the whole table stays the timeline it is; the rank is
@@ -176,7 +189,7 @@ export declare function selectRangeTableRanges<T extends {
  * `UPSTREAM:` workaround for kernel ref-map drift; that drift is fixed upstream
  * (acp-kernel #207) and the workaround is gone (rule 11).
  */
-export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf): string;
+export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, context?: RangeTableContext): string;
 /**
  * Compute a SURFACE-ONLY context breakdown for display, aligned with
  * `acp_status` (kernel `buildStatusReport`/`renderOverview`).
@@ -246,4 +259,4 @@ export declare function buildNudge(agent: Agent, env: NudgeEnvironment, lastNudg
  * When a host overrides any `prompts.nudge` slot, the template path is used so
  * `config.prompts` keeps full control (custom copy wins over kernel defaults).
  */
-export declare function buildNudgeText(nudge: NudgeDecision, emergency: boolean, session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf): string;
+export declare function buildNudgeText(nudge: NudgeDecision, emergency: boolean, session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, context?: RangeTableContext): string;

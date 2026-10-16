@@ -198,6 +198,24 @@ Before you compress any row above, confirm it is truly consumed — if a span st
   )
 })
 
+test('M4/prompts 4c: the table header carries the pressure pair the decision used', () => {
+  // 当前上下文占用 + 当前上下文 tokens（下一步请求要带的 prefix，也就是每次折叠重写
+  // 计价的那个规模）。数字就是 decision 用的那对 measurement，不是第二次估算。
+  const session = buildTextSession(12)
+  const table = rangeTable(session, wholeSurfaceRangeView(session), DEFAULT_PROMPTS, undefined, {
+    tokens: 344_508,
+    limit: 744_000,
+  })
+  assert.ok(
+    table.includes('Context: 344.5K / 744K tokens used (46%)'),
+    `the used/window pair and the share are printed (${table.split('\n')[1] ?? ''})`,
+  )
+  assert.ok(table.includes('a fold rewrite re-sends it uncached'), 'and the line says what the number is for')
+  // No window on record (panel rebuild, tests): no line at all, never a blank one.
+  const bare = rangeTable(session, wholeSurfaceRangeView(session))
+  assert.ok(!bare.includes('Context:'), 'without a window the line is absent')
+})
+
 test('M4/prompts 4b: a range row reports how much of its mass is reasoning (scratchpad visibility)', () => {
   // The composition column used to be rows-only ([tool X% | text Y%], kernel
   // toolPct parity), which hides the single biggest reclaimable block in a

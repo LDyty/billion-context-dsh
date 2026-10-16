@@ -6979,6 +6979,7 @@ var NUDGE_ALLOWED = {
 };
 var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
+  context: /* @__PURE__ */ new Set(["used", "window", "pct"]),
   title: /* @__PURE__ */ new Set(["count"]),
   region: /* @__PURE__ */ new Set(["region", "age", "skipped"]),
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped"]),
@@ -7059,6 +7060,7 @@ var DEFAULT_PROMPTS = {
   },
   rangeTable: {
     header: "Surface: {surface}",
+    context: "Context: {used} / {window} tokens used ({pct}%) \u2014 the prefix every request carries: a cache hit re-bills it cheap, and a fold rewrite re-sends it uncached",
     title: "Compressible ranges ({count} \u2014 up to 3 of each age region's largest intervals, oldest first; exact surface seqs \u2014 usable as-is):",
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: "[age region {region}{age} \xB7 skipped {skipped}\xD7]",
@@ -8644,6 +8646,10 @@ function skippedLabel(count) {
 function compactTokens(tokens) {
   return tokens >= 1e4 ? `${(tokens / 1e3).toFixed(1)}K` : String(Math.round(tokens));
 }
+function windowTokens(tokens) {
+  if (tokens >= 1e6) return `${(tokens / 1e6).toFixed(2)}M`;
+  return tokens >= 1e3 ? `${String(Math.round(tokens / 1e3))}K` : String(tokens);
+}
 function partitionOfferableIntoAgeRegions(all, ageRegions = RANGE_TABLE_AGE_REGIONS) {
   const ordered = [...all].sort((a, b) => a.start - b.start);
   if (ordered.length === 0) return [];
@@ -8682,7 +8688,7 @@ function rangeTableRowsOfGroups(groups, perRegion = RANGE_TABLE_ROWS_PER_AGE_REG
   }
   return rows;
 }
-function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
+function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, context) {
   const ranges = buildCompressibleSeqRanges(
     session,
     kernelView,
@@ -8814,6 +8820,14 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     "",
     renderTemplate(prompts.rangeTable.header, { surface: surfaceSummary(session) }),
+    // The pressure pair, right under the surface line: how full the context is
+    // (the same measurement the nudge decision just made) and the prefix size the
+    // next request carries — the number every fold's rewrite is priced against.
+    ...context === void 0 || context.limit <= 0 ? [] : [renderTemplate(prompts.rangeTable.context, {
+      used: compactTokens(context.tokens),
+      window: windowTokens(context.limit),
+      pct: Math.round(context.tokens / context.limit * 100)
+    })],
     renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
     // Name what the cap hid: with a fragmented surface the table used to show a
@@ -8902,7 +8916,10 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
     session,
     kernelRangeViewOf(nudge, turn.state),
     env.prompts,
-    mediaPriceOf
+    mediaPriceOf,
+    // The pressure pair the same step just measured (see rememberPressure above):
+    // the model gets the number the decision used, not a second opinion.
+    { tokens: tokenCount, limit: env.modelContextLimit }
   );
   const message = createUserMessage3({
     content: [{ type: "text", text }],
@@ -8916,21 +8933,21 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
   });
   return { message, emergency };
 }
-function buildNudgeText(nudge, emergency, session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf) {
+function buildNudgeText(nudge, emergency, session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, context) {
   if (prompts.nudge !== DEFAULT_RESOLVED.nudge) {
-    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf);
+    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context);
   }
   const rendered = renderNudgeText(nudge);
-  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf);
+  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf, context);
 }
-function adaptKernelNudgeToSeq(text, nudge, session, kernelView, prompts, mediaPriceOf) {
+function adaptKernelNudgeToSeq(text, nudge, session, kernelView, prompts, mediaPriceOf, context) {
   let out = stripNudgeGuidance(text);
   if ((nudge.tier === 2 || nudge.tier === 3) && (nudge.tierTargetBlocks?.length ?? 0) > 0) {
     out = replaceTierTrigger(out, nudge, session, prompts);
   } else if (out.includes('"startId"')) {
     out = replaceEmergencyExample(out);
   }
-  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf);
+  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf, context);
   if (seqTable !== "") out = replaceRangesStr(out, seqTable);
   out = insertContentFormNote(out);
   return out;
@@ -8982,7 +8999,7 @@ function replaceEmergencyExample(text) {
   const end = next !== null ? start + 2 + next.index : text.length;
   return text.slice(0, start) + "\n\ncompress({ content: [{ startSeq, endSeq, summary }] }) \u2014 use the seqs from the range table above." + text.slice(end);
 }
-function renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf) {
+function renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context) {
   const pct2 = Math.round(Math.min(nudge.contextUsage, 1) * 100);
   const frame = renderTemplate(
     emergency ? prompts.nudge.emergency : prompts.nudge.normal,
@@ -9023,7 +9040,7 @@ function renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts
     const tierRules = nudge.tier === 2 ? TIER2_DISTILL_RULES : TIER3_CONDENSE_RULES;
     parts.push("", tierRules);
   } else {
-    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf));
+    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf, context));
   }
   if (prompts.nudge.tip !== "") parts.push("", CONTENT_FORM_NOTE, "", prompts.nudge.tip);
   return stripNudgeGuidance(parts.join("\n"));

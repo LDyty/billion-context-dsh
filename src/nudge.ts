@@ -232,6 +232,12 @@ function compactTokens(tokens: number): string {
   return tokens >= 10_000 ? `${(tokens / 1000).toFixed(1)}K` : String(Math.round(tokens))
 }
 
+/** The window side of the context line: whole thousands below a million, two decimals above. */
+function windowTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`
+  return tokens >= 1_000 ? `${String(Math.round(tokens / 1000))}K` : String(tokens)
+}
+
 /**
  * Cut the offerable list into age regions (the rows are picked by
  * {@link rangeTableRowsOfGroups}: up to three per region, largest first).
@@ -306,6 +312,20 @@ export interface RangeTableRow<T> {
 }
 
 /**
+ * The pressure pair the range table's context line prints — the same measurement
+ * the nudge decision uses (see `rememberPressure` in buildNudge):
+ * `tokens` is what the next request carries, `limit` the sustainable input budget
+ * it is measured against. Absent in paths that have no window (panel rebuilds and
+ * tests): the line is then simply not printed.
+ */
+export interface RangeTableContext {
+  /** Provider-anchored context tokens (system + tools + surface). */
+  readonly tokens: number
+  /** Sustainable input budget: window minus the route's output reservation. */
+  readonly limit: number
+}
+
+/**
  * The rows the table prints: the LARGEST {@link RANGE_TABLE_ROWS_PER_AGE_REGION}
  * intervals of every age region. Within a region the rows are printed in surface
  * order (oldest first), so the whole table stays the timeline it is; the rank is
@@ -373,6 +393,7 @@ export function rangeTable(
   kernelView: KernelRangeView,
   prompts: ResolvedPrompts = DEFAULT_RESOLVED,
   mediaPriceOf?: MediaPriceOf,
+  context?: RangeTableContext,
 ): string {
   const ranges = buildCompressibleSeqRanges(
     session,
@@ -539,6 +560,16 @@ export function rangeTable(
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     '',
     renderTemplate(prompts.rangeTable.header, { surface: surfaceSummary(session) }),
+    // The pressure pair, right under the surface line: how full the context is
+    // (the same measurement the nudge decision just made) and the prefix size the
+    // next request carries — the number every fold's rewrite is priced against.
+    ...(context === undefined || context.limit <= 0
+      ? []
+      : [renderTemplate(prompts.rangeTable.context, {
+        used: compactTokens(context.tokens),
+        window: windowTokens(context.limit),
+        pct: Math.round((context.tokens / context.limit) * 100),
+      })]),
     renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
     // Name what the cap hid: with a fragmented surface the table used to show a
@@ -744,6 +775,9 @@ export function buildNudge(
     kernelRangeViewOf(nudge, turn.state),
     env.prompts,
     mediaPriceOf,
+    // The pressure pair the same step just measured (see rememberPressure above):
+    // the model gets the number the decision used, not a second opinion.
+    { tokens: tokenCount, limit: env.modelContextLimit },
   )
   const message = createUserMessage({
     content: [{ type: 'text', text }],
@@ -778,15 +812,16 @@ export function buildNudgeText(
   kernelView: KernelRangeView,
   prompts: ResolvedPrompts = DEFAULT_RESOLVED,
   mediaPriceOf?: MediaPriceOf,
+  context?: RangeTableContext,
 ): string {
   // A host override of any nudge slot → template rendering (config.prompts
   // keeps its v0.1.9 contract: custom copy wins). Only the pristine default
   // reference reaches the kernel path.
   if (prompts.nudge !== DEFAULT_RESOLVED.nudge) {
-    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf)
+    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context)
   }
   const rendered = renderNudgeText(nudge)
-  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf)
+  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf, context)
 }
 
 /**
@@ -810,6 +845,7 @@ function adaptKernelNudgeToSeq(
   kernelView: KernelRangeView,
   prompts: ResolvedPrompts,
   mediaPriceOf?: MediaPriceOf,
+  context?: RangeTableContext,
 ): string {
   // B6：先摘掉哲学/规则段（它们住在系统提示与工具描述里），再做 seq 适配
   let out = stripNudgeGuidance(text)
@@ -825,7 +861,7 @@ function adaptKernelNudgeToSeq(
   // Replace the ref-ID range table (mNNNNN) with the surface-seq table.
   // A zero-range table leaves the kernel's own "[No specific ranges detected]"
   // notice intact — it is a better prompt than an empty table.
-  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf)
+  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf, context)
   if (seqTable !== '') out = replaceRangesStr(out, seqTable)
   out = insertContentFormNote(out)
   return out
@@ -922,6 +958,7 @@ function renderNudgeFromTemplates(
   kernelView: KernelRangeView,
   prompts: ResolvedPrompts,
   mediaPriceOf?: MediaPriceOf,
+  context?: RangeTableContext,
 ): string {
   // Cap the reported percentage at 100: a broken measurement (e.g. response
   // pressure folded in) must never surface as an absurd "230%" to the model.
@@ -976,7 +1013,7 @@ function renderNudgeFromTemplates(
     parts.push('', tierRules)
   } else {
     // Range table for non-tier nudges (DSH-specific: seq-based, not ref-ID-based).
-    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf))
+    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf, context))
   }
 
   // Batch-compress tip (from kernel's nudge-text.ts style). The array-form

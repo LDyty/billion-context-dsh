@@ -40,6 +40,11 @@ export interface NudgePrompts {
 export interface RangeTablePrompts {
     /** 表头。占位符:{surface} */
     header: string;
+    /**
+     * 上下文压力行（表头下面一行）。占位符:{used} {window} {pct}
+     * ——当前上下文 tokens、可持续输入预算、占用百分比。
+     */
+    context: string;
     /** 标题。占位符:{count}(表格行数) */
     title: string;
     /**
