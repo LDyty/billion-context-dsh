@@ -6980,7 +6980,7 @@ var NUDGE_ALLOWED = {
 var RANGE_TABLE_ALLOWED = {
   header: /* @__PURE__ */ new Set(["surface"]),
   title: /* @__PURE__ */ new Set(["count"]),
-  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "media", "offered"]),
+  line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "media", "offered"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["entries", "count", "reclaimed", "invalidated", "breakEven", "coverage"]),
   footer: /* @__PURE__ */ new Set()
@@ -7059,7 +7059,11 @@ var DEFAULT_PROMPTS = {
   rangeTable: {
     header: "Surface: {surface}",
     title: "Compressible ranges ({count}, one per age band \u2014 oldest first; exact surface seqs \u2014 usable as-is):",
-    line: "  - seq {start}..{end} \u2014 {count} messages, ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}",
+    // Two figures, two units, each printed where it belongs: the row-count tool
+    // share rides the MESSAGE COUNT ("7 messages (67% tool)"), the character
+    // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
+    // summing to 100).
+    line: "  - seq {start}..{end} \u2014 {count} messages ({toolRowPct}% tool), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}",
     cost: "      fold cost: reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}",
     batch: "      sweep from here \u2014 all {count} spans in ONE call ({coverage}): {entries} \xB7 reclaims ~{reclaimed} \xB7 rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))",
     footer: "Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward."
@@ -7808,6 +7812,7 @@ function priceSurfaceSlice(session, nodes, from, to, mediaPriceOf) {
     toolPct,
     reasoningPct,
     textPct: Math.max(0, 100 - toolPct - reasoningPct),
+    toolRowPct: count > 0 ? Math.round(toolCount / count * 100) : 0,
     images,
     files
   };
@@ -7905,6 +7910,7 @@ function buildCompressibleSeqRanges(session, kernelView, opts = {}) {
           toolPct: priced.toolPct,
           reasoningPct: priced.reasoningPct,
           textPct: priced.textPct,
+          toolRowPct: priced.toolRowPct,
           images: priced.images,
           files: priced.files
         });
@@ -8583,6 +8589,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
         toolPct: range.toolPct,
         reasoningPct: range.reasoningPct,
         textPct: range.textPct,
+        toolRowPct: range.toolRowPct,
         media: mediaSuffixOf(range),
         // "This row keeps coming back": how many builds have put a row covering
         // this start in front of the model. Shown from the third appearance on —
@@ -8611,6 +8618,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       toolPct: row.range.toolPct,
       reasoningPct: row.range.reasoningPct,
       textPct: row.range.textPct,
+      toolRowPct: row.range.toolRowPct,
       invalidated: row.cost.invalidatedTokens,
       breakEven: row.cost.breakEvenRequests,
       expensive: row.expensive,

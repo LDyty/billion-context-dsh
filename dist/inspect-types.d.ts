@@ -39,6 +39,8 @@ export interface AcpInspectRow {
     readonly reasoningPct: number;
     /** Share of the row's characters that are neither tool nor reasoning; the three partition 100%. */
     readonly textPct: number;
+    /** Share of the row's MESSAGES that are tool messages (the kernel's own caliber), printed next to the message count. */
+    readonly toolRowPct: number;
     /** Tokens the next request re-sends uncached once because of this fold. */
     readonly invalidated: number;
     /** `invalidated ÷ tokens` — requests needed to pay the rewrite back. */

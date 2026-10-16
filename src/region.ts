@@ -790,6 +790,14 @@ export interface SeqCompressibleRange {
   readonly reasoningPct: number
   /** Share of the span's characters that are neither tool machinery nor reasoning (user turns, prose, injected rows), 0-100. Derived so `toolPct + reasoningPct + textPct === 100`. */
   readonly textPct: number
+  /**
+   * Share of the span's MESSAGES that are tool messages (tool-call or
+   * tool-result), 0-100 — the kernel's own `toolPct` caliber, kept BESIDE the
+   * character partition instead of replacing it: the two answer different
+   * questions ("what kind of rows are these" vs "where is the mass"), and the
+   * count figure is printed with the message count for exactly that reason.
+   */
+  readonly toolRowPct: number
   /** Image blocks reachable inside the span (directly or through a tool result). */
   readonly images: number
   /** File blocks reachable inside the span. */
@@ -1493,7 +1501,7 @@ function priceSurfaceSlice(
   from: number,
   to: number,
   mediaPriceOf?: MediaPriceOf,
-): { count: number; tokens: number; toolPct: number; reasoningPct: number; textPct: number; images: number; files: number } {
+): { count: number; tokens: number; toolPct: number; reasoningPct: number; textPct: number; toolRowPct: number; images: number; files: number } {
   let count = 0
   let tokens = 0
   let toolCount = 0
@@ -1529,6 +1537,7 @@ function priceSurfaceSlice(
     toolPct,
     reasoningPct,
     textPct: Math.max(0, 100 - toolPct - reasoningPct),
+    toolRowPct: count > 0 ? Math.round((toolCount / count) * 100) : 0,
     images,
     files,
   }
@@ -1722,6 +1731,7 @@ export function buildCompressibleSeqRanges(
           toolPct: priced.toolPct,
           reasoningPct: priced.reasoningPct,
           textPct: priced.textPct,
+          toolRowPct: priced.toolRowPct,
           images: priced.images,
           files: priced.files,
         })

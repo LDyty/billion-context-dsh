@@ -94,7 +94,7 @@ const NUDGE_ALLOWED: { [K in keyof NudgePrompts]: ReadonlySet<string> } = {
 const RANGE_TABLE_ALLOWED: { [K in keyof RangeTablePrompts]: ReadonlySet<string> } = {
   header: new Set(['surface']),
   title: new Set(['count']),
-    line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'media', 'offered']),
+    line: new Set(['start', 'end', 'count', 'tokens', 'toolPct', 'textPct', 'reasoningPct', 'toolRowPct', 'media', 'offered']),
   cost: new Set(['reclaimed', 'invalidated', 'breakEven', 'flag']),
   batch: new Set(['entries', 'count', 'reclaimed', 'invalidated', 'breakEven', 'coverage']),
   footer: new Set(),
@@ -209,7 +209,11 @@ export const DEFAULT_PROMPTS: ResolvedPrompts = {
   rangeTable: {
     header: 'Surface: {surface}',
     title: 'Compressible ranges ({count}, one per age band — oldest first; exact surface seqs — usable as-is):',
-    line: '  - seq {start}..{end} — {count} messages, ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}',
+    // Two figures, two units, each printed where it belongs: the row-count tool
+    // share rides the MESSAGE COUNT ("7 messages (67% tool)"), the character
+    // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
+    // summing to 100).
+    line: '  - seq {start}..{end} — {count} messages ({toolRowPct}% tool), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media}{offered}',
     cost: '      fold cost: reclaims ~{reclaimed} · rewrites ~{invalidated} of the cached prefix (pays back in ~{breakEven} request(s)){flag}',
     batch: '      sweep from here — all {count} spans in ONE call ({coverage}): {entries} · reclaims ~{reclaimed} · rewrites ~{invalidated} of the prefix (pays back in ~{breakEven} request(s))',
     footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\n'

@@ -610,6 +610,7 @@ test('M5: buildCompressibleSeqRanges carries the character-based composition sha
   assert.equal(ranges[0]!.reasoningPct, 0, 'and reasoning 0%')
   assert.equal(ranges[0]!.textPct, 100, 'so the rest is text')
   assert.ok(ranges[1]!.toolPct > 0, 'the tool pair contributes tool mass')
+  assert.equal(ranges[1]!.toolRowPct, Math.round((2 / 3) * 100), 'the kernel-caliber row share rides beside it (67)')
   assert.equal(
     ranges[1]!.toolPct + ranges[1]!.reasoningPct + ranges[1]!.textPct,
     100,

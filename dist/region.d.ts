@@ -247,6 +247,14 @@ export interface SeqCompressibleRange {
     readonly reasoningPct: number;
     /** Share of the span's characters that are neither tool machinery nor reasoning (user turns, prose, injected rows), 0-100. Derived so `toolPct + reasoningPct + textPct === 100`. */
     readonly textPct: number;
+    /**
+     * Share of the span's MESSAGES that are tool messages (tool-call or
+     * tool-result), 0-100 — the kernel's own `toolPct` caliber, kept BESIDE the
+     * character partition instead of replacing it: the two answer different
+     * questions ("what kind of rows are these" vs "where is the mass"), and the
+     * count figure is printed with the message count for exactly that reason.
+     */
+    readonly toolRowPct: number;
     /** Image blocks reachable inside the span (directly or through a tool result). */
     readonly images: number;
     /** File blocks reachable inside the span. */
