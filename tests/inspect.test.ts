@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createCore } from 'acp-kernel'
 import { AcpStateStore } from '../src/state.ts'
-import { buildInspectSnapshot, handleInspectRequest, inspectBlocksOf, inspectCacheOf, rememberPressure } from '../src/inspect.ts'
+import { buildInspectSnapshot, handleInspectRequest, inspectBlocksOf, inspectCacheOf, rememberPressure, rememberRangeTable } from '../src/inspect.ts'
 import { buildNudge, rangeTable } from '../src/nudge.ts'
 import { runCompactionTransaction } from '../src/region.ts'
 import { makeTools } from '../src/tools.ts'
@@ -57,6 +57,30 @@ function buildRichSession(): Session {
   }
   return session
 }
+
+test('inspect: the sweep complement rides the snapshot (the panel map)', () => {
+  const session = buildRichSession()
+  const complement = {
+    oldest: 1,
+    total: 2,
+    regions: [{ region: 1, ranges: [{ start: 1, end: 2 }, { start: 5, end: 6 }] }],
+  }
+  rememberRangeTable(String(session.id), [], [], complement)
+  const snapshot = buildInspectSnapshot({
+    sessionId: String(session.id),
+    session,
+    cache: inspectCacheOf(String(session.id)),
+    blocks: [],
+    settings: {
+      modelContextLimit: 200000,
+      nudgeMinContextLimitPct: 0.7,
+      nudgeMaxContextLimitPct: 0.85,
+      nudgeEmergencyThresholdPct: 0.95,
+      cacheMissPriceRatio: 50,
+    },
+  })
+  assert.deepEqual(snapshot.complement, complement, 'the panel reads the same structured map the nudge rendered')
+})
 
 test('inspect: the snapshot serves the remembered table, map kinds and settings', () => {
   const session = buildRichSession()

@@ -204,10 +204,27 @@ export declare const RANGE_TABLE_OTHERS_CAP = 120;
  * carries the batch totals and composition, and per-span stats would cost more
  * than the list. Printed once per table, grouped by age region.
  */
-export declare function renderSweepComplement<T extends {
+export interface SweepComplement {
+    readonly oldest: number;
+    readonly total: number;
+    readonly regions: readonly {
+        readonly region: number;
+        readonly ranges: readonly {
+            readonly start: number;
+            readonly end: number;
+        }[];
+    }[];
+}
+/**
+ * The sweep's complement, structured once and shared by the nudge text and the
+ * inspector panel (which renders the same map for a human).
+ */
+export declare function sweepComplementOf<T extends {
     start: number;
     end: number;
-}>(groups: readonly (readonly T[])[], sweepEntries: readonly T[], recommended: ReadonlySet<T>, prompts?: RangeTablePrompts): string[];
+}>(groups: readonly (readonly T[])[], sweepEntries: readonly T[], recommended: ReadonlySet<T>): SweepComplement | undefined;
+/** Render the structured complement for the model-facing nudge. */
+export declare function renderSweepComplement(complement: SweepComplement | undefined, prompts?: RangeTablePrompts): string[];
 /**
  * Top-N by a caller-supplied key: the generic ranking helper the selection
  * invariants use (production prints three ROLES per region instead — see

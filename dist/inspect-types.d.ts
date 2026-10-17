@@ -120,6 +120,23 @@ export interface AcpInspectSweep {
         readonly end: number;
     }[];
 }
+/**
+ * The intervals a sweep from the OLDEST printed row folds in addition to the
+ * rows themselves (owner ruling, 2026-10-17). Seq ranges only: the panel renders
+ * them as a compact map, never as per-span stats.
+ */
+export interface AcpInspectComplement {
+    /** Start seq of the oldest printed row — the sweep the map describes. */
+    readonly oldest: number;
+    readonly total: number;
+    readonly regions: readonly {
+        readonly region: number;
+        readonly ranges: readonly {
+            readonly start: number;
+            readonly end: number;
+        }[];
+    }[];
+}
 /** One durable compressed block. */
 export interface AcpInspectBlock {
     readonly id: string;
@@ -179,6 +196,8 @@ export interface AcpInspectSnapshot {
     readonly map: readonly AcpInspectNode[];
     readonly rows: readonly AcpInspectRow[];
     readonly sweeps: readonly AcpInspectSweep[];
+    /** Absent on payloads built before the complement map existed. */
+    readonly complement?: AcpInspectComplement;
     readonly blocks: readonly AcpInspectBlock[];
     readonly settings: AcpInspectSettings;
 }

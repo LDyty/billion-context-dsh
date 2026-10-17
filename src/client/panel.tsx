@@ -186,128 +186,143 @@ function mixLabel(counts: { readonly tool: number; readonly assistant: number; r
   return parts.length > 0 ? parts.join(' · ') : '—'
 }
 
+/**
+ * One row as a compact card. A narrow right-sidebar cannot hold a seven-column
+ * table without shrinking every number to noise, so each row reads top-down:
+ * identity → this row's composition → the sweep's composition → the two costs.
+ * The sweep meter is VISIBLE now (it used to live only in a tooltip): watching
+ * compression is the panel's job, not a hover game.
+ */
+function RowCard(props: {
+  row: AcpInspectSnapshot['rows'][number]
+  sweep?: AcpInspectSnapshot['sweeps'][number]
+  stale: boolean
+}): ReactElement {
+  const { row, sweep, stale } = props
+  const range = `${String(row.start)}..${String(row.end)}${stale ? ' （已过期）' : ''}`
+  return h('article', { className: stale ? 'acp-prow acp-stale' : 'acp-prow' },
+    h('div', { className: 'acp-prow-top' },
+      h('span', {
+        className: 'acp-chip',
+        title: `本行担任的角色：${PICK_LABEL_OF(row.picks)}（每个年龄区域印三种角色：计费回本最低、最大、最旧；同一区间可兼多个角色）。`,
+      }, PICK_LABEL_OF(row.picks)),
+      h('code', {
+        className: 'acp-prow-range',
+        title: `seq（事件序号）${String(row.start)}..${String(row.end)}，含首尾${stale ? '；这两个 seq 已不在表面上，行已过期' : ''}。`,
+      }, range),
+      h('span', { className: 'acp-prow-size' }, `${String(row.messages)} 条 · ~${compact(row.tokens)}`),
+      h(CopyButton, {
+        text: compressCall(
+          sweep?.spans ?? [{ start: row.start, end: row.end }],
+          `（替换 ${row.start}..${row.end} 这个区间里已消费的内容：写清做了什么、结论与还需要的路径/取值）`,
+        ),
+      })),
+    h('div', { className: 'acp-mixline' },
+      h('span', { className: 'acp-mix-tag' }, '本行'),
+      h(MixBar, {
+        toolPct: row.toolPct,
+        reasoningPct: row.reasoningPct,
+        textPct: row.textPct,
+        title: `tool（工具）${String(row.toolPct)}% · reasoning（推理）${String(row.reasoningPct)}% · text（正文）${String(row.textPct)}%，按字符算，和为 100%。`,
+      }),
+      h('span', { className: 'acp-mix-legend' },
+        `工具 ${String(row.toolPct)}% · 推理 ${String(row.reasoningPct)}% · 正文 ${String(row.textPct)}%`)),
+    h('div', { className: 'acp-mixline' },
+      h('span', { className: 'acp-mix-tag' }, '清扫'),
+      sweep === undefined
+        ? h('span', { className: 'acp-mix-legend acp-muted' }, '这一行后面没有可加的区间')
+        : h(MixBar, {
+          toolPct: sweep.toolPct,
+          reasoningPct: sweep.reasoningPct,
+          textPct: sweep.textPct,
+          title: `sweep（清扫）的字符三档构成：tool（工具）${String(sweep.toolPct)}% · reasoning（推理）${String(sweep.reasoningPct)}% · text（正文）${String(sweep.textPct)}%，和为 100%。`,
+        }),
+      sweep === undefined
+        ? null
+        : h('span', { className: 'acp-mix-legend' },
+          `工具 ${String(sweep.toolPct)}% · 推理 ${String(sweep.reasoningPct)}% · 正文 ${String(sweep.textPct)}%`)),
+    h('div', { className: 'acp-prow-costs' },
+      h('span', { title: `invalidated（作废）~${String(row.invalidated)} token（词元）= 被折内容 + 更新的尾部 ~${String(row.newer)} token：折叠会让下一发请求把这一整段按未命中重发一次。` },
+        `作废 ~${compact(row.invalidated)}`),
+      h('span', {
+        className: row.expensive ? 'acp-warn' : 'acp-muted',
+        title: `回本 ${row.breakEven.toFixed(1)} 次请求：${BILLING_TIP}${row.expensive ? `；≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠` : ''}`,
+      }, `${row.expensive ? '⚠ ' : ''}本行回本 ${row.breakEven.toFixed(1)} 次`),
+      sweep === undefined
+        ? null
+        : h('span', {
+          className: sweep.expensive ? 'acp-warn' : 'acp-muted',
+          title: `清扫 ${String(sweep.entries)} 个区间 → 回收 ~${compact(sweep.reclaims)} token（词元）· ${String(sweep.messages)} 条消息 · 行构成 ${mixLabel(sweep.rowCounts)} · 作废 ~${compact(sweep.invalidates)}（从本行起点到最新的整段重发一次）· 回本 ${sweep.breakEven.toFixed(1)} 次请求。${BILLING_TIP}`,
+        }, `${sweep.expensive ? '⚠ ' : ''}清扫 ${String(sweep.entries)} 区间 → 回收 ~${compact(sweep.reclaims)} · 回本 ${sweep.breakEven.toFixed(1)}`)),
+  )
+}
+
+/**
+ * The complement map: intervals a sweep from the oldest printed row folds in
+ * addition. `<details>` keeps the body collapsible; its own scroller caps the
+ * height so a 300-span session cannot bury the blocks below.
+ */
+function ComplementBlock(props: { complement: NonNullable<AcpInspectSnapshot['complement']> }): ReactElement {
+  const { complement } = props
+  const capped = complement.total > 120
+  return h('details', { className: 'acp-others', open: true },
+    h('summary', null,
+      `清扫还会折的区间 ${String(complement.total)} 段`,
+      h('span', { className: 'acp-muted' }, `（从 seq ${String(complement.oldest)} 起）`)),
+    h('div', { className: 'acp-others-body' },
+      complement.regions.map(({ region, ranges }) => {
+        const shown = capped && ranges.length > 2 ? [ranges[0]!, ranges[ranges.length - 1]!] : ranges
+        const elided = ranges.length - shown.length
+        return h('div', { className: 'acp-others-line', key: region },
+          h('span', { className: 'acp-others-region' }, `R${String(region)}`),
+          h('span', { className: 'acp-others-spans' }, shown.map((range) => `${String(range.start)}..${String(range.end)}`).join(' ')),
+          elided > 0 ? h('span', { className: 'acp-muted' }, ` (+${String(elided)} more, ${String(ranges.length)} 段)`) : null)
+      })),
+  )
+}
+
 /** Exported for the offline preview (`scratch-panel-preview.mjs`) and future tests. */
 export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElement {
-  const { rows, sweeps, map } = props.snapshot
+  const { rows, sweeps, map, complement } = props.snapshot
   if (rows.length === 0) return h('div', { className: 'acp-empty' }, '还没有可压区间（等下一次 nudge 生成）')
   const sweepOf = (start: number): AcpInspectSnapshot['sweeps'][number] | undefined =>
     sweeps.find((sweep) => sweep.rowStart === start)
   // A row whose edges are no longer on the live surface describes content that
-  // was folded (or shadowed) since this table was built. Saying so beats letting
-  // the reader copy a call for seqs that do not exist any more.
+  // was folded (or shadowed) since this table was built.
   const onSurface = new Set(map.map((node) => node.seq))
   const staleOf = (row: AcpInspectSnapshot['rows'][number]): boolean =>
     !onSurface.has(row.start) || !onSurface.has(row.end)
   const staleCount = rows.filter(staleOf).length
+  // The age-region header is printed once, then its cards — the six regions read
+  // as six chapters instead of eighteen table rows.
+  const groups: Array<{ region: number; rows: AcpInspectSnapshot['rows'][number][] }> = []
+  for (const row of rows) {
+    const last = groups[groups.length - 1]
+    if (last?.region === row.ageRegion) last.rows.push(row)
+    else groups.push({ region: row.ageRegion, rows: [row] })
+  }
   return h('div', { className: 'acp-section' },
     staleCount > 0
       ? h('div', { className: 'acp-warn' },
         `${String(staleCount)}/${String(rows.length)} 行已过期（这些 seq 已不在表面上——压过或表面已移动）。`
         + '下次 nudge 或打开面板时会自动重建。')
       : null,
-    // Seven columns, not twelve: the composition became a meter with its three
-    // shares spelled out underneath, the row mix a sub-line under the range,
-    // 作废/回本/被跳过 one cost cell, and the sweep line keeps its own cell.
-    // Every column answers on hover too, and every English term in a tooltip
-    // carries its Chinese gloss right beside it.
-    // The table itself does not scroll: the PANEL does (`.acp-panel`), so the 18
-    // rows and everything below them (已压块 / 参数) scroll as one column with a
-    // single scrollbar, and the header sticks to the panel's scrollport.
-    h('table', { className: 'acp-table acp-ranges' },
-    h('thead', null, h('tr', null,
-      h('th', { title: AGE_REGION_TIP }, '年龄区域'),
-      // 列名不叫「范围」：这个说法会和整张表的「可压范围」撞车，读者分不清是
-      // 「这一行要折的那个区间」还是「整张表所有可压的区间」。一行 = 一个区间；
-      // 每个年龄区域按三种角色各印一条：最便宜 / 最大 / 最旧（角色可叠在同一条上）。
-      h('th', { title: '区间（seq（事件序号）起止，含首尾）：本行折叠时实际覆盖的那个区间。每个年龄区域印三种角色各一条：计费回本最低的、最大的、最旧的（同一区间可兼多个角色，行仍按 seq 从老到新排）。下面那行是行构成（按消息条数）：tool（工具调用与工具结果）· assistant（助手）· user（用户）· other（其它引擎行）。' }, '区间'),
-      h('th', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。~ 表示估算。' }, '大小'),
-      h('th', { title: '按字符算的三档构成，相加为 100%：tool（工具：工具调用参数 + 工具结果）· reasoning（推理：草稿）· text（正文：用户消息、助手正文、注入行）。' }, '构成'),
-      h('th', { title: `invalidated（作废）＝ 折叠这一行要让下一发请求重新按未命中发送多少 token（词元）＝ 被折内容 + 更新的尾部；回本 ＝ 按缓存计费算，这笔重写要多少次请求才赚回来（≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠）。被跳过次数是年龄区域的属性，印在「年龄区域」那一格。${BILLING_TIP}` }, '代价'),
-      h('th', { title: 'sweep（清扫）：从本行的起点只向新的方向、不封顶地连着折叠（N 个区间 → 回收 token（词元）量 · 计费回本次数）；与 nudge（提醒文本）里那一行是同一组数字。模型可以一次调用执行它：endSeq 写 "sweep"，整串区间共用一条摘要。' }, '清扫'),
-      h('th', { title: '复制一条可直接粘贴的 compress（压缩）调用。' }, ''))),
-    h('tbody', null, rows.map((row, rowIndex) => {
-      const sweep = sweepOf(row.start)
-      const stale = staleOf(row)
-      // Three rows share one age region, so the number is printed once per group
-      // (and the leaders of the group carry a muted ditto) — the column reads as
-      // the six 年龄区域 it is, not as eighteen unrelated rows.
-      const firstOfRegion = rows[rowIndex - 1]?.ageRegion !== row.ageRegion
-      return h('tr', { key: `${row.start}-${row.end}`, className: stale ? 'acp-stale' : undefined },
-        h('td', {
-          className: 'acp-age-region',
-          title: `ageRegion（年龄区域）${String(row.ageRegion)}：${row.ageRegion === 1 ? '最老的年龄区域' : `从老到新数第 ${String(row.ageRegion)} 个年龄区域`}`
-            + `；本行担任的角色：${PICK_LABEL_OF(row.picks)}（每个年龄区域印三种角色：计费回本最低、最大、最旧；同一区间可兼多个角色；行的先后仍按 seq 从老到新）。${SKIP_TIP}`,
-        }, firstOfRegion
-          ? h('div', null,
-            h('div', null, row.ageRegion === 1 ? '1 最老' : String(row.ageRegion)),
-            // The region's pass-over count, printed where the region is named.
-            h('div', null, h('span', {
-              className: row.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
-              title: SKIP_TIP,
-            }, `被跳过 ${String(row.skipped)}×`)))
-          : h('span', { className: 'acp-muted' }, '〃'),
-          // The row's roles, visible: 最便宜 / 最大 / 最旧 (a row can hold several).
-          h('span', { className: 'acp-sub', title: `本行担任的角色：${PICK_LABEL_OF(row.picks)}` }, PICK_LABEL_OF(row.picks))),
-        h('td', { className: 'acp-range' },
+    h('div', { className: 'acp-regions' }, groups.map((group) =>
+      h('section', { className: 'acp-region', key: group.region },
+        h('header', { className: 'acp-region-head' },
+          h('span', { className: 'acp-region-title', title: AGE_REGION_TIP },
+            `年龄区域 ${String(group.region)}${group.region === 1 ? '（最老）' : group.region === 6 ? '（最新）' : ''}`),
           h('span', {
-            title: `seq（事件序号）${String(row.start)}..${String(row.end)}，含首尾${stale ? '；这两个 seq 已不在表面上，行已过期' : ''}。`,
-          }, `${String(row.start)}..${String(row.end)}${stale ? ' （已过期）' : ''}`),
-          h('span', {
-            className: 'acp-sub',
-            title: `行构成，按消息条数算：tool（工具）· assistant（助手）· user（用户）· other（其它）。模型侧看到的英文写法是 ${row.rowMix}。`,
-          }, `${String(row.messages)} 条 · ${mixLabel(row.rowCounts)}`)),
-        h('td', { title: 'token（词元）估算值，宿主口径：行的 JSON 长度加上 role（角色）开销。' }, `~${compact(row.tokens)}`),
-        h('td', null,
-          h(MixBar, {
-            toolPct: row.toolPct,
-            reasoningPct: row.reasoningPct,
-            textPct: row.textPct,
-            title: `tool（工具）${String(row.toolPct)}% · reasoning（推理）${String(row.reasoningPct)}% · text（正文）${String(row.textPct)}%，按字符算，和为 100%。`,
-          }),
-          h('span', { className: 'acp-sub' },
-            `工具 ${String(row.toolPct)}% · 推理 ${String(row.reasoningPct)}% · 正文 ${String(row.textPct)}%`)),
-        h('td', null,
-          h('div', { title: `invalidated（作废）~${String(row.invalidated)} token（词元）= 被折内容 + 更新的尾部 ~${String(row.newer)} token：折叠会让下一发请求把这一整段按未命中重发一次。` },
-            `作废 ~${compact(row.invalidated)}`),
-          h('div', {
-            className: row.expensive ? 'acp-warn acp-cost-rate' : 'acp-muted acp-cost-rate',
-            title: `回本 ${row.breakEven.toFixed(1)} 次请求：${BILLING_TIP}${row.expensive ? `；≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠` : ''}`,
-          }, `${row.expensive ? '⚠ ' : ''}回本 ${row.breakEven.toFixed(1)} 次`)),
-        h('td', {
-          className: 'acp-sweep',
-          // Same figures the nudge's sweep line carries: the panel is a view of
-          // one remembered build, never a second opinion.
-          title: sweep === undefined
-            ? '这一行后面没有可加的区间'
-            : `sweep（清扫）：${String(sweep.entries)} 个区间 → ${String(sweep.messages)} 条消息折叠成 1 份共享摘要 · `
-              + `回收 ~${compact(sweep.reclaims)} token（词元）· 行构成 ${mixLabel(sweep.rowCounts)} · `
-              + `字符三档 tool（工具）${String(sweep.toolPct)}% · reasoning（推理）${String(sweep.reasoningPct)}% · text（正文）${String(sweep.textPct)}% · `
-              + `作废 ~${compact(sweep.invalidates)} token（词元）（这一批折叠会让下一发请求重发这么多 prefix（前缀））· `
-              + `回本 ${sweep.breakEven.toFixed(1)} 次请求（这一批在计费口径下的回本${sweep.expensive ? `，≥${String(WARN_PAYBACK_REQUESTS)} 次标黄 ⚠` : ''}）· `
-              + `从本行的起点只向新的方向、不封顶；和 nudge（提醒文本）里那一行是同一组数字。`,
-        }, sweep === undefined
-          ? '—'
-          : h('div', null,
-            `${String(sweep.entries)} 个区间 → ~${compact(sweep.reclaims)}`,
-            // The sweep's own payback, explained where it is read: the row's 代价
-            // cell prices folding THAT span alone, this one prices the whole
-            // recommended batch — the two numbers answer different questions and
-            // the sweep is usually the cheaper of them.
-            h('span', {
-              className: sweep.expensive
-                ? 'acp-sub acp-warn'
-                : 'acp-sub',
-              title: `回本 ${sweep.breakEven.toFixed(1)} 次请求：这一批整体折叠的计费回本——被折 ${compact(sweep.reclaims)} token（词元）、更新的尾部 ~${compact(sweep.newerTokens)} token 要按未命中重发一次。${BILLING_TIP}和「代价」那一格的区别：那边只算这一行自己的区间，这边算整批。`,
-            }, `${sweep.expensive ? '⚠ ' : ''}回本 ${sweep.breakEven.toFixed(1)} 次`))),
-        h('td', null, h(CopyButton, {
-          text: compressCall(
-            sweep?.spans ?? [{ start: row.start, end: row.end }],
-            `（替换 ${row.start}..${row.end} 这个区间里已消费的内容：写清做了什么、结论与还需要的路径/取值）`,
-          ),
-        })),
-      )
-    })),
-    ),
+            className: group.rows[0]!.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
+            title: SKIP_TIP,
+          }, `被跳过 ${String(group.rows[0]!.skipped)}×`)),
+        group.rows.map((row) => h(RowCard, {
+          key: `${String(row.start)}-${String(row.end)}`,
+          row,
+          sweep: sweepOf(row.start),
+          stale: staleOf(row),
+        }))))),
+    complement === undefined ? null : h(ComplementBlock, { complement }),
   )
 }
 

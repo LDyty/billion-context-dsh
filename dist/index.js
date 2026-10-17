@@ -8394,11 +8394,12 @@ import { createUserMessage as createUserMessage3 } from "@deepseek-ai/dsh-llm";
 
 // src/inspect.ts
 var caches = /* @__PURE__ */ new Map();
-function rememberRangeTable(sessionId, rows, sweeps) {
+function rememberRangeTable(sessionId, rows, sweeps, complement) {
   const cache2 = caches.get(sessionId) ?? { capturedAt: 0, rows: [], sweeps: [] };
   cache2.capturedAt = Date.now();
   cache2.rows = [...rows];
   cache2.sweeps = [...sweeps];
+  cache2.complement = complement;
   caches.set(sessionId, cache2);
 }
 function rememberPressure(sessionId, pressure, window, windowSource) {
@@ -8502,6 +8503,7 @@ function buildInspectSnapshot(input) {
     map,
     rows: cache2?.rows ?? [],
     sweeps: cache2?.sweeps ?? [],
+    complement: cache2?.complement,
     blocks: [...input.blocks],
     settings: input.settings
   };
@@ -8796,20 +8798,23 @@ function rangeTablePicksOfGroups(groups, costOf) {
   return rows;
 }
 var RANGE_TABLE_OTHERS_CAP = 120;
-function renderSweepComplement(groups, sweepEntries, recommended, prompts = DEFAULT_RESOLVED.rangeTable) {
-  if (sweepEntries.length === 0) return [];
+function sweepComplementOf(groups, sweepEntries, recommended) {
+  if (sweepEntries.length === 0) return void 0;
   const inSweep = new Set(sweepEntries);
   const oldest = sweepEntries[0].start;
-  const complement = groups.map((group, index) => ({
+  const regions2 = groups.map((group, index) => ({
     region: index + 1,
-    ranges: group.filter((range) => inSweep.has(range) && !recommended.has(range))
+    ranges: group.filter((range) => inSweep.has(range) && !recommended.has(range)).map((range) => ({ start: range.start, end: range.end }))
   })).filter((entry) => entry.ranges.length > 0);
-  const count = complement.reduce((sum, entry) => sum + entry.ranges.length, 0);
-  if (count === 0) return [];
-  const capped = count > RANGE_TABLE_OTHERS_CAP;
+  const total = regions2.reduce((sum, entry) => sum + entry.ranges.length, 0);
+  return total === 0 ? void 0 : { oldest, total, regions: regions2 };
+}
+function renderSweepComplement(complement, prompts = DEFAULT_RESOLVED.rangeTable) {
+  if (complement === void 0) return [];
+  const capped = complement.total > RANGE_TABLE_OTHERS_CAP;
   return [
-    renderTemplate(prompts.others, { count, oldest }),
-    ...complement.map(({ region, ranges: list }) => {
+    renderTemplate(prompts.others, { count: complement.total, oldest: complement.oldest }),
+    ...complement.regions.map(({ region, ranges: list }) => {
       const shown = capped && list.length > 2 ? [list[0], list[list.length - 1]] : list;
       const elided = list.length - shown.length;
       return renderTemplate(prompts.othersRegion, {
@@ -8964,6 +8969,12 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     if (batch !== void 0) rows.push(batch);
     return rows;
   });
+  const oldestRow = baseRows.reduce((oldest, row) => row.range.start < oldest.range.start ? row : oldest, baseRows[0]);
+  const complement = sweepComplementOf(
+    ageRegionGroups,
+    sweepFromBaseRange(ranges, costs, oldestRow.at)?.entries ?? [],
+    new Set(rangeRows.map(({ range }) => range))
+  );
   rememberRangeTable(
     String(session.id),
     baseRows.map((row) => ({
@@ -8990,15 +9001,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       expensive: row.expensive,
       skipped: ageRegionSkips[row.ageRegion - 1] ?? 0
     })),
-    sweeps
+    sweeps,
+    complement
   );
-  const oldestRow = baseRows.reduce((oldest, row) => row.range.start < oldest.range.start ? row : oldest, baseRows[0]);
-  const complementLines = renderSweepComplement(
-    ageRegionGroups,
-    sweepFromBaseRange(ranges, costs, oldestRow.at)?.entries ?? [],
-    new Set(rangeRows.map(({ range }) => range)),
-    prompts.rangeTable
-  );
+  const complementLines = renderSweepComplement(complement, prompts.rangeTable);
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     "",

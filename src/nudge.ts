@@ -453,31 +453,53 @@ export const RANGE_TABLE_OTHERS_CAP = 120
  * carries the batch totals and composition, and per-span stats would cost more
  * than the list. Printed once per table, grouped by age region.
  */
-export function renderSweepComplement<T extends { start: number; end: number }>(
+export interface SweepComplement {
+  readonly oldest: number
+  readonly total: number
+  readonly regions: readonly {
+    readonly region: number
+    readonly ranges: readonly { readonly start: number; readonly end: number }[]
+  }[]
+}
+
+/**
+ * The sweep's complement, structured once and shared by the nudge text and the
+ * inspector panel (which renders the same map for a human).
+ */
+export function sweepComplementOf<T extends { start: number; end: number }>(
   groups: readonly (readonly T[])[],
   sweepEntries: readonly T[],
   recommended: ReadonlySet<T>,
-  prompts: RangeTablePrompts = DEFAULT_RESOLVED.rangeTable,
-): string[] {
+): SweepComplement | undefined {
   // The sweep's OWN entries, not the raw offerable list: the latter can hold
   // nested/overlapping spans (a range and one of its sub-ranges), and
   // `sweepFromBaseRange` skips those. Listing the raw list would promise spans
   // the fold never takes.
-  if (sweepEntries.length === 0) return []
+  if (sweepEntries.length === 0) return undefined
   const inSweep = new Set(sweepEntries)
   const oldest = sweepEntries[0]!.start
-  const complement = groups
+  const regions = groups
     .map((group, index) => ({
       region: index + 1,
-      ranges: group.filter((range) => inSweep.has(range) && !recommended.has(range)),
+      ranges: group
+        .filter((range) => inSweep.has(range) && !recommended.has(range))
+        .map((range) => ({ start: range.start, end: range.end })),
     }))
     .filter((entry) => entry.ranges.length > 0)
-  const count = complement.reduce((sum, entry) => sum + entry.ranges.length, 0)
-  if (count === 0) return []
-  const capped = count > RANGE_TABLE_OTHERS_CAP
+  const total = regions.reduce((sum, entry) => sum + entry.ranges.length, 0)
+  return total === 0 ? undefined : { oldest, total, regions }
+}
+
+/** Render the structured complement for the model-facing nudge. */
+export function renderSweepComplement(
+  complement: SweepComplement | undefined,
+  prompts: RangeTablePrompts = DEFAULT_RESOLVED.rangeTable,
+): string[] {
+  if (complement === undefined) return []
+  const capped = complement.total > RANGE_TABLE_OTHERS_CAP
   return [
-    renderTemplate(prompts.others, { count, oldest }),
-    ...complement.map(({ region, ranges: list }) => {
+    renderTemplate(prompts.others, { count: complement.total, oldest: complement.oldest }),
+    ...complement.regions.map(({ region, ranges: list }) => {
       const shown = capped && list.length > 2 ? [list[0]!, list[list.length - 1]!] : list
       const elided = list.length - shown.length
       return renderTemplate(prompts.othersRegion, {
@@ -746,6 +768,15 @@ export function rangeTable(
     if (batch !== undefined) rows.push(batch)
     return rows
   })
+  // The rows above are a SUBSET of what a sweep from the oldest row folds; the
+  // complement map names the rest by seq range and is shared by the nudge text
+  // and the inspector panel (one structured build, no second opinion).
+  const oldestRow = baseRows.reduce((oldest, row) => (row.range.start < oldest.range.start ? row : oldest), baseRows[0]!)
+  const complement = sweepComplementOf(
+    ageRegionGroups,
+    sweepFromBaseRange(ranges, costs, oldestRow.at)?.entries ?? [],
+    new Set(rangeRows.map(({ range }) => range)),
+  )
   // Hand the structured build to the inspector panel. Same numbers, remembered
   // once per build — the panel never recomputes (see src/inspect.ts).
   rememberRangeTable(
@@ -775,16 +806,9 @@ export function rangeTable(
       skipped: ageRegionSkips[row.ageRegion - 1] ?? 0,
     })),
     sweeps,
+    complement,
   )
-  // The rows above are a SUBSET of what a sweep from the oldest row folds; the
-  // complement map names the rest by seq range (see renderSweepComplement).
-  const oldestRow = baseRows.reduce((oldest, row) => (row.range.start < oldest.range.start ? row : oldest), baseRows[0]!)
-  const complementLines = renderSweepComplement(
-    ageRegionGroups,
-    sweepFromBaseRange(ranges, costs, oldestRow.at)?.entries ?? [],
-    new Set(rangeRows.map(({ range }) => range)),
-    prompts.rangeTable,
-  )
+  const complementLines = renderSweepComplement(complement, prompts.rangeTable)
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     '',

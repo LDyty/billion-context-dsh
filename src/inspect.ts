@@ -22,6 +22,7 @@
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {
   AcpInspectBlock,
+  AcpInspectComplement,
   AcpInspectNode,
   AcpInspectRow,
   AcpInspectSettings,
@@ -52,6 +53,8 @@ export interface AcpInspectCache {
   }
   rows: AcpInspectRow[]
   sweeps: AcpInspectSweep[]
+  /** The sweep's complement map, when the last build produced one. */
+  complement?: AcpInspectComplement
   /** Session id → its cache; replaced in place on every build. */
 }
 
@@ -62,11 +65,13 @@ export function rememberRangeTable(
   sessionId: string,
   rows: readonly AcpInspectRow[],
   sweeps: readonly AcpInspectSweep[],
+  complement?: AcpInspectComplement,
 ): void {
   const cache = caches.get(sessionId) ?? { capturedAt: 0, rows: [], sweeps: [] }
   cache.capturedAt = Date.now()
   cache.rows = [...rows]
   cache.sweeps = [...sweeps]
+  cache.complement = complement
   caches.set(sessionId, cache)
 }
 
@@ -255,6 +260,7 @@ export function buildInspectSnapshot(input: {
     map,
     rows: cache?.rows ?? [],
     sweeps: cache?.sweeps ?? [],
+    complement: cache?.complement,
     blocks: [...input.blocks],
     settings: input.settings,
   }

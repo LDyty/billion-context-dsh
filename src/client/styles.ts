@@ -63,14 +63,30 @@ export const ACP_PANEL_CSS = `
 .acp-row-head { display: flex; justify-content: space-between; gap: 8px; }
 .acp-warn { color: #ffb454; }
 .acp-sweep { opacity: .85; font-size: 11px; }
-/* Range table, compact form: composition as a meter instead of three columns,
-   the row mix as a sub-line under the range, cost as one cell with an offer
-   badge. Detail is hover-only, so the table stays scannable. */
-.acp-ranges td { vertical-align: top; }
-.acp-ranges .acp-age-region { opacity: .6; text-align: left; }
-.acp-ranges .acp-range { text-align: left; }
+/* Range cards (2026-10-17): a right-sidebar panel is narrow, so each interval
+   reads top-down — identity, this row's composition, the sweep's composition,
+   then the two costs. Region headers group the cards into six chapters. */
+.acp-regions { display: flex; flex-direction: column; gap: 10px; }
+.acp-region { display: flex; flex-direction: column; gap: 4px; }
+.acp-region-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 2px 2px; border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; }
+.acp-region-title { font-weight: 600; opacity: .75; letter-spacing: .02em; }
+.acp-prow { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; border: 1px solid color-mix(in srgb, currentColor 10%, transparent); border-radius: 6px; background: color-mix(in srgb, currentColor 3%, transparent); }
+.acp-prow-top { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.acp-prow-range { font-variant-numeric: tabular-nums; opacity: .9; }
+.acp-prow-size { margin-left: auto; font-size: 10px; opacity: .55; font-variant-numeric: tabular-nums; }
+.acp-chip { display: inline-block; padding: 0 5px; border-radius: 7px; font-size: 10px; background: color-mix(in srgb, currentColor 12%, transparent); opacity: .8; }
+.acp-mixline { display: flex; align-items: center; gap: 6px; min-height: 16px; }
+.acp-mix-tag { width: 24px; flex: none; font-size: 10px; opacity: .5; }
+.acp-mix-legend { font-size: 10px; opacity: .55; white-space: normal; }
+.acp-prow-costs { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 10px; opacity: .85; font-variant-numeric: tabular-nums; }
+.acp-others { border: 1px solid color-mix(in srgb, currentColor 12%, transparent); border-radius: 6px; padding: 4px 8px 6px; }
+.acp-others > summary { cursor: pointer; font-size: 10px; opacity: .65; }
+.acp-others-body { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.acp-others-line { display: flex; gap: 6px; align-items: baseline; font-size: 10px; font-variant-numeric: tabular-nums; }
+.acp-others-region { width: 22px; flex: none; opacity: .45; }
+.acp-others-spans { white-space: normal; word-break: break-word; opacity: .8; }
 .acp-sub { display: block; font-size: 10px; opacity: .55; }
-.acp-mix { display: inline-flex; width: 56px; height: 8px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, currentColor 10%, transparent); vertical-align: middle; }
+.acp-mix { display: inline-flex; width: 64px; height: 8px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, currentColor 10%, transparent); vertical-align: middle; flex: none; }
 .acp-mix > i { display: block; height: 100%; background: currentColor; }
 .acp-mix-tool { opacity: .55; }
 .acp-mix-reason { opacity: .3; }
@@ -78,8 +94,6 @@ export const ACP_PANEL_CSS = `
 /* 代价格与清扫格现在各自成行，不再靠 margin 挤在一行里。 */
 .acp-cost-rate { font-size: 11px; }
 .acp-badge { display: inline-block; padding: 0 5px; border-radius: 7px; font-size: 10px; background: color-mix(in srgb, currentColor 14%, transparent); }
-/* 子行（行构成等）允许折行，免得一个长标签把整列撑宽。 */
-.acp-ranges .acp-sub { white-space: normal; }
 /* 表头不做吸顶：sticky th / sticky thead / border-collapse:separate 三种写法在
    Chrome 里都盖不住后画的 tbody（实测行文字压在列名上，z-index 无效），所以表头
    跟着内容滚，只保留面板外层的单条滚动条（见 .acp-panel）。 */
