@@ -5,7 +5,7 @@ import { createCore, defaultCountTokens, type CompressionCore, type NudgeDecisio
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { AcpStateStore } from '../src/state.ts'
-import { buildNudge, buildNudgeText, computeSurfaceBreakdown, rangeTable, resolveTokenCount, EMERGENCY_NUDGE_MAX_PER_TURN } from '../src/nudge.ts'
+import { buildNudge, buildNudgeText, computeSurfaceBreakdown, rangeTable, renderSweepComplement, resolveTokenCount, EMERGENCY_NUDGE_MAX_PER_TURN } from '../src/nudge.ts'
 import { makeTools, type ToolEnvironment } from '../src/tools.ts'
 import { rebuildBlockLedger, runCompactionTransaction } from '../src/region.ts'
 import { allLogMessages, eventsToCoreMessages, surfaceEventsOf } from '../src/messages.ts'
@@ -379,4 +379,53 @@ test('M4: nudge contextBreakdown is wired to the surface (kernel path uses compu
   // No blocks → summaries is zero; text carries the alternating user/assistant plain text.
   assert.equal(bd.summaries, 0)
   assert.ok(bd.text > 0)
+})
+
+test('range table: the complement lists every non-recommended span by seq range', () => {
+  type Range = { start: number; end: number }
+  const region1: Range[] = [
+    { start: 1, end: 2 },
+    { start: 5, end: 6 },
+    { start: 9, end: 10 },
+    { start: 20, end: 21 },
+  ]
+  const region2: Range[] = [
+    { start: 30, end: 31 },
+    { start: 40, end: 41 },
+    { start: 50, end: 51 },
+  ]
+  // Oldest recommended row is 5..6: 1..2 is before the sweep's start and is
+  // NOT part of any sweep from the oldest printed row.
+  // The sweep starts at the oldest recommended row (5..6) and runs forward.
+  const sweepEntries = [region1[1]!, region1[2]!, region1[3]!, region2[0]!, region2[1]!, region2[2]!]
+  const lines = renderSweepComplement([region1, region2], sweepEntries, new Set([region1[1]!, region2[1]!]))
+  assert.match(lines[0]!, /4 spans, from seq 5/, 'the header counts only spans a sweep can reach')
+  assert.match(lines[1]!, /R1\s+9\.\.10 20\.\.21/, 'region 1 lists the rest in surface order')
+  assert.match(lines[2]!, /R2\s+30\.\.31 50\.\.51/, 'region 2 skips its recommended span')
+  assert.ok(
+    lines.slice(1).every((line) => !/tokens|messages/.test(line)),
+    'the complement carries seq ranges only — no per-span stats',
+  )
+  assert.deepEqual(
+    renderSweepComplement([region1], [region1[1]!], new Set([region1[1]!])),
+    [],
+    'a fully printed table prints no complement',
+  )
+})
+
+test('range table: the complement caps at 120 spans, keeping first..last per region', () => {
+  type Range = { start: number; end: number }
+  const group = (offset: number): Range[] =>
+    Array.from({ length: 80 }, (_, index) => ({ start: offset + index * 10, end: offset + index * 10 + 1 }))
+  const region1 = group(0)
+  const region2 = group(1000)
+  const lines = renderSweepComplement(
+    [region1, region2],
+    [...region1, ...region2],
+    new Set([region1[0]!, region2[0]!]),
+  )
+  assert.match(lines[0]!, /158 spans/, 'the header still reports the true total')
+  assert.equal(lines.length, 3, 'one header + one line per region')
+  assert.match(lines[1]!, /R1\s+10\.\.11\s+790\.\.791\s+\(\+77 more, 79 spans\)/, 'first..last + elided count')
+  assert.match(lines[2]!, /R2\s+1010\.\.1011\s+1790\.\.1791\s+\(\+77 more, 79 spans\)/)
 })

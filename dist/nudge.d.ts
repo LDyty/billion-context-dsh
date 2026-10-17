@@ -11,7 +11,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import { AcpStateStore } from './state.ts';
 import { type KernelRangeView, type MediaPriceOf } from './region.ts';
 import { type KernelConfigInput } from './config.ts';
-import { type ResolvedPrompts } from './prompts.ts';
+import { type RangeTablePrompts, type ResolvedPrompts } from './prompts.ts';
 export declare function stripNudgeGuidance(text: string): string;
 /** Kernel inputs the nudge path shares with the compress tool. */
 export interface NudgeEnvironment extends KernelConfigInput {
@@ -191,6 +191,23 @@ export interface RangeTableContext {
     /** Cache-miss ÷ cache-hit price ratio, printed as a fact (SETTING_DEFAULTS.cacheMissPriceRatio). */
     readonly missHitRatio: number;
 }
+/**
+ * Above this many complement spans the list stops being a cheap map: one line
+ * per age region keeps the first..last span, the count and how many were
+ * elided. 120 spans ≈ 400 tokens (three digits tokenise small).
+ */
+export declare const RANGE_TABLE_OTHERS_CAP = 120;
+/**
+ * The complement of the printed rows (owner ruling, 2026-10-17): every
+ * offerable interval a sweep from the table's OLDEST row would fold but the
+ * rows themselves did not print. Seq ranges only — the sweep line already
+ * carries the batch totals and composition, and per-span stats would cost more
+ * than the list. Printed once per table, grouped by age region.
+ */
+export declare function renderSweepComplement<T extends {
+    start: number;
+    end: number;
+}>(groups: readonly (readonly T[])[], sweepEntries: readonly T[], recommended: ReadonlySet<T>, prompts?: RangeTablePrompts): string[];
 /**
  * Top-N by a caller-supplied key: the generic ranking helper the selection
  * invariants use (production prints three ROLES per region instead — see

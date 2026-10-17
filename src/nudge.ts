@@ -45,7 +45,7 @@ import { kernelConfigFor, type KernelConfigInput } from './config.ts'
 import { rememberBreakdown, rememberPressure, rememberRangeTable } from './inspect.ts'
 import { lastAgeRegionSkipsOf, noteAgeRegions, noteOfferableSpans } from './age-region-skips.ts'
 import type { AcpInspectSweep } from './inspect-types.ts'
-import { DEFAULT_RESOLVED, renderTemplate, type ResolvedPrompts } from './prompts.ts'
+import { DEFAULT_RESOLVED, renderTemplate, type RangeTablePrompts, type ResolvedPrompts } from './prompts.ts'
 
 /**
  * B6 nudge 瘦身（2026-09-08 方案 §4 B6）：哲学段与压缩规则段**移出 nudge**——
@@ -433,6 +433,57 @@ export interface RangeTableContext {
 }
 
 /**
+ * Above this many complement spans the list stops being a cheap map: one line
+ * per age region keeps the first..last span, the count and how many were
+ * elided. 120 spans ≈ 400 tokens (three digits tokenise small).
+ */
+export const RANGE_TABLE_OTHERS_CAP = 120
+
+/**
+ * The complement of the printed rows (owner ruling, 2026-10-17): every
+ * offerable interval a sweep from the table's OLDEST row would fold but the
+ * rows themselves did not print. Seq ranges only — the sweep line already
+ * carries the batch totals and composition, and per-span stats would cost more
+ * than the list. Printed once per table, grouped by age region.
+ */
+export function renderSweepComplement<T extends { start: number; end: number }>(
+  groups: readonly (readonly T[])[],
+  sweepEntries: readonly T[],
+  recommended: ReadonlySet<T>,
+  prompts: RangeTablePrompts = DEFAULT_RESOLVED.rangeTable,
+): string[] {
+  // The sweep's OWN entries, not the raw offerable list: the latter can hold
+  // nested/overlapping spans (a range and one of its sub-ranges), and
+  // `sweepFromBaseRange` skips those. Listing the raw list would promise spans
+  // the fold never takes.
+  if (sweepEntries.length === 0) return []
+  const inSweep = new Set(sweepEntries)
+  const oldest = sweepEntries[0]!.start
+  const complement = groups
+    .map((group, index) => ({
+      region: index + 1,
+      ranges: group.filter((range) => inSweep.has(range) && !recommended.has(range)),
+    }))
+    .filter((entry) => entry.ranges.length > 0)
+  const count = complement.reduce((sum, entry) => sum + entry.ranges.length, 0)
+  if (count === 0) return []
+  const capped = count > RANGE_TABLE_OTHERS_CAP
+  return [
+    renderTemplate(prompts.others, { count, oldest }),
+    ...complement.map(({ region, ranges: list }) => {
+      const shown = capped && list.length > 2 ? [list[0]!, list[list.length - 1]!] : list
+      const elided = list.length - shown.length
+      return renderTemplate(prompts.othersRegion, {
+        region,
+        spans: shown.map((range) => `${String(range.start)}..${String(range.end)}`).join(' '),
+        count: list.length,
+        more: elided > 0 ? `  (+${String(elided)} more, ${String(list.length)} spans)` : '',
+      })
+    }),
+  ]
+}
+
+/**
  * Top-N by a caller-supplied key: the generic ranking helper the selection
  * invariants use (production prints three ROLES per region instead — see
  * {@link rangeTablePicksOfGroups}). Within a region the rows are printed in
@@ -718,6 +769,15 @@ export function rangeTable(
     })),
     sweeps,
   )
+  // The rows above are a SUBSET of what a sweep from the oldest row folds; the
+  // complement map names the rest by seq range (see renderSweepComplement).
+  const oldestRow = baseRows.reduce((oldest, row) => (row.range.start < oldest.range.start ? row : oldest), baseRows[0]!)
+  const complementLines = renderSweepComplement(
+    ageRegionGroups,
+    sweepFromBaseRange(ranges, costs, oldestRow.at)?.entries ?? [],
+    new Set(rangeRows.map(({ range }) => range)),
+    prompts.rangeTable,
+  )
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     '',
@@ -735,12 +795,7 @@ export function rangeTable(
       })]),
     renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
-    // Name what the cap hid: with a fragmented surface the table used to show a
-    // handful while dozens more sat unlisted, and the model had no way to know
-    // (2026-10-14: 128 offerable ranges, six rows printed).
-    ...(ranges.length > rangeRows.length
-      ? [`  (${ranges.length - rangeRows.length} more range(s) not shown — acp_status with scope:"uncompressed", view:"ranges" lists them)`]
-      : []),
+    ...complementLines,
     prompts.rangeTable.footer,
   ].join('\n')
 }

@@ -66,6 +66,16 @@ export interface RangeTablePrompts {
     cost: string;
     /** 基点行的"清扫"提议。占位符:{entries} {count} {reclaimed} {newer} {invalidated} {breakEven} {coverage} */
     batch: string;
+    /**
+     * 推荐行之外、但会被 sweep 一起折掉的可压区间（补集清单）。
+     * 占位符:{count} {oldest}
+     */
+    others: string;
+    /**
+     * 补集清单的年龄区域行（只印 seq 范围）。
+     * 占位符:{region} {spans} {count} {more}
+     */
+    othersRegion: string;
     /** 表尾调用语法。无占位符 */
     footer: string;
 }

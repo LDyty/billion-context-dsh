@@ -193,10 +193,10 @@ test('M4/prompts 4: range table snapshot (with ranges) and zero-range early retu
     `\nSurface: 12 nodes, seqs 1..12
 Compressible ranges (1 — up to 3 of each age region, the cheapest to fold, printed oldest first; exact surface seqs — usable as-is):
 [age region 1 (oldest) · skipped 0×]
-    - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens [tool 0% | reasoning 0% | text 100%] · cheapest+largest+oldest
+    - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens · cheapest+largest+oldest
         fold cost: reclaims ~7283 · re-sends 5204 tok newer uncached once · pays back in ~38.0 request(s)
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
-A sweep folds in ONE call with ONE shared summary — name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The text is stored ONCE (on the first block of that call); the other parts carry a pointer to it. The sweep's exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
+A sweep folds in ONE call with ONE shared summary — name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The text is stored ONCE (on the first block of that call); the other parts carry a pointer to it. It also folds every interval listed under "Compressible intervals not covered by the rows above".
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
 Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`,
   )
@@ -231,70 +231,37 @@ test('M4/prompts 4c: the table header carries the pressure pair the decision use
   assert.ok(!bare.includes('Context:'), 'without a window the line is absent')
 })
 
-test('M4/prompts 4b: a range row reports how much of its mass is reasoning (scratchpad visibility)', () => {
-  // The composition column used to be rows-only ([tool X% | text Y%], kernel
-  // toolPct parity), which hides the single biggest reclaimable block in a
-  // reasoning-model session: the audit of the long daily session found
-  // reasoning at 61.3% of the visible assistant characters (37.8% of the whole
-  // surface) against 5.0% prose. The row now reports the reasoning share of the
-  // span's CHARACTERS; the tool share keeps its kernel-parity row caliber.
-  const session = Session.create('range-reasoning-share')
-  appendTurn(session, 1)
-  appendUser(session, longText('q0', 0))
-  session.append('assistant/message', {
-    turn: 1,
-    step: 1,
-    stream: [],
-    message: createAssistantMessage({
-      content: [
-        // The DURABLE shape (what the session log stores): `{type:'reasoning', text}`.
-        // The provider-side `{type:'thinking', thinking}` spelling is covered by
-        // the second assistant row below.
-        { type: 'reasoning', text: 'Scratchpad: weigh option A against option B. '.repeat(80) },
-        { type: 'tool-call', id: 'call-share-1', name: 'bash', arguments: '{"command":"ls"}' },
-      ],
-      provider: 'test-provider',
-      model: 'test-model',
-    }),
-  }, { surfaceOp: 'append' })
-  appendToolResult(session, longText('out', 1), 'call-share-1')
-  appendUser(session, longText('q1', 2))
-  session.append('assistant/message', {
-    turn: 1,
-    step: 3,
-    stream: [],
-    message: createAssistantMessage({
-      content: [
-        { type: 'thinking', thinking: 'Provider-side spelling: the same scratchpad. '.repeat(40) },
-        { type: 'text', text: longText('a1', 3) },
-      ],
-      provider: 'test-provider',
-      model: 'test-model',
-    }),
-  }, { surfaceOp: 'append' })
-  appendUser(session, longText('q2', 4))
-  appendAssistant(session, longText('a2', 5), 1, 5)
-  appendUser(session, longText('q3', 6))
-  appendAssistant(session, longText('a3', 7), 1, 7)
-  appendUser(session, longText('q4', 8))
-  appendAssistant(session, longText('a4', 9), 1, 9)
-
-  const table = rangeTable(session, wholeSurfaceRangeView(session))
+test('M4/prompts 4b: rows keep the mix, the batch composition rides the sweep line', () => {
+  // The row used to repeat [tool x% | reasoning y% | text z%] once per row
+  // (~123 tok per table). The partition now rides the sweep line — the decision
+  // a sweep makes is about the whole batch — and the row keeps the cheap
+  // (N tool · M other) mix, which is the signal a single fold needs.
+  const session = buildTextSession(24)
+  const nodes = [...session.surface.nodes]
+  // Two disjoint offerable spans, so the table prints a sweep line (the
+  // whole-surface view collapses to one range and has nothing to sweep into).
+  const view = {
+    ranges: [{ startRef: 's1', endRef: 'e1' }, { startRef: 's2', endRef: 'e2' }],
+    refs: {
+      byRef: {
+        s1: String(nodes[0]!), e1: String(nodes[2]!),
+        s2: String(nodes[6]!), e2: String(nodes[8]!),
+      },
+    },
+  }
+  const table = rangeTable(session, view)
   const rows = table.split('\n').filter((line) => /^\s+- seq /.test(line))
-  assert.ok(rows.length > 0, `the reasoning-bearing span is offered (got ${rows.length} rows)`)
-  const shares = rows
-    .map((line) => /reasoning (\d+)%/.exec(line))
-    .filter((match) => match !== null)
-    .map((match) => Number(match![1]))
-  assert.ok(shares.some((share) => share > 0), `some row reports the reasoning share (got ${shares.join(', ')})`)
-
-  // Control: a plain text-only surface reports reasoning 0%, so the column is a
-  // measurement, not decoration.
-  const plain = buildTextSession(12)
-  const plainTable = rangeTable(plain, wholeSurfaceRangeView(plain))
+  assert.ok(rows.length > 0, `rows are printed (${String(rows.length)})`)
   assert.ok(
-    plainTable.includes('[tool 0% | reasoning 0% | text 100%]'),
-    'a prose-only span reports no reasoning mass',
+    rows.every((line) => /\(\d+ (?:tool|assistant|user|other)(?: · \d+ (?:tool|assistant|user|other))*\)/.test(line)),
+    'the row mix survives',
+  )
+  assert.ok(rows.every((line) => !/\[tool \d+%/.test(line)), 'the character partition is not repeated per row')
+  const sweeps = table.split('\n').filter((line) => line.includes('sweep from here'))
+  assert.ok(sweeps.length > 0, 'the table offers sweeps')
+  assert.ok(
+    sweeps.every((line) => /\[tool \d+% \| reasoning \d+% \| text \d+%\]/.test(line)),
+    'each sweep line carries the batch composition',
   )
 })
 

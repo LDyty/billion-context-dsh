@@ -6985,6 +6985,8 @@ var RANGE_TABLE_ALLOWED = {
   line: /* @__PURE__ */ new Set(["start", "end", "count", "tokens", "toolPct", "textPct", "reasoningPct", "toolRowPct", "rowMix", "media", "skipped", "picks"]),
   cost: /* @__PURE__ */ new Set(["reclaimed", "newer", "invalidated", "breakEven", "flag"]),
   batch: /* @__PURE__ */ new Set(["count", "reclaimed", "newer", "invalidated", "breakEven", "coverage", "rowMix", "toolPct", "reasoningPct", "textPct"]),
+  others: /* @__PURE__ */ new Set(["count", "oldest"]),
+  othersRegion: /* @__PURE__ */ new Set(["region", "spans", "count", "more"]),
   footer: /* @__PURE__ */ new Set()
 };
 var TOOLS_ALLOWED = {
@@ -7067,11 +7069,11 @@ var DEFAULT_PROMPTS = {
     title: "Compressible ranges ({count} \u2014 up to 3 of each age region, the cheapest to fold, printed oldest first; exact surface seqs \u2014 usable as-is):",
     // 年龄区域层：区域名 + 编号 + 被跳过（区域的属性，只印一次），下面的区间缩进一层。
     region: "[age region {region}{age} \xB7 skipped {skipped}\xD7]",
-    // Two figures, two units, each printed where it belongs: the row MIX rides
-    // the message count ("7 messages (5 tool · 2 assistant)"), the character
-    // partition rides the size column ("[tool 40% | reasoning 35% | text 25%]",
-    // summing to 100).
-    line: "    - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%]{media} \xB7 {picks}",
+    // The row mix rides the message count ("7 messages (5 tool · 2 assistant)").
+    // The character partition is printed ONCE per sweep instead: the decision a
+    // sweep makes is about the whole batch, and repeating the partition on every
+    // row cost ~123 tok per table while the complement list below needed ~260.
+    line: "    - seq {start}..{end} \u2014 {count} messages ({rowMix}), ~{tokens} tokens{media} \xB7 {picks}",
     // Billing caliber (owner ruling, 2026-10-17): the payback is in REQUESTS at the
     // provider's cache pricing — the newer tail (re-sent uncached once) is what
     // dominates it, so it is printed next to what the fold reclaims.
@@ -7081,10 +7083,12 @@ var DEFAULT_PROMPTS = {
     // the same two figures every row carries — and points at acp_status for the
     // list the model must fetch anyway before compressing.
     batch: '        sweep from here \u2014 all {count} spans in ONE call ({coverage}) \xB7 ~{reclaimed} tok total ({rowMix}) [tool {toolPct}% | reasoning {reasoningPct}% | text {textPct}%] \xB7 re-sends {newer} newer uncached once (pays back in ~{breakEven} request(s)) \xB7 one call: endSeq:"sweep"',
-    footer: `Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
-A sweep folds in ONE call with ONE shared summary \u2014 name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The text is stored ONCE (on the first block of that call); the other parts carry a pointer to it. The sweep's exact spans are also listed by acp_status({ scope: "uncompressed", view: "ranges" }).
-Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
-Before you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`
+    // The complement of the rows above: every offerable span a sweep from the
+    // table's oldest row would fold but the table itself did not print. Seqs only
+    // (~3.3 tok per span), grouped by age region.
+    others: "Compressible intervals not covered by the rows above ({count} spans, from seq {oldest}):",
+    othersRegion: "  R{region}  {spans}{more}",
+    footer: 'Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) \u2014 content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.\nA sweep folds in ONE call with ONE shared summary \u2014 name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The text is stored ONCE (on the first block of that call); the other parts carry a pointer to it. It also folds every interval listed under "Compressible intervals not covered by the rows above".\nSnapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.\nBefore you compress any row above, confirm it is truly consumed \u2014 if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.'
   },
   tools: {
     // Short, STABLE contracts. The rules these used to carry (timing, the
@@ -8782,6 +8786,32 @@ function rangeTablePicksOfGroups(groups, costOf) {
   }
   return rows;
 }
+var RANGE_TABLE_OTHERS_CAP = 120;
+function renderSweepComplement(groups, sweepEntries, recommended, prompts = DEFAULT_RESOLVED.rangeTable) {
+  if (sweepEntries.length === 0) return [];
+  const inSweep = new Set(sweepEntries);
+  const oldest = sweepEntries[0].start;
+  const complement = groups.map((group, index) => ({
+    region: index + 1,
+    ranges: group.filter((range) => inSweep.has(range) && !recommended.has(range))
+  })).filter((entry) => entry.ranges.length > 0);
+  const count = complement.reduce((sum, entry) => sum + entry.ranges.length, 0);
+  if (count === 0) return [];
+  const capped = count > RANGE_TABLE_OTHERS_CAP;
+  return [
+    renderTemplate(prompts.others, { count, oldest }),
+    ...complement.map(({ region, ranges: list }) => {
+      const shown = capped && list.length > 2 ? [list[0], list[list.length - 1]] : list;
+      const elided = list.length - shown.length;
+      return renderTemplate(prompts.othersRegion, {
+        region,
+        spans: shown.map((range) => `${String(range.start)}..${String(range.end)}`).join(" "),
+        count: list.length,
+        more: elided > 0 ? `  (+${String(elided)} more, ${String(list.length)} spans)` : ""
+      });
+    })
+  ];
+}
 function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, context) {
   const ranges = buildCompressibleSeqRanges(
     session,
@@ -8953,6 +8983,13 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     })),
     sweeps
   );
+  const oldestRow = baseRows.reduce((oldest, row) => row.range.start < oldest.range.start ? row : oldest, baseRows[0]);
+  const complementLines = renderSweepComplement(
+    ageRegionGroups,
+    sweepFromBaseRange(ranges, costs, oldestRow.at)?.entries ?? [],
+    new Set(rangeRows.map(({ range }) => range)),
+    prompts.rangeTable
+  );
   return [
     // 前导空串元素产生 nudge 中范围表前的唯一空行(§4:parts 层不再加分隔)。
     "",
@@ -8968,10 +9005,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     })],
     renderTemplate(prompts.rangeTable.title, { count: rangeRows.length }),
     ...lines,
-    // Name what the cap hid: with a fragmented surface the table used to show a
-    // handful while dozens more sat unlisted, and the model had no way to know
-    // (2026-10-14: 128 offerable ranges, six rows printed).
-    ...ranges.length > rangeRows.length ? [`  (${ranges.length - rangeRows.length} more range(s) not shown \u2014 acp_status with scope:"uncompressed", view:"ranges" lists them)`] : [],
+    ...complementLines,
     prompts.rangeTable.footer
   ].join("\n");
 }

@@ -85,10 +85,11 @@ const nudgeTableOf = (requests) => {
 const nudgeTableChecks = (result) => {
   const table = nudgeTableOf(result.requests)
   if (!table) return [['nudge range table present', false, 'no nudge with a range table found']]
-  // Row shape since 2026-10-16: [tool X% | reasoning Y% | text Z%] — the middle
-  // figure is the character share held by assistant reasoning (scratchpad),
-  // which the row-count tool share can never show.
-  const rows = table.split('\n').filter((line) => /seq \d+\.\.\d+/.test(line) && /\[tool \d+% \| reasoning \d+% \| text \d+%\]/.test(line))
+  // Row shape since 2026-10-17: the row keeps the cheap (N tool · M other) mix;
+  // the character partition rides the sweep line once per batch instead of
+  // repeating on every row.
+  const rows = table.split('\n').filter((line) => /^\s+- seq \d+\.\.\d+/.test(line))
+  const sweeps = table.split('\n').filter((line) => line.includes('sweep from here'))
   // Ordering is AGE-first since the 2026-10-16 range-table rework: one row per
   // equal-weight age region, so the rows run oldest → newest by start seq (a
   // size-ranked table would leave older scattered content unoffered forever).
@@ -99,7 +100,8 @@ const nudgeTableChecks = (result) => {
   const ascending = starts.length >= 1 && starts.every((value, i) => i === 0 || value >= starts[i - 1])
   return [
     ['nudge range table header (up to 3 rows per age region)', table.includes('Compressible ranges') && table.includes('up to 3 of each age region'), ''],
-    ['nudge range rows carry [tool X% | reasoning Y% | text Z%] share', rows.length >= 1, `rows=${rows.length}`],
+    ['nudge range rows keep the (N tool · M other) mix', rows.length >= 1 && rows.every((line) => /\(\d+ (?:tool|assistant|user|other)/.test(line)), `rows=${rows.length}`],
+    ['sweep lines carry [tool X% | reasoning Y% | text Z%] share', sweeps.every((line) => /\[tool \d+% \| reasoning \d+% \| text \d+%\]/.test(line)), `sweeps=${sweeps.length}`],
     ['nudge range rows oldest-first (non-decreasing start seq)', ascending, `starts=${starts.join(',')}`]
   ]
 }
