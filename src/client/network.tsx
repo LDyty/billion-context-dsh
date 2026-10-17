@@ -599,25 +599,27 @@ export function CompressionNetwork(props: {
   const [sideOpen, setSideOpen] = useState(true)
   const [query, setQuery] = useState('')
   const seenBlocksRef = useRef<Set<string> | null>(null)
+  const newBlockTimer = useRef<number | undefined>(undefined)
   const [newBlocks, setNewBlocks] = useState<Set<string>>(new Set())
   useEffect(() => {
-    const ids = new Set(
-      layout.nodes
-        .filter((node) => node.kind === 'block' && node.block !== undefined)
-        .map((node) => node.block!.id),
-    )
-    const seen = seenBlocksRef.current
+    // Compare against EVERY durable block, not only the ones currently drawn:
+   const seen = seenBlocksRef.current
+    // a block re-entering the capped window is not a new compression.
+    const ids = new Set(snapshot.blocks.map((block) => block.id))
     if (seen === null) {
       seenBlocksRef.current = ids
-      return undefined
+      return
     }
     const added = [...ids].filter((id) => !seen.has(id))
     seenBlocksRef.current = ids
-    if (added.length === 0) return undefined
+    if (added.length === 0) return
     setNewBlocks(new Set(added))
-    const timer = window.setTimeout(() => setNewBlocks(new Set()), 8000)
-    return () => window.clearTimeout(timer)
-  }, [layout])
+    // A persistent timer (not the effect cleanup): the next 5s poll must NOT
+    // cancel the hide timer while leaving the badge set forever.
+    window.clearTimeout(newBlockTimer.current)
+    newBlockTimer.current = window.setTimeout(() => setNewBlocks(new Set()), 8000)
+  }, [snapshot.blocks])
+  useEffect(() => () => window.clearTimeout(newBlockTimer.current), [])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [pinnedId, setPinnedId] = useState<string | null>(null)
   const initialView = props.initialView ?? { x: 0, y: 0, z: 1 }
@@ -720,6 +722,7 @@ export function CompressionNetwork(props: {
   const relayout = useCallback(() => {
     blockSlotsRef.current.clear()
     setSlotEpoch((epoch) => epoch + 1)
+    window.clearTimeout(newBlockTimer.current)
     setNewBlocks(new Set())
     movedRef.current = {}
     setMoved({})
