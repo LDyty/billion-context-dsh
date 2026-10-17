@@ -196,7 +196,7 @@ Compressible ranges (1 — up to 3 of each age region, the cheapest to fold, pri
     - seq 1..7 — 7 messages (3 assistant · 4 user), ~7283 tokens · cheapest+largest+oldest
         fold cost: reclaims ~7283 · re-sends 5204 tok newer uncached once · pays back in ~38.0 request(s)
 Compress with: compress({ content: [{ startSeq, endSeq, summary }] }) — content is an array: batch multiple unrelated segments in one call, each entry its own block. Keep ranges disjoint.
-A sweep folds in ONE call with ONE shared summary — name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The text is stored ONCE (on the first block of that call); the other parts carry a pointer to it. It also folds every interval listed under "Compressible intervals not covered by the rows above".
+A sweep folds in ONE call with ONE shared summary — name the row you start from and let the host expand it: compress({ content: [{ startSeq: <row start seq>, endSeq: "sweep", summary }] }). The text is stored ONCE (on the first block of that call); the other parts carry a pointer to it. A sweep from the oldest row also folds the additional intervals listed below the rows.
 Snapshot taken at nudge time: the seqs go stale once the surface moves (a later compress shadows them), so re-run acp_status for fresh refs before compressing.
 Before you compress any row above, confirm it is truly consumed — if a span still holds live task state (where you are in the task / open TODOs, paths already ruled out, artifacts already done and where they live), carry that state into your summary or keep the span live. Compressing an in-progress span without carrying its state forces a full re-run afterward.`,
   )

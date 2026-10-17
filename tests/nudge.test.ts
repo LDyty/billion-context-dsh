@@ -399,7 +399,7 @@ test('range table: the complement lists every non-recommended span by seq range'
   // The sweep starts at the oldest recommended row (5..6) and runs forward.
   const sweepEntries = [region1[1]!, region1[2]!, region1[3]!, region2[0]!, region2[1]!, region2[2]!]
   const lines = renderSweepComplement([region1, region2], sweepEntries, new Set([region1[1]!, region2[1]!]))
-  assert.match(lines[0]!, /4 spans, from seq 5/, 'the header counts only spans a sweep can reach')
+  assert.match(lines[0]!, /Sweep from seq 5 also folds these intervals \(4 spans\)/, 'the header counts only spans a sweep can reach')
   assert.match(lines[1]!, /R1\s+9\.\.10 20\.\.21/, 'region 1 lists the rest in surface order')
   assert.match(lines[2]!, /R2\s+30\.\.31 50\.\.51/, 'region 2 skips its recommended span')
   assert.ok(
