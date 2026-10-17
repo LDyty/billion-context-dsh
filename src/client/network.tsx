@@ -59,13 +59,22 @@ export interface NetLayout {
 }
 
 const PAD = 44
-const COL_X = { region: PAD, range: 234, sweep: 830, block: 1040 }
 const NODE_W = { region: 150, range: 176, sweep: 170, block: 200 }
 const PITCH = { region: 86, range: 40, sweep: 56, block: 52 }
 const MAX_BLOCKS = 12
-const RANGE_COLS = 3
-const GRID_GAP = 14
+const LANE_GAP = 56
+const REGION_GAP = 14
+const RANGE_GAP = 14
+const SWEEP_GAP = 14
 const BLOCK_GAP = 12
+const BAND_GAP = 28
+/** Target height of a lane before it wraps into another sub-column. */
+const TARGET_LANE_HEIGHT = 1040
+
+function colsFor(count: number, pitch: number, maxCols: number): number {
+  const rowsPerColumn = Math.max(1, Math.floor(TARGET_LANE_HEIGHT / pitch))
+  return Math.max(1, Math.min(maxCols, Math.ceil(count / rowsPerColumn)))
+}
 const MIN_ZOOM = 0.06
 const MAX_ZOOM = 3
 
@@ -97,23 +106,6 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
       ranges: 1,
     }))
 
-  regions.forEach((region, index) => {
-    const id = regionId(region.region)
-    regionNodes.set(region.region, id)
-    nodes.push({
-      id,
-      kind: 'region',
-      x: COL_X.region,
-      y: PAD + index * PITCH.region,
-      w: NODE_W.region,
-      h: 64,
-      title: `年龄区域 ${String(region.region)}`,
-      sub: `${String(region.ranges)} 段 · ~${compact(region.tokens)}`,
-      tokens: region.tokens,
-      region: region.region,
-    })
-  })
-
   type RangeDef = { start: number; end: number; tokens: number; region: number; row?: AcpInspectRow }
   const recommendedDefs: RangeDef[] = snapshot.rows.map((row) => (
     { start: row.start, end: row.end, tokens: row.tokens, region: row.ageRegion, row }
@@ -132,16 +124,61 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
   recommendedDefs.sort(byStart)
   complementDefs.sort(byStart)
 
+  // Adaptive columns: a lane wraps when it would exceed the target height, so
+  // adding age regions or ranges widens the graph instead of growing without
+  // bound. Region and sweep lanes also wrap; the three block tiers stay fixed.
+  const regionCols = colsFor(regions.length, PITCH.region, 2)
+  const recommendedCols = colsFor(recommendedDefs.length, PITCH.range, 4)
+  const complementCols = colsFor(complementDefs.length, PITCH.range, 6)
+  const recommendedWidth = recommendedCols * (NODE_W.range + RANGE_GAP) - RANGE_GAP
+  const complementWidth = complementDefs.length === 0
+    ? 0
+    : BAND_GAP + complementCols * (NODE_W.range + RANGE_GAP) - RANGE_GAP
+  const rangeWidth = recommendedWidth + complementWidth
+  const sweepCols = colsFor(snapshot.sweeps.length, PITCH.sweep, 3)
+
+  let laneX = PAD
+  const regionX = laneX
+  laneX += regionCols * (NODE_W.region + REGION_GAP) - REGION_GAP + LANE_GAP
+  const rangeX = laneX
+  laneX += rangeWidth + LANE_GAP
+  const sweepX = laneX
+  laneX += sweepCols * (NODE_W.sweep + SWEEP_GAP) - SWEEP_GAP + LANE_GAP
+  const blockX = laneX
+
+  regions.forEach((region, index) => {
+    const id = regionId(region.region)
+    regionNodes.set(region.region, id)
+    nodes.push({
+      id,
+      kind: 'region',
+      x: regionX + (index % regionCols) * (NODE_W.region + REGION_GAP),
+      y: PAD + Math.floor(index / regionCols) * PITCH.region,
+      w: NODE_W.region,
+      h: 64,
+      title: `年龄区域 ${String(region.region)}`,
+      sub: `${String(region.ranges)} 段 · ~${compact(region.tokens)}`,
+      tokens: region.tokens,
+      region: region.region,
+    })
+  })
+
   const rangeNodes = new Map<string, string>()
-  const placeRanges = (list: readonly RangeDef[], startY: number, variant: 'recommended' | 'complement'): void => {
+  const placeRanges = (
+    list: readonly RangeDef[],
+    startX: number,
+    startY: number,
+    variant: 'recommended' | 'complement',
+    cols: number,
+  ): void => {
     list.forEach((def, index) => {
       const id = rangeId(def.start, def.end)
       rangeNodes.set(id, id)
       nodes.push({
         id,
         kind: 'range',
-        x: COL_X.range + (index % RANGE_COLS) * (NODE_W.range + GRID_GAP),
-        y: startY + Math.floor(index / RANGE_COLS) * PITCH.range,
+        x: startX + (index % cols) * (NODE_W.range + RANGE_GAP),
+        y: startY + Math.floor(index / cols) * PITCH.range,
         w: NODE_W.range,
         h: 32,
         title: `${String(def.start)}..${String(def.end)}`,
@@ -156,16 +193,15 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
       if (owner !== undefined) edges.push({ id: `o:${owner}:${id}`, from: owner, to: id, kind: 'owns' })
     })
   }
-  const recommendedTop = PAD + 16
-  const recommendedRows = Math.ceil(recommendedDefs.length / RANGE_COLS)
-  const complementTop = recommendedTop + recommendedRows * PITCH.range + 24
-  placeRanges(recommendedDefs, recommendedTop, 'recommended')
-  placeRanges(complementDefs, complementTop, 'complement')
+  const bandTop = PAD + 16
+  const complementX = rangeX + recommendedWidth + BAND_GAP
+  placeRanges(recommendedDefs, rangeX, bandTop, 'recommended', recommendedCols)
+  placeRanges(complementDefs, complementX, bandTop, 'complement', complementCols)
   const bands = [
-    { x: COL_X.range, y: PAD, label: `推荐区间 · ${String(recommendedDefs.length)}` },
+    { x: rangeX, y: PAD, label: `推荐区间 · ${String(recommendedDefs.length)}` },
     ...(complementDefs.length === 0
       ? []
-      : [{ x: COL_X.range, y: complementTop - 20, label: `补集区间 · ${String(complementDefs.length)}` }]),
+      : [{ x: complementX, y: PAD, label: `补集区间 · ${String(complementDefs.length)}` }]),
   ]
 
   snapshot.sweeps.forEach((sweep, index) => {
@@ -173,8 +209,8 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     nodes.push({
       id,
       kind: 'sweep',
-      x: COL_X.sweep,
-      y: PAD + index * PITCH.sweep,
+      x: sweepX + (index % sweepCols) * (NODE_W.sweep + SWEEP_GAP),
+      y: PAD + Math.floor(index / sweepCols) * PITCH.sweep,
       w: NODE_W.sweep,
       h: 48,
       title: `sweep · ${String(sweep.entries)} 段`,
@@ -223,7 +259,7 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     nodes.push({
       id,
       kind: 'block',
-      x: COL_X.block + (slot.tier - 1) * (NODE_W.block + BLOCK_GAP),
+      x: blockX + (slot.tier - 1) * (NODE_W.block + BLOCK_GAP),
       y: PAD + slot.index * PITCH.block,
       w: NODE_W.block,
       h: 44,
@@ -249,16 +285,16 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     nodes: placedNodes,
     edges,
     columns: [
-      { x: COL_X.region, label: `年龄区域 · ${String(regions.length)}` },
-      { x: COL_X.range, label: `可压区间 · 推荐 ${String(recommendedDefs.length)} / 补集 ${String(complementDefs.length)}` },
-      { x: COL_X.sweep, label: `清扫 · ${String(snapshot.sweeps.length)}` },
+      { x: regionX, label: `年龄区域 · ${String(regions.length)}` },
+      { x: rangeX, label: `可压区间 · 推荐 ${String(recommendedDefs.length)} / 补集 ${String(complementDefs.length)}` },
+      { x: sweepX, label: `清扫 · ${String(snapshot.sweeps.length)}` },
       ...tiers.map((tier) => ({
-        x: COL_X.block + (tier - 1) * (NODE_W.block + BLOCK_GAP),
+        x: blockX + (tier - 1) * (NODE_W.block + BLOCK_GAP),
         label: `T${String(tier)} · ${String(byTier.get(tier)!.length)}`,
       })),
     ],
     bands,
-    width: COL_X.block + tiers.length * (NODE_W.block + BLOCK_GAP) - BLOCK_GAP + PAD,
+    width: blockX + tiers.length * (NODE_W.block + BLOCK_GAP) - BLOCK_GAP + PAD,
     height,
   }
 }

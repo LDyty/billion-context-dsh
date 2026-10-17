@@ -132,5 +132,5 @@ test('network layout: recommended and complement ranges sit in separate bands', 
   const complement = layout.nodes.find((node) => node.span?.start === 3)
   assert.equal(recommended?.variant, 'recommended')
   assert.equal(complement?.variant, 'complement')
-  assert.ok((complement?.y ?? 0) > (recommended?.y ?? 0), 'the complement band sits below the recommendation band')
+  assert.ok((complement?.x ?? 0) > (recommended?.x ?? 0), 'the complement band sits beside the recommendation band')
 })
