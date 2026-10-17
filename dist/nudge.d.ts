@@ -214,6 +214,7 @@ export interface SweepComplement {
         readonly ranges: readonly {
             readonly start: number;
             readonly end: number;
+            readonly tokens: number;
         }[];
     }[];
 }

@@ -24,6 +24,7 @@ import type {
   AcpInspectBlock,
   AcpInspectComplement,
   AcpInspectNode,
+  AcpInspectRegion,
   AcpInspectRow,
   AcpInspectSettings,
   AcpInspectSnapshot,
@@ -55,6 +56,8 @@ export interface AcpInspectCache {
   sweeps: AcpInspectSweep[]
   /** The sweep's complement map, when the last build produced one. */
   complement?: AcpInspectComplement
+  /** Age regions of the same build, oldest first (the network's left column). */
+  regions?: AcpInspectRegion[]
   /** Session id → its cache; replaced in place on every build. */
 }
 
@@ -66,12 +69,14 @@ export function rememberRangeTable(
   rows: readonly AcpInspectRow[],
   sweeps: readonly AcpInspectSweep[],
   complement?: AcpInspectComplement,
+  regions: readonly AcpInspectRegion[] = [],
 ): void {
   const cache = caches.get(sessionId) ?? { capturedAt: 0, rows: [], sweeps: [] }
   cache.capturedAt = Date.now()
   cache.rows = [...rows]
   cache.sweeps = [...sweeps]
   cache.complement = complement
+  cache.regions = [...regions]
   caches.set(sessionId, cache)
 }
 
@@ -261,6 +266,7 @@ export function buildInspectSnapshot(input: {
     rows: cache?.rows ?? [],
     sweeps: cache?.sweeps ?? [],
     complement: cache?.complement,
+    regions: cache?.regions ?? [],
     blocks: [...input.blocks],
     settings: input.settings,
   }
@@ -301,6 +307,7 @@ export function inspectBlocksOf(session: Session): AcpInspectBlock[] {
       createdAt: entry.createdAt,
       summary: entry.summary,
       ...(why === undefined ? {} : { why }),
+      ...(entry.parentBlockIds.length === 0 ? {} : { parents: [...entry.parentBlockIds] }),
     }
   })
 }

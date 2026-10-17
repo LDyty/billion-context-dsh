@@ -14,6 +14,7 @@ import { createElement as h, useEffect, useMemo, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { AcpInspectNode, AcpInspectSnapshot } from '../inspect-types.ts'
 import { useHoverTip } from './hoverTip.tsx'
+import { CompressionNetwork } from './network.tsx'
 
 /** Where the host route lives (src/index.ts registers the same path). */
 const INSPECT_ROUTE = '/api/billion-context/inspect'
@@ -379,6 +380,7 @@ function Params(props: { snapshot: AcpInspectSnapshot }): ReactElement {
 export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
   const [snapshot, setSnapshot] = useState<AcpInspectSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [networkOpen, setNetworkOpen] = useState(false)
   const sessionId = props.sessionId
 
   useEffect(() => {
@@ -431,6 +433,11 @@ export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
         h('span', { className: usage.windowSource === 'engine' ? 'acp-muted' : 'acp-warn' }, windowNote),
         h('span', { className: 'acp-muted' }, `表面 ${String(surface.nodes)} 节点 · ${String(surface.firstSeq)}..${String(surface.lastSeq)}`),
         h('span', { className: 'acp-muted' }, `表快照 ${stampOf(snapshot.capturedAt)}（${ageOf(snapshot.capturedAt)}）`),
+        h('button', {
+          className: 'acp-net-open',
+          title: '打开可缩放/拖动的压缩网络（年龄区域 → 区间 → 清扫 → 已压块）',
+          onClick: () => setNetworkOpen(true),
+        }, '展开压缩网络'),
       ),
       h('div', { className: 'acp-bar' }, h('span', { style: { width: `${String(Math.min(100, usage.pct))}%` } })),
       // Two calibers, named: the pressure above is provider-anchored (it includes
@@ -445,8 +452,15 @@ export function AcpInspectorPanel(props: { sessionId?: string }): ReactElement {
       h('div', { className: 'acp-section' }, h('h4', null, '可压区间与清扫（与 nudge 同一套数字）'), h(RangeTable, { snapshot })),
       h('div', { className: 'acp-section' }, h('h4', null, `已压块 ${String(snapshot.blocks.length)}（展开看它当时的思考）`), h(Blocks, { blocks: snapshot.blocks })),
       Params({ snapshot }),
+      networkOpen
+        ? h(CompressionNetwork, {
+          snapshot,
+          sessionId,
+          onClose: () => setNetworkOpen(false),
+        })
+        : null,
     )
-  }, [error, sessionId, snapshot])
+  }, [error, networkOpen, sessionId, snapshot])
 
   return content
 }

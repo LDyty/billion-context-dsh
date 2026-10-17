@@ -134,8 +134,19 @@ export interface AcpInspectComplement {
         readonly ranges: readonly {
             readonly start: number;
             readonly end: number;
+            readonly tokens: number;
         }[];
     }[];
+}
+/** One age region as the compression network draws it. */
+export interface AcpInspectRegion {
+    readonly region: number;
+    readonly start: number;
+    readonly end: number;
+    /** Compressible tokens inside the region (sum of its offerable spans). */
+    readonly tokens: number;
+    /** How many offerable spans the region holds. */
+    readonly ranges: number;
 }
 /** One durable compressed block. */
 export interface AcpInspectBlock {
@@ -151,6 +162,8 @@ export interface AcpInspectBlock {
     readonly summary: string;
     /** The model's own thinking while it chose this fold, when it is on record. */
     readonly why?: string;
+    /** Durable parent block ids (tier 2/3 distillation lineage). */
+    readonly parents?: readonly string[];
 }
 /** The knobs the engine actually reads, so the panel shows live values. */
 export interface AcpInspectSettings {
@@ -198,6 +211,8 @@ export interface AcpInspectSnapshot {
     readonly sweeps: readonly AcpInspectSweep[];
     /** Absent on payloads built before the complement map existed. */
     readonly complement?: AcpInspectComplement;
+    /** Age regions of the remembered build (oldest first). */
+    readonly regions: readonly AcpInspectRegion[];
     readonly blocks: readonly AcpInspectBlock[];
     readonly settings: AcpInspectSettings;
 }

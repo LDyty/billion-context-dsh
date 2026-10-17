@@ -460,7 +460,7 @@ export interface SweepComplement {
   readonly total: number
   readonly regions: readonly {
     readonly region: number
-    readonly ranges: readonly { readonly start: number; readonly end: number }[]
+    readonly ranges: readonly { readonly start: number; readonly end: number; readonly tokens: number }[]
   }[]
 }
 
@@ -485,7 +485,11 @@ export function sweepComplementOf<T extends { start: number; end: number }>(
       region: index + 1,
       ranges: group
         .filter((range) => inSweep.has(range) && !recommended.has(range))
-        .map((range) => ({ start: range.start, end: range.end })),
+        .map((range) => ({
+          start: range.start,
+          end: range.end,
+          tokens: (range as { tokens?: number }).tokens ?? 0,
+        })),
     }))
     .filter((entry) => entry.ranges.length > 0)
   const total = regions.reduce((sum, entry) => sum + entry.ranges.length, 0)
@@ -615,6 +619,13 @@ export function rangeTable(
   // `partitionOfferableIntoAgeRegions` clamps to the number of offerable spans,
   // so the label/cap below use the ACTUAL count, not the requested one.
   const actualAgeRegions = ageRegionGroups.length
+  const inspectRegions = ageRegionGroups.map((group, index) => ({
+    region: index + 1,
+    start: group[0]!.start,
+    end: group[group.length - 1]!.end,
+    tokens: group.reduce((sum, range) => sum + range.tokens, 0),
+    ranges: group.length,
+  }))
   const rangeRows = rangeTablePicksOfGroups(
     ageRegionGroups,
     (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY,
@@ -813,6 +824,7 @@ export function rangeTable(
     })),
     sweeps,
     complement,
+    inspectRegions,
   )
   const complementLines = renderSweepComplement(complement, prompts.rangeTable)
   return [

@@ -19,7 +19,7 @@
  * @module billion-context-dsh/inspect
  */
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { AcpInspectBlock, AcpInspectComplement, AcpInspectRow, AcpInspectSettings, AcpInspectSnapshot, AcpInspectSweep } from './inspect-types.ts';
+import type { AcpInspectBlock, AcpInspectComplement, AcpInspectRegion, AcpInspectRow, AcpInspectSettings, AcpInspectSnapshot, AcpInspectSweep } from './inspect-types.ts';
 /** What the engine remembers about its last range-table build for one session. */
 export interface AcpInspectCache {
     /** When `rangeTable` last ran for this session. */
@@ -41,9 +41,11 @@ export interface AcpInspectCache {
     sweeps: AcpInspectSweep[];
     /** The sweep's complement map, when the last build produced one. */
     complement?: AcpInspectComplement;
+    /** Age regions of the same build, oldest first (the network's left column). */
+    regions?: AcpInspectRegion[];
 }
 /** Remember the rows/sweeps one range-table build produced. */
-export declare function rememberRangeTable(sessionId: string, rows: readonly AcpInspectRow[], sweeps: readonly AcpInspectSweep[], complement?: AcpInspectComplement): void;
+export declare function rememberRangeTable(sessionId: string, rows: readonly AcpInspectRow[], sweeps: readonly AcpInspectSweep[], complement?: AcpInspectComplement, regions?: readonly AcpInspectRegion[]): void;
 /** Remember the pressure gauge (cheap: every pre-step knows it). */
 export declare function rememberPressure(sessionId: string, pressure: number, window: number | undefined, windowSource?: 'engine' | 'projection' | 'default'): void;
 /** Remember the surface breakdown (only computed when a nudge actually fires). */

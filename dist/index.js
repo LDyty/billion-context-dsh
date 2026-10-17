@@ -8394,12 +8394,13 @@ import { createUserMessage as createUserMessage3 } from "@deepseek-ai/dsh-llm";
 
 // src/inspect.ts
 var caches = /* @__PURE__ */ new Map();
-function rememberRangeTable(sessionId, rows, sweeps, complement) {
+function rememberRangeTable(sessionId, rows, sweeps, complement, regions2 = []) {
   const cache2 = caches.get(sessionId) ?? { capturedAt: 0, rows: [], sweeps: [] };
   cache2.capturedAt = Date.now();
   cache2.rows = [...rows];
   cache2.sweeps = [...sweeps];
   cache2.complement = complement;
+  cache2.regions = [...regions2];
   caches.set(sessionId, cache2);
 }
 function rememberPressure(sessionId, pressure, window, windowSource) {
@@ -8504,6 +8505,7 @@ function buildInspectSnapshot(input) {
     rows: cache2?.rows ?? [],
     sweeps: cache2?.sweeps ?? [],
     complement: cache2?.complement,
+    regions: cache2?.regions ?? [],
     blocks: [...input.blocks],
     settings: input.settings
   };
@@ -8523,7 +8525,8 @@ function inspectBlocksOf(session) {
       tier: entry.tier,
       createdAt: entry.createdAt,
       summary: entry.summary,
-      ...why === void 0 ? {} : { why }
+      ...why === void 0 ? {} : { why },
+      ...entry.parentBlockIds.length === 0 ? {} : { parents: [...entry.parentBlockIds] }
     };
   });
 }
@@ -8806,7 +8809,11 @@ function sweepComplementOf(groups, sweepEntries, recommended) {
   const oldest = sweepEntries[0].start;
   const regions2 = groups.map((group, index) => ({
     region: index + 1,
-    ranges: group.filter((range) => inSweep.has(range) && !recommended.has(range)).map((range) => ({ start: range.start, end: range.end }))
+    ranges: group.filter((range) => inSweep.has(range) && !recommended.has(range)).map((range) => ({
+      start: range.start,
+      end: range.end,
+      tokens: range.tokens ?? 0
+    }))
   })).filter((entry) => entry.ranges.length > 0);
   const total = regions2.reduce((sum, entry) => sum + entry.ranges.length, 0);
   return total === 0 ? void 0 : { oldest, total, regions: regions2 };
@@ -8843,6 +8850,13 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   }
   const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges, ageRegions);
   const actualAgeRegions = ageRegionGroups.length;
+  const inspectRegions = ageRegionGroups.map((group, index) => ({
+    region: index + 1,
+    start: group[0].start,
+    end: group[group.length - 1].end,
+    tokens: group.reduce((sum, range) => sum + range.tokens, 0),
+    ranges: group.length
+  }));
   const rangeRows = rangeTablePicksOfGroups(
     ageRegionGroups,
     (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY
@@ -9005,7 +9019,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       skipped: ageRegionSkips[row.ageRegion - 1] ?? 0
     })),
     sweeps,
-    complement
+    complement,
+    inspectRegions
   );
   const complementLines = renderSweepComplement(complement, prompts.rangeTable);
   return [
