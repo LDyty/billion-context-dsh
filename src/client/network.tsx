@@ -336,6 +336,8 @@ export function CompressionNetwork(props: {
   const { snapshot, sessionId } = props
   const layout = useMemo(() => buildLayout(snapshot), [snapshot])
   const [moved, setMoved] = useState<Record<string, { x: number; y: number }>>({})
+  const movedRef = useRef<Record<string, { x: number; y: number }>>({})
+  useEffect(() => { movedRef.current = moved }, [moved])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [pinnedId, setPinnedId] = useState<string | null>(null)
   const initialView = props.initialView ?? { x: 0, y: 0, z: 1 }
@@ -359,13 +361,13 @@ export function CompressionNetwork(props: {
   const saveTimer = useRef<number | undefined>(undefined)
   const storageKey = `acp-net:${sessionId}`
 
-  const persist = useCallback(() => {
+  const persist = useCallback((overrideMoved?: Record<string, { x: number; y: number }>) => {
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ view: viewRef.current, moved }))
+      localStorage.setItem(storageKey, JSON.stringify({ view: viewRef.current, moved: overrideMoved ?? movedRef.current }))
     } catch {
       /* private mode / quota: the view simply is not remembered */
     }
-  }, [moved, storageKey])
+  }, [storageKey])
 
   const apply = useCallback(() => {
     const view = viewRef.current
@@ -422,7 +424,11 @@ export function CompressionNetwork(props: {
     apply()
   }, [apply])
 
-  // Restore the remembered viewport (or fit once the stage has a size).
+  // Restore the remembered viewport ONCE per session. This effect used to list
+  // `apply`/`fit` (which depend on `moved`): a node drop changed `moved`, which
+  // re-created apply/fit, which re-ran this effect, which called setMoved with a
+  // freshly parsed object — an infinite render loop that froze the canvas on the
+  // first drag. The functions read refs, so the mount-time closures stay valid.
   useEffect(() => {
     let saved: { view?: { x: number; y: number; z: number }; moved?: Record<string, { x: number; y: number }> } | undefined
     try {
@@ -431,7 +437,10 @@ export function CompressionNetwork(props: {
     } catch {
       saved = undefined
     }
-    if (saved?.moved !== undefined) setMoved(saved.moved)
+    if (saved?.moved !== undefined) {
+      movedRef.current = saved.moved
+      setMoved(saved.moved)
+    }
     const frame = requestAnimationFrame(() => {
       if (saved?.view !== undefined && Number.isFinite(saved.view.z) && saved.view.z > 0) {
         viewRef.current = saved.view
@@ -442,7 +451,8 @@ export function CompressionNetwork(props: {
       stageRef.current?.focus()
     })
     return () => cancelAnimationFrame(frame)
-  }, [apply, fit, storageKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey])
 
   // Wheel must not scroll the panel behind the overlay; React's synthetic wheel
   // listener is passive in some hosts, so attach a native non-passive one.
@@ -542,8 +552,10 @@ export function CompressionNetwork(props: {
       const dx = (event.clientX - drag.x) / viewRef.current.z
       const dy = (event.clientY - drag.y) / viewRef.current.z
       if (drag.moved) {
-        setMoved((current) => ({ ...current, [drag.id]: { x: drag.nx + dx, y: drag.ny + dy } }))
-        persist()
+        const next = { ...movedRef.current, [drag.id]: { x: drag.nx + dx, y: drag.ny + dy } }
+        movedRef.current = next
+        setMoved(next)
+        persist(next)
       } else {
         setPinnedId((current) => (current === drag.id ? null : drag.id))
       }
@@ -606,7 +618,7 @@ export function CompressionNetwork(props: {
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1.2) }, '+'),
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1 / 1.2) }, '−'),
           h('button', { className: 'acp-net-btn', onClick: fit }, '适配'),
-          h('button', { className: 'acp-net-btn', onClick: () => { setMoved({}); viewRef.current = { x: 0, y: 0, z: 1 }; apply(); fit() } }, '重置'),
+          h('button', { className: 'acp-net-btn', onClick: () => { movedRef.current = {}; setMoved({}); viewRef.current = { x: 0, y: 0, z: 1 }; apply(); fit() } }, '重置'),
           h('button', { className: 'acp-net-btn', onClick: toggleFullscreen }, '全屏'),
           h('button', { className: 'acp-net-btn acp-net-close', onClick: props.onClose }, '关闭'))),
       h('div', { className: 'acp-net-body' },
@@ -654,7 +666,7 @@ export function CompressionNetwork(props: {
             return h('div', {
               key: node.id,
               'data-net-node': node.id,
-              className: `acp-net-node acp-net-${node.kind}${on ? ' on' : ''}${node.id === pinnedId ? ' pinned' : ''}`,
+              className: `acp-net-node acp-net-${node.kind}${on ? ' on' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
               style: { left: `${String(node.x)}px`, top: `${String(node.y)}px`, width: `${String(node.w)}px`, height: `${String(node.h)}px` },
               onPointerEnter: () => setHoverId(node.id),
               onPointerLeave: () => setHoverId((current) => (current === node.id ? null : current)),

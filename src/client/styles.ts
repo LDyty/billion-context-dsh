@@ -138,6 +138,7 @@ export const ACP_PANEL_CSS = `
 .acp-net-node { position: absolute; box-sizing: border-box; padding: 4px 7px; border: 1px solid var(--dsw-alias-border-l2, #2a2f38); border-radius: 6px; background: var(--dsw-alias-bg-layer-2, #1c2027); color: var(--dsw-alias-label-primary, #e6e8ec); overflow: hidden; cursor: pointer; user-select: none; transition: opacity .15s, box-shadow .15s, border-color .15s; }
 .acp-net-node:hover { z-index: 5; border-color: var(--dsw-alias-brand-primary, #6aa9ff); box-shadow: 0 3px 12px color-mix(in srgb, #000 45%, transparent); }
 .acp-net-node.pinned { border-color: var(--dsw-alias-brand-primary, #6aa9ff); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary, #6aa9ff); }
+.acp-net-node.moved { z-index: 4; box-shadow: 0 0 0 1px color-mix(in srgb, var(--dsw-alias-brand-primary, #6aa9ff) 55%, transparent); }
 .acp-net-region { border-left: 3px solid var(--dsw-alias-brand-primary, #6aa9ff); }
 .acp-net-range { border-left: 3px solid var(--dsw-alias-state-success-primary, #7fd1a6); }
 .acp-net-sweep { border-left: 3px solid var(--dsw-alias-state-warning-primary, #ffd166); }
