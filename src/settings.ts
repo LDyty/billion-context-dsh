@@ -1,5 +1,5 @@
 /**
- * M6 — runtime settings integration. Wires the engine's six scalar knobs into
+ * M6 — runtime settings integration. Wires the engine's scalar knobs into
  * the host's settings layer so edits apply to RUNNING sessions without a
  * restart. Two host shapes are supported behind one source (issues #174/#193):
  *
@@ -36,7 +36,7 @@ import z from '@deepseek-ai/schemastery'
  */
 export const ACP_SETTINGS_NAMESPACE = 'compaction-acp'
 
-/** The six knobs exposed to the runtime settings layer. Order defines /acp-prune config listing order. */
+/** The knobs exposed to the runtime settings layer. Order defines /acp-prune config listing order. */
 export const SETTINGS_KEYS = [
   'modelContextLimit',
   'autoModelContextLimit',
@@ -45,6 +45,7 @@ export const SETTINGS_KEYS = [
   'nudgeEmergencyThresholdPct',
   'autoNudge',
   'cacheMissPriceRatio',
+  'ageRegions',
 ] as const
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[number]
@@ -66,6 +67,8 @@ export interface AcpSettings {
    * table's payback figures, which are token-denominated.
    */
   readonly cacheMissPriceRatio: number
+  /** Equal-weight age regions the range table is cut into (default 6, 1..12). */
+  readonly ageRegions: number
 }
 
 /** Input shape (everything optional — omitted keys fall back to defaults). */
@@ -82,6 +85,7 @@ export const SETTING_DEFAULTS = {
   nudgeEmergencyThresholdPct: 0.85,
   autoNudge: true,
   cacheMissPriceRatio: 50,
+  ageRegions: 6,
 } as const
 
 /**
@@ -97,6 +101,7 @@ export interface AcpSettingsCompositionEntry {
   readonly nudgeEmergencyThresholdPct?: number
   readonly autoNudge?: boolean
   readonly cacheMissPriceRatio?: number
+  readonly ageRegions?: number
 }
 
 /**
@@ -116,6 +121,7 @@ export function filterSettingsEntry(entry: AcpSettingsCompositionEntry): AcpSett
     ...(entry.nudgeEmergencyThresholdPct !== undefined ? { nudgeEmergencyThresholdPct: entry.nudgeEmergencyThresholdPct } : {}),
     ...(entry.autoNudge !== undefined ? { autoNudge: entry.autoNudge } : {}),
     ...(entry.cacheMissPriceRatio !== undefined ? { cacheMissPriceRatio: entry.cacheMissPriceRatio } : {}),
+    ...(entry.ageRegions !== undefined ? { ageRegions: entry.ageRegions } : {}),
   }
 }
 
@@ -164,6 +170,7 @@ export function resolveAcpSettings(input: AcpSettingsInput): AcpSettings {
     nudgeEmergencyThresholdPct: input.nudgeEmergencyThresholdPct ?? SETTING_DEFAULTS.nudgeEmergencyThresholdPct,
     autoNudge: input.autoNudge ?? SETTING_DEFAULTS.autoNudge,
     cacheMissPriceRatio: input.cacheMissPriceRatio ?? SETTING_DEFAULTS.cacheMissPriceRatio,
+    ageRegions: input.ageRegions ?? SETTING_DEFAULTS.ageRegions,
   }
 }
 
@@ -181,6 +188,7 @@ export const AcpSettingsSchema = z.object({
   nudgeEmergencyThresholdPct: z.number().min(0).max(1).default(SETTING_DEFAULTS.nudgeEmergencyThresholdPct),
   autoNudge: z.boolean().default(SETTING_DEFAULTS.autoNudge),
   cacheMissPriceRatio: z.number().step(1).min(1).default(SETTING_DEFAULTS.cacheMissPriceRatio),
+  ageRegions: z.number().step(1).min(1).max(12).default(SETTING_DEFAULTS.ageRegions),
 })
 
 /**
@@ -223,6 +231,7 @@ export const AcpPluginConfigSchema = z.object({
   nudgeEmergencyThresholdPct: markVolatile(z.number().min(0).max(1)),
   autoNudge: markVolatile(z.boolean()),
   cacheMissPriceRatio: markVolatile(z.number().step(1).min(1)),
+  ageRegions: markVolatile(z.number().step(1).min(1).max(12)),
   /**
    * Composition-layer policy for a plain range that crosses a live block's
    * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is

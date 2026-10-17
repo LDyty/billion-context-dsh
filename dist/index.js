@@ -8653,11 +8653,13 @@ function touch(map, sessionId, value) {
 }
 function noteAgeRegions(sessionId, ageRegions) {
   touch(regions, sessionId, ageRegions.map((ageRegion) => ({ start: ageRegion.start, end: ageRegion.end })));
-  if (skips.has(sessionId)) {
-    touch(skips, sessionId, skips.get(sessionId));
+  const current = skips.get(sessionId);
+  if (current !== void 0) {
+    touch(skips, sessionId, ageRegions.map((_, index) => current.length === ageRegions.length ? current[index] : 0));
     return;
   }
-  touch(skips, sessionId, ageRegions.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0));
+  const persisted = persistedSkips(sessionId);
+  touch(skips, sessionId, ageRegions.map((_, index) => persisted?.length === ageRegions.length ? persisted[index] : 0));
 }
 function noteOfferableSpans(sessionId, spans) {
   touch(offerable, sessionId, spans.map((span) => ({ start: span.start, end: span.end })));
@@ -8826,7 +8828,7 @@ function renderSweepComplement(complement, prompts = DEFAULT_RESOLVED.rangeTable
     })
   ];
 }
-function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, context) {
+function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, context, ageRegions = RANGE_TABLE_AGE_REGIONS) {
   const ranges = buildCompressibleSeqRanges(
     session,
     kernelView,
@@ -8839,7 +8841,8 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     const cost = costs[index];
     paybackOfRange.set(range, cost === void 0 ? Number.POSITIVE_INFINITY : billingPaybackRequests(cost.invalidatedTokens, range.tokens, missHitRatioForRank));
   }
-  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges);
+  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges, ageRegions);
+  const actualAgeRegions = ageRegionGroups.length;
   const rangeRows = rangeTablePicksOfGroups(
     ageRegionGroups,
     (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY
@@ -8872,7 +8875,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
   const sweeps = [];
   for (const row of baseRows) {
     if (row.at < 0) continue;
-    if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break;
+    if (proposalOfAt.size >= actualAgeRegions * RANGE_TABLE_ROWS_PER_AGE_REGION) break;
     const proposal = sweepFromBaseRange(ranges, costs, row.at);
     if (proposal === void 0) continue;
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0);
@@ -8934,7 +8937,7 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
       previousAgeRegion = ageRegion;
       rows.push(renderTemplate(prompts.rangeTable.region, {
         region: ageRegion,
-        age: ageRegion === 1 ? " (oldest)" : ageRegion === RANGE_TABLE_AGE_REGIONS ? " (newest)" : "",
+        age: ageRegion === 1 ? " (oldest)" : ageRegion === actualAgeRegions ? " (newest)" : "",
         skipped: ageRegionSkips[ageRegion - 1] ?? 0
       }));
     }
@@ -9112,7 +9115,8 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
       // 50 mirrors SETTING_DEFAULTS.cacheMissPriceRatio — a hand-built env (tests)
       // may omit it, production always resolves the setting.
       missHitRatio: env.cacheMissPriceRatio ?? 50
-    }
+    },
+    env.ageRegions ?? RANGE_TABLE_AGE_REGIONS
   );
   const message = createUserMessage3({
     content: [{ type: "text", text }],
@@ -9126,21 +9130,21 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
   });
   return { message, emergency };
 }
-function buildNudgeText(nudge, emergency, session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, context) {
+function buildNudgeText(nudge, emergency, session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceOf, context, ageRegions = RANGE_TABLE_AGE_REGIONS) {
   if (prompts.nudge !== DEFAULT_RESOLVED.nudge) {
-    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context);
+    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context, ageRegions);
   }
   const rendered = renderNudgeText(nudge);
-  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf, context);
+  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf, context, ageRegions);
 }
-function adaptKernelNudgeToSeq(text, nudge, session, kernelView, prompts, mediaPriceOf, context) {
+function adaptKernelNudgeToSeq(text, nudge, session, kernelView, prompts, mediaPriceOf, context, ageRegions = RANGE_TABLE_AGE_REGIONS) {
   let out = stripNudgeGuidance(text);
   if ((nudge.tier === 2 || nudge.tier === 3) && (nudge.tierTargetBlocks?.length ?? 0) > 0) {
     out = replaceTierTrigger(out, nudge, session, prompts);
   } else if (out.includes('"startId"')) {
     out = replaceEmergencyExample(out);
   }
-  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf, context);
+  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf, context, ageRegions);
   if (seqTable !== "") out = replaceRangesStr(out, seqTable);
   out = insertContentFormNote(out);
   return out;
@@ -9192,7 +9196,7 @@ function replaceEmergencyExample(text) {
   const end = next !== null ? start + 2 + next.index : text.length;
   return text.slice(0, start) + "\n\ncompress({ content: [{ startSeq, endSeq, summary }] }) \u2014 use the seqs from the range table above." + text.slice(end);
 }
-function renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context) {
+function renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context, ageRegions = RANGE_TABLE_AGE_REGIONS) {
   const pct2 = Math.round(Math.min(nudge.contextUsage, 1) * 100);
   const frame = renderTemplate(
     emergency ? prompts.nudge.emergency : prompts.nudge.normal,
@@ -9233,7 +9237,7 @@ function renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts
     const tierRules = nudge.tier === 2 ? TIER2_DISTILL_RULES : TIER3_CONDENSE_RULES;
     parts.push("", tierRules);
   } else {
-    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf, context));
+    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf, context, ageRegions));
   }
   if (prompts.nudge.tip !== "") parts.push("", CONTENT_FORM_NOTE, "", prompts.nudge.tip);
   return stripNudgeGuidance(parts.join("\n"));
@@ -10238,14 +10242,16 @@ var SETTINGS_KEYS = [
   "nudgeMaxContextLimitPct",
   "nudgeEmergencyThresholdPct",
   "autoNudge",
-  "cacheMissPriceRatio"
+  "cacheMissPriceRatio",
+  "ageRegions"
 ];
 var SETTING_DEFAULTS = {
   autoModelContextLimit: true,
   nudgeMaxContextLimitPct: 0.7,
   nudgeEmergencyThresholdPct: 0.85,
   autoNudge: true,
-  cacheMissPriceRatio: 50
+  cacheMissPriceRatio: 50,
+  ageRegions: 6
 };
 function filterSettingsEntry(entry) {
   return {
@@ -10255,7 +10261,8 @@ function filterSettingsEntry(entry) {
     ...entry.nudgeMaxContextLimitPct !== void 0 ? { nudgeMaxContextLimitPct: entry.nudgeMaxContextLimitPct } : {},
     ...entry.nudgeEmergencyThresholdPct !== void 0 ? { nudgeEmergencyThresholdPct: entry.nudgeEmergencyThresholdPct } : {},
     ...entry.autoNudge !== void 0 ? { autoNudge: entry.autoNudge } : {},
-    ...entry.cacheMissPriceRatio !== void 0 ? { cacheMissPriceRatio: entry.cacheMissPriceRatio } : {}
+    ...entry.cacheMissPriceRatio !== void 0 ? { cacheMissPriceRatio: entry.cacheMissPriceRatio } : {},
+    ...entry.ageRegions !== void 0 ? { ageRegions: entry.ageRegions } : {}
   };
 }
 var VOLATILE_WRITE = /* @__PURE__ */ Symbol.for("cosmokit.volatile.write");
@@ -10282,7 +10289,8 @@ function resolveAcpSettings(input) {
     nudgeMaxContextLimitPct: input.nudgeMaxContextLimitPct ?? SETTING_DEFAULTS.nudgeMaxContextLimitPct,
     nudgeEmergencyThresholdPct: input.nudgeEmergencyThresholdPct ?? SETTING_DEFAULTS.nudgeEmergencyThresholdPct,
     autoNudge: input.autoNudge ?? SETTING_DEFAULTS.autoNudge,
-    cacheMissPriceRatio: input.cacheMissPriceRatio ?? SETTING_DEFAULTS.cacheMissPriceRatio
+    cacheMissPriceRatio: input.cacheMissPriceRatio ?? SETTING_DEFAULTS.cacheMissPriceRatio,
+    ageRegions: input.ageRegions ?? SETTING_DEFAULTS.ageRegions
   };
 }
 var AcpSettingsSchema = z.object({
@@ -10292,7 +10300,8 @@ var AcpSettingsSchema = z.object({
   nudgeMaxContextLimitPct: z.number().min(0).max(1).default(SETTING_DEFAULTS.nudgeMaxContextLimitPct),
   nudgeEmergencyThresholdPct: z.number().min(0).max(1).default(SETTING_DEFAULTS.nudgeEmergencyThresholdPct),
   autoNudge: z.boolean().default(SETTING_DEFAULTS.autoNudge),
-  cacheMissPriceRatio: z.number().step(1).min(1).default(SETTING_DEFAULTS.cacheMissPriceRatio)
+  cacheMissPriceRatio: z.number().step(1).min(1).default(SETTING_DEFAULTS.cacheMissPriceRatio),
+  ageRegions: z.number().step(1).min(1).max(12).default(SETTING_DEFAULTS.ageRegions)
 });
 function markVolatile(schema) {
   const capable = schema;
@@ -10306,6 +10315,7 @@ var AcpPluginConfigSchema = z.object({
   nudgeEmergencyThresholdPct: markVolatile(z.number().min(0).max(1)),
   autoNudge: markVolatile(z.boolean()),
   cacheMissPriceRatio: markVolatile(z.number().step(1).min(1)),
+  ageRegions: markVolatile(z.number().step(1).min(1).max(12)),
   /**
    * Composition-layer policy for a plain range that crosses a live block's
    * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
@@ -10809,7 +10819,11 @@ var DEFAULT_CONFIG = {
   nudgeEmergencyThresholdPct: 0.85,
   // DeepSeek-style prompt caching: an uncached (miss) token costs 50× a cached
   // one. Printed as a fact next to the context figures (owner ruling, 2026-10-16).
-  cacheMissPriceRatio: 50
+  cacheMissPriceRatio: 50,
+  // Age regions: six equal-weight slices of the reclaimable content (owner
+  // wording: 1–6 are 年龄区域). Configurable 1..12 — the partitioner clamps to
+  // the number of offerable spans, so a small surface never invents empty ones.
+  ageRegions: 6
 };
 function resolveAcpConfig(config = {}) {
   const resolved = resolvePresetThresholds({ ...DEFAULT_CONFIG, ...config }, config);
@@ -10980,7 +10994,7 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
         rangeTable(session, {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs
-        }, this.prompts);
+        }, this.prompts, void 0, void 0, this.env.ageRegions ?? 6);
         rememberPressure(sessionId, pressure, windowLimit, windowSource);
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
@@ -11109,6 +11123,9 @@ var AcpCompactionEngine = class _AcpCompactionEngine extends CompactionEngine {
       },
       get cacheMissPriceRatio() {
         return engine.readSettingsSource().cacheMissPriceRatio;
+      },
+      get ageRegions() {
+        return engine.readSettingsSource().ageRegions;
       },
       coreOverrides: this.config.coreOverrides,
       carrierSpans: this.config.carrierSpans,

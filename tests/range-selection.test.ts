@@ -24,6 +24,7 @@ import test from 'node:test'
 import {
   RANGE_TABLE_LIMIT,
   RANGE_TABLE_ROWS_PER_AGE_REGION,
+  partitionOfferableIntoAgeRegions,
   rangeTablePicksOfGroups,
   rangeTableRowsOfGroups,
   selectRangeTableRanges,
@@ -85,6 +86,14 @@ test('range selection: the three roles collapse onto one row and keep every labe
  * The generic top-N helper is still available (and still defaults to size) for
  * the pure-geometry callers; the table itself uses the role selector above.
  */
+test('range selection: the age-region count is configurable (1..12, clamped to the spans)', () => {
+  const all = Array.from({ length: 24 }, (_, index) => ({ start: index * 10, end: index * 10 + 1, tokens: index + 1 }))
+  assert.equal(partitionOfferableIntoAgeRegions(all, 3).length, 3, 'fewer regions')
+  assert.equal(partitionOfferableIntoAgeRegions(all, 9).length, 9, 'more regions')
+  assert.equal(partitionOfferableIntoAgeRegions(all.slice(0, 2), 6).length, 2, 'never invents empty regions')
+  assert.equal(selectRangeTableRows(all, 3).length, 9, 'three roles per configured region')
+})
+
 test('range selection: a contained interval is never recommended — only maximal spans', () => {
   const wide = { start: 10, end: 500, tokens: 1000 }
   const narrow = { start: 10, end: 100, tokens: 50 }

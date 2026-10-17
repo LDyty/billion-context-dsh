@@ -198,6 +198,13 @@ export interface AcpConfig {
    */
   readonly cacheMissPriceRatio?: number
   /**
+   * How many equal-weight AGE REGIONS the range table is cut into (default 6).
+   * More regions = a finer age grid (more rows, more nudge text); fewer = a
+   * coarser one. Clamped to the number of offerable spans by the partitioner.
+   * 1..12: past a dozen the table stops being a table.
+   */
+  readonly ageRegions?: number
+  /**
    * Named bundle for the three nudge thresholds — how eagerly the model is
    * asked to compress, in one word. One of 'preserve' | 'relaxed' | 'balanced'
    * | 'efficient' | 'aggressive' (see src/presets.ts). It fills ONLY the nudge
@@ -306,6 +313,10 @@ const DEFAULT_CONFIG: AcpConfig = {
   // DeepSeek-style prompt caching: an uncached (miss) token costs 50× a cached
   // one. Printed as a fact next to the context figures (owner ruling, 2026-10-16).
   cacheMissPriceRatio: 50,
+  // Age regions: six equal-weight slices of the reclaimable content (owner
+  // wording: 1–6 are 年龄区域). Configurable 1..12 — the partitioner clamps to
+  // the number of offerable spans, so a small surface never invents empty ones.
+  ageRegions: 6,
 }
 
 export function resolveAcpConfig(config: Partial<AcpConfig> = {}): AcpConfig {
@@ -574,7 +585,7 @@ export class AcpCompactionEngine extends CompactionEngine {
         rangeTable(session, {
           ranges: turn.nudge?.compressibleRanges ?? [],
           refs: turn.state.messageRefs,
-        }, this.prompts)
+        }, this.prompts, undefined, undefined, this.env.ageRegions ?? 6)
         rememberPressure(sessionId, pressure, windowLimit, windowSource)
         rememberBreakdown(sessionId, {
           tool: breakdown.tool,
@@ -805,6 +816,7 @@ export class AcpCompactionEngine extends CompactionEngine {
       get nudgeMaxContextLimitPct() { return engine.readSettingsSource().nudgeMaxContextLimitPct },
       get nudgeEmergencyThresholdPct() { return engine.readSettingsSource().nudgeEmergencyThresholdPct },
       get cacheMissPriceRatio() { return engine.readSettingsSource().cacheMissPriceRatio },
+      get ageRegions() { return engine.readSettingsSource().ageRegions },
       coreOverrides: this.config.coreOverrides,
       carrierSpans: this.config.carrierSpans,
       // Display-only: which named preset produced the thresholds above (if any),

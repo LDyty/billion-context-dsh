@@ -61,6 +61,8 @@ import type { PresetName } from './presets.ts'
 export interface ToolEnvironment extends KernelConfigInput {
   readonly kernel: CompressionCore
   readonly store: AcpStateStore
+  /** Equal-weight age regions the range table is cut into (engine default 6). */
+  readonly ageRegions?: number
   /** Display-only: the named preset that produced the nudge thresholds above, if any (`/acp-prune status` names it). Never read by the kernel path. */
   readonly preset?: PresetName
   /** Resolve the effective context window for an agent (optional: status falls back to modelContextLimit). */

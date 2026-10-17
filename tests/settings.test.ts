@@ -7,7 +7,7 @@
  *    schema default parity, schema boundaries (integer / inclusive pct),
  *    parseSettingValue (incl. the `false` regression), describeSettingsChange
  *    diff flags, command-surface degradation without a service, and the
- *    static Config schema contract (six volatile fields, no defaults);
+ *    static Config schema contract (the volatile fields, no defaults);
  *  - E2E on BOTH supported host lines through a REAL engine on a bare cordis
  *    Context: the legacy installSection line (dsh-settings ≤0.1.6 — an
  *    in-memory provider whose publishes hot-apply to the live env) and the
@@ -308,7 +308,7 @@ async function runAcp(env: ToolEnvironment, rawInput: string): Promise<string> {
 
 // ── Pure units ────────────────────────────────────────────────────────────
 
-test('M6: filterSettingsEntry keeps only the six settings keys', () => {
+test('M6: filterSettingsEntry keeps only the settings keys', () => {
   const entry = {
     modelContextLimit: 200000,
     autoModelContextLimit: false,
@@ -316,6 +316,7 @@ test('M6: filterSettingsEntry keeps only the six settings keys', () => {
     nudgeMaxContextLimitPct: 0.72,
     nudgeEmergencyThresholdPct: 0.9,
     autoNudge: false,
+    ageRegions: 8,
     autoTools: false,
     autoCommand: false,
     settingsEnabled: false,
@@ -330,6 +331,7 @@ test('M6: filterSettingsEntry keeps only the six settings keys', () => {
     nudgeMaxContextLimitPct: 0.72,
     nudgeEmergencyThresholdPct: 0.9,
     autoNudge: false,
+    ageRegions: 8,
   })
 })
 
@@ -341,6 +343,7 @@ test('M6: engine defaults mirror SETTING_DEFAULTS (untouched settings reproduce 
   assert.equal(defaults.nudgeEmergencyThresholdPct, SETTING_DEFAULTS.nudgeEmergencyThresholdPct)
   assert.equal(defaults.modelContextLimit, undefined)
   assert.equal(defaults.nudgeMinContextLimitPct, undefined)
+  assert.equal(defaults.ageRegions, SETTING_DEFAULTS.ageRegions)
 })
 
 test('M6: schema defaults equal engine defaults at runtime', () => {
@@ -710,7 +713,7 @@ test('M6: a settings service speaking neither API degrades gracefully (issue #17
 
 // ── Issue #193: the forms line registers and hot-applies ──────────────────────
 
-test('M6: static Config schema exposes the seven volatile knobs plus non-volatile switches, no defaults (issue #193)', () => {
+test('M6: static Config schema exposes the volatile knobs plus non-volatile switches, no defaults (issue #193)', () => {
   // The loader validates our composition row against this schema AND
   // SettingsForms builds its form from it — the field set IS the public
   // settings contract. An eighth VOLATILE key or a dropped .volatile() would
@@ -726,6 +729,7 @@ test('M6: static Config schema exposes the seven volatile knobs plus non-volatil
     'nudgeEmergencyThresholdPct',
     'autoNudge',
     'cacheMissPriceRatio',
+    'ageRegions',
   ]
   const compositionKeys = ['carrierSpans', 'guidanceDelivery']
   assert.deepEqual(Object.keys(AcpPluginConfigSchema.dict), [...settingsKeys, ...compositionKeys])
@@ -735,7 +739,7 @@ test('M6: static Config schema exposes the seven volatile knobs plus non-volatil
   // therefore applies the marker only where the runtime supports it (see
   // markVolatile in src/settings.ts). Assert the marker where it can exist and
   // its deliberate absence where it cannot — on BOTH baselines this test runs
-  // and asserts; neither branch silently skips. The six-key field set and the
+  // and asserts; neither branch silently skips. The field set and the
   // missing defaults are asserted unconditionally, because those ARE the
   // public contract on every line.
   const volatileSupported = typeof (z.number() as { volatile?: unknown }).volatile === 'function'

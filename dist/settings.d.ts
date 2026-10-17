@@ -1,5 +1,5 @@
 /**
- * M6 — runtime settings integration. Wires the engine's six scalar knobs into
+ * M6 — runtime settings integration. Wires the engine's scalar knobs into
  * the host's settings layer so edits apply to RUNNING sessions without a
  * restart. Two host shapes are supported behind one source (issues #174/#193):
  *
@@ -33,8 +33,8 @@ import z from '@deepseek-ai/schemastery';
  * (`installSection`'s `Namespace & SettingsNamespaceInput<Namespace>`).
  */
 export declare const ACP_SETTINGS_NAMESPACE = "compaction-acp";
-/** The six knobs exposed to the runtime settings layer. Order defines /acp-prune config listing order. */
-export declare const SETTINGS_KEYS: readonly ['modelContextLimit', 'autoModelContextLimit', 'nudgeMinContextLimitPct', 'nudgeMaxContextLimitPct', 'nudgeEmergencyThresholdPct', 'autoNudge', 'cacheMissPriceRatio'];
+/** The knobs exposed to the runtime settings layer. Order defines /acp-prune config listing order. */
+export declare const SETTINGS_KEYS: readonly ['modelContextLimit', 'autoModelContextLimit', 'nudgeMinContextLimitPct', 'nudgeMaxContextLimitPct', 'nudgeEmergencyThresholdPct', 'autoNudge', 'cacheMissPriceRatio', 'ageRegions'];
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 /** Resolved shape of one settings snapshot — what every consumer read returns. */
 export interface AcpSettings {
@@ -53,6 +53,8 @@ export interface AcpSettings {
      * table's payback figures, which are token-denominated.
      */
     readonly cacheMissPriceRatio: number;
+    /** Equal-weight age regions the range table is cut into (default 6, 1..12). */
+    readonly ageRegions: number;
 }
 /** Input shape (everything optional — omitted keys fall back to defaults). */
 export type AcpSettingsInput = Partial<AcpSettings>;
@@ -67,6 +69,7 @@ export declare const SETTING_DEFAULTS: {
     readonly nudgeEmergencyThresholdPct: 0.85;
     readonly autoNudge: true;
     readonly cacheMissPriceRatio: 50;
+    readonly ageRegions: 6;
 };
 /**
  * The subset of `AcpConfig` the settings layer may see. Declared structurally
@@ -81,6 +84,7 @@ export interface AcpSettingsCompositionEntry {
     readonly nudgeEmergencyThresholdPct?: number;
     readonly autoNudge?: boolean;
     readonly cacheMissPriceRatio?: number;
+    readonly ageRegions?: number;
 }
 /**
  * Filter a composition-row config down to the settings-known scalar keys.
@@ -126,6 +130,7 @@ export declare const AcpSettingsSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeEmergencyThresholdPct: z<number, number, "defined">;
     autoNudge: z<boolean, boolean, "defined">;
     cacheMissPriceRatio: z<number, number, "defined">;
+    ageRegions: z<number, number, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     modelContextLimit: z<number, number, "plain">;
     autoModelContextLimit: z<boolean, boolean, "defined">;
@@ -134,6 +139,7 @@ export declare const AcpSettingsSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeEmergencyThresholdPct: z<number, number, "defined">;
     autoNudge: z<boolean, boolean, "defined">;
     cacheMissPriceRatio: z<number, number, "defined">;
+    ageRegions: z<number, number, "defined">;
 }>>, "plain">;
 /**
  * The engine's static config schema — the class-level `Config` the host
@@ -157,6 +163,7 @@ export declare const AcpPluginConfigSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeEmergencyThresholdPct: z<number, number, "plain">;
     autoNudge: z<boolean, boolean, "plain">;
     cacheMissPriceRatio: z<number, number, "plain">;
+    ageRegions: z<number, number, "plain">;
     /**
      * Composition-layer policy for a plain range that crosses a live block's
      * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is
@@ -181,6 +188,7 @@ export declare const AcpPluginConfigSchema: z<Schemastery.ObjectS<NoInfer<{
     nudgeEmergencyThresholdPct: z<number, number, "plain">;
     autoNudge: z<boolean, boolean, "plain">;
     cacheMissPriceRatio: z<number, number, "plain">;
+    ageRegions: z<number, number, "plain">;
     /**
      * Composition-layer policy for a plain range that crosses a live block's
      * checkpoint carrier (see ToolEnvironment.carrierSpans). NOT volatile: it is

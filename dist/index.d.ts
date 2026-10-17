@@ -87,6 +87,13 @@ export interface AcpConfig {
      */
     readonly cacheMissPriceRatio?: number;
     /**
+     * How many equal-weight AGE REGIONS the range table is cut into (default 6).
+     * More regions = a finer age grid (more rows, more nudge text); fewer = a
+     * coarser one. Clamped to the number of offerable spans by the partitioner.
+     * 1..12: past a dozen the table stops being a table.
+     */
+    readonly ageRegions?: number;
+    /**
      * Named bundle for the three nudge thresholds — how eagerly the model is
      * asked to compress, in one word. One of 'preserve' | 'relaxed' | 'balanced'
      * | 'efficient' | 'aggressive' (see src/presets.ts). It fills ONLY the nudge
@@ -192,6 +199,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
         cacheMissPriceRatio: import("@deepseek-ai/schemastery").default<number, number, "plain">;
+        ageRegions: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
         guidanceDelivery: import("@deepseek-ai/schemastery").default<"message" | "system", "message" | "system", "plain">;
     }>>, Schemastery.ObjectT<NoInfer<{
@@ -202,6 +210,7 @@ export declare class AcpCompactionEngine extends CompactionEngine {
         nudgeEmergencyThresholdPct: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         autoNudge: import("@deepseek-ai/schemastery").default<boolean, boolean, "plain">;
         cacheMissPriceRatio: import("@deepseek-ai/schemastery").default<number, number, "plain">;
+        ageRegions: import("@deepseek-ai/schemastery").default<number, number, "plain">;
         carrierSpans: import("@deepseek-ai/schemastery").default<"reject" | "split", "reject" | "split", "plain">;
         guidanceDelivery: import("@deepseek-ai/schemastery").default<"message" | "system", "message" | "system", "plain">;
     }>>, "plain">;

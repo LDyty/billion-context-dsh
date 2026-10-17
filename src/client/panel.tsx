@@ -46,9 +46,16 @@ const BILLING_TIP = '计费口径（缓存未命中价 ÷ 命中价 = 参数里�
  */
 const SKIP_TIP = '被跳过次数（年龄区域的属性）：模型每次选择折叠起点（sweep（清扫）算一次），起点没落在本年龄区域（ageRegion）里就 +1；如果这一次是 sweep（清扫，一拍折多个连着的区间），其中别的区间落进了本区域，就把这次的 +1 收回去（折穿就不算跳过）。爬得越高说明模型一直从别的年龄区域开始折、且从没折穿本区域；最小的那个数就是它反复选中的年龄区域。同一年龄区域印出的每一行共享这个数字。'
 
-/** The 年龄区域 header: what a region is, and what the badge beside its name means. */
-const AGE_REGION_TIP = 'ageRegion（年龄区域）：可压内容按年龄等分成 6 个年龄区域，1 最老、6 最新；折叠的起点落在哪个年龄区域，它下面的行就属于哪个区域。每个区域印三种角色各一条区间：计费回本最低的、最大的、最旧的（同一区间可以兼多个角色）。'
-  + SKIP_TIP
+/**
+ * The 年龄区域 header tip. The COUNT is configurable (engine `ageRegions`,
+ * default 6), so the copy names whatever this build actually produced.
+ */
+function ageRegionTip(count: number): string {
+  return `ageRegion（年龄区域）：可压内容按年龄等分成 ${String(count)} 个年龄区域，1 最老、${String(count)} 最新；`
+    + '折叠的起点落在哪个年龄区域，它下面的行就属于哪个区域。'
+    + '每个区域印三种角色各一条区间：计费回本最低的、最大的、最旧的（同一区间可以兼多个角色）。'
+    + SKIP_TIP
+}
 
 /** 行角色（cheapest / largest / oldest）→ 面板里的中文标签。 */
 const PICK_LABEL: Record<'cheapest' | 'largest' | 'oldest', string> = {
@@ -293,6 +300,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
   const staleOf = (row: AcpInspectSnapshot['rows'][number]): boolean =>
     !onSurface.has(row.start) || !onSurface.has(row.end)
   const staleCount = rows.filter(staleOf).length
+  const regionCount = rows.reduce((max, row) => Math.max(max, row.ageRegion), 0)
   // The age-region header is printed once, then its cards — the six regions read
   // as six chapters instead of eighteen table rows.
   const groups: Array<{ region: number; rows: AcpInspectSnapshot['rows'][number][] }> = []
@@ -310,8 +318,8 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
     h('div', { className: 'acp-regions' }, groups.map((group) =>
       h('section', { className: 'acp-region', key: group.region },
         h('header', { className: 'acp-region-head' },
-          h('span', { className: 'acp-region-title', title: AGE_REGION_TIP },
-            `年龄区域 ${String(group.region)}${group.region === 1 ? '（最老）' : group.region === 6 ? '（最新）' : ''}`),
+          h('span', { className: 'acp-region-title', title: ageRegionTip(regionCount) },
+            `年龄区域 ${String(group.region)}${group.region === 1 ? '（最老）' : group.region === regionCount ? '（最新）' : ''}`),
           h('span', {
             className: group.rows[0]!.skipped > 0 ? 'acp-badge' : 'acp-badge acp-muted',
             title: SKIP_TIP,

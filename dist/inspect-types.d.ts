@@ -25,7 +25,7 @@ export interface AcpInspectNode {
 }
 /** One printed range row (up to three per age region) with its fold cost. */
 export interface AcpInspectRow {
-    /** 1-based age region index; age region 1 is the oldest sixth of the reclaimable content. */
+    /** 1-based age region index; region 1 is the oldest equal-weight slice of the reclaimable content. */
     readonly ageRegion: number;
     /**
      * Why this interval was picked (owner ruling, 2026-10-17): every age region

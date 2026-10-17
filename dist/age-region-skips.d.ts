@@ -1,9 +1,10 @@
 /**
  * How many times each 年龄区域 (age region) has been passed over.
  *
- * The table prints up to six rows — six age regions, oldest first — and this
- * counter answers exactly ONE question about them: when the model chose a fold
- * START, how often did that start fall OUTSIDE this age region?
+ * The table prints up to three rows per age region, oldest first — the region
+ * COUNT is configurable (engine `ageRegions`, default 6) — and this counter
+ * answers exactly ONE question about them: when the model chose a fold START,
+ * how often did that start fall OUTSIDE this age region?
  *
  * The age regions are SLOTS, not content (the owner's definition, 2026-10-16):
  *

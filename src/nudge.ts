@@ -91,6 +91,8 @@ export interface NudgeEnvironment extends KernelConfigInput {
   readonly prompts?: ResolvedPrompts
   /** Cache-miss ÷ cache-hit price ratio (see AcpConfig.cacheMissPriceRatio). */
   readonly cacheMissPriceRatio?: number
+  /** Equal-weight age regions the range table is cut into (engine default 6). */
+  readonly ageRegions?: number
 }
 
 export interface NudgeOutcome {
@@ -198,7 +200,7 @@ export function meterMediaPriceResolver(
   }
 }
 
-/** Age regions the offerable list is cut into — the six 年龄区域. */
+/** DEFAULT age regions the offerable list is cut into (engine `ageRegions` overrides). */
 export const RANGE_TABLE_AGE_REGIONS = 6
 
 /**
@@ -585,6 +587,7 @@ export function rangeTable(
   prompts: ResolvedPrompts = DEFAULT_RESOLVED,
   mediaPriceOf?: MediaPriceOf,
   context?: RangeTableContext,
+  ageRegions: number = RANGE_TABLE_AGE_REGIONS,
 ): string {
   const ranges = buildCompressibleSeqRanges(
     session,
@@ -608,7 +611,10 @@ export function rangeTable(
   // its oldest one — cheap enough to act on, big enough to be worth it, old enough
   // to keep the timeline honest. Panel rebuilds record the same regions as a nudge
   // does — a build is never a choice, so nothing increments.
-  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges)
+  const ageRegionGroups = partitionOfferableIntoAgeRegions(ranges, ageRegions)
+  // `partitionOfferableIntoAgeRegions` clamps to the number of offerable spans,
+  // so the label/cap below use the ACTUAL count, not the requested one.
+  const actualAgeRegions = ageRegionGroups.length
   const rangeRows = rangeTablePicksOfGroups(
     ageRegionGroups,
     (range) => paybackOfRange.get(range) ?? Number.POSITIVE_INFINITY,
@@ -661,7 +667,7 @@ export function rangeTable(
   const sweeps: AcpInspectSweep[] = []
   for (const row of baseRows) {
     if (row.at < 0) continue
-    if (proposalOfAt.size >= RANGE_TABLE_LIMIT) break
+    if (proposalOfAt.size >= actualAgeRegions * RANGE_TABLE_ROWS_PER_AGE_REGION) break
     const proposal = sweepFromBaseRange(ranges, costs, row.at)
     if (proposal === undefined) continue
     const messages = proposal.entries.reduce((sum, entry) => sum + entry.count, 0)
@@ -733,7 +739,7 @@ export function rangeTable(
       previousAgeRegion = ageRegion
       rows.push(renderTemplate(prompts.rangeTable.region, {
         region: ageRegion,
-        age: ageRegion === 1 ? ' (oldest)' : ageRegion === RANGE_TABLE_AGE_REGIONS ? ' (newest)' : '',
+        age: ageRegion === 1 ? ' (oldest)' : ageRegion === actualAgeRegions ? ' (newest)' : '',
         skipped: ageRegionSkips[ageRegion - 1] ?? 0,
       }))
     }
@@ -1033,6 +1039,7 @@ export function buildNudge(
       // may omit it, production always resolves the setting.
       missHitRatio: env.cacheMissPriceRatio ?? 50,
     },
+    env.ageRegions ?? RANGE_TABLE_AGE_REGIONS,
   )
   const message = createUserMessage({
     content: [{ type: 'text', text }],
@@ -1068,15 +1075,16 @@ export function buildNudgeText(
   prompts: ResolvedPrompts = DEFAULT_RESOLVED,
   mediaPriceOf?: MediaPriceOf,
   context?: RangeTableContext,
+  ageRegions: number = RANGE_TABLE_AGE_REGIONS,
 ): string {
   // A host override of any nudge slot → template rendering (config.prompts
   // keeps its v0.1.9 contract: custom copy wins). Only the pristine default
   // reference reaches the kernel path.
   if (prompts.nudge !== DEFAULT_RESOLVED.nudge) {
-    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context)
+    return renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts, mediaPriceOf, context, ageRegions)
   }
   const rendered = renderNudgeText(nudge)
-  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf, context)
+  return adaptKernelNudgeToSeq(rendered.text, nudge, session, kernelView, prompts, mediaPriceOf, context, ageRegions)
 }
 
 /**
@@ -1101,6 +1109,7 @@ function adaptKernelNudgeToSeq(
   prompts: ResolvedPrompts,
   mediaPriceOf?: MediaPriceOf,
   context?: RangeTableContext,
+  ageRegions: number = RANGE_TABLE_AGE_REGIONS,
 ): string {
   // B6：先摘掉哲学/规则段（它们住在系统提示与工具描述里），再做 seq 适配
   let out = stripNudgeGuidance(text)
@@ -1116,7 +1125,7 @@ function adaptKernelNudgeToSeq(
   // Replace the ref-ID range table (mNNNNN) with the surface-seq table.
   // A zero-range table leaves the kernel's own "[No specific ranges detected]"
   // notice intact — it is a better prompt than an empty table.
-  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf, context)
+  const seqTable = rangeTable(session, kernelView, prompts, mediaPriceOf, context, ageRegions)
   if (seqTable !== '') out = replaceRangesStr(out, seqTable)
   out = insertContentFormNote(out)
   return out
@@ -1214,6 +1223,7 @@ function renderNudgeFromTemplates(
   prompts: ResolvedPrompts,
   mediaPriceOf?: MediaPriceOf,
   context?: RangeTableContext,
+  ageRegions: number = RANGE_TABLE_AGE_REGIONS,
 ): string {
   // Cap the reported percentage at 100: a broken measurement (e.g. response
   // pressure folded in) must never surface as an absurd "230%" to the model.
@@ -1268,7 +1278,7 @@ function renderNudgeFromTemplates(
     parts.push('', tierRules)
   } else {
     // Range table for non-tier nudges (DSH-specific: seq-based, not ref-ID-based).
-    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf, context))
+    parts.push(rangeTable(session, kernelView, prompts, mediaPriceOf, context, ageRegions))
   }
 
   // Batch-compress tip (from kernel's nudge-text.ts style). The array-form

@@ -60,6 +60,19 @@ test('age region skips: a choice inside an age region increments every OTHER age
   assert.deepEqual([...lastAgeRegionSkipsOf('b2')], [1, 1, 2])
 })
 
+test('age region skips: changing the region COUNT resets the slot counters', () => {
+  forgetAgeRegionSkips('count-change')
+  noteAgeRegions('count-change', ageRegions) // 3 regions
+  noteAgeRegionChoice('count-change', [at(12)]) // region 1 holds it; 2 and 3 were passed over
+  assert.deepEqual([...lastAgeRegionSkipsOf('count-change')], [0, 1, 1])
+  noteAgeRegions('count-change', [...ageRegions, { start: 70, end: 80 }])
+  assert.deepEqual(
+    [...lastAgeRegionSkipsOf('count-change')],
+    [0, 0, 0, 0],
+    'region 3 of 3 is not region 3 of 4 — the old slots do not carry over',
+  )
+})
+
 test('age region skips: a start outside every age region counts for every age region', () => {
   forgetAgeRegionSkips('b3')
   noteAgeRegions('b3', ageRegions)

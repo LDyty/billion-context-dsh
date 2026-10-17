@@ -1,9 +1,10 @@
 /**
  * How many times each 年龄区域 (age region) has been passed over.
  *
- * The table prints up to six rows — six age regions, oldest first — and this
- * counter answers exactly ONE question about them: when the model chose a fold
- * START, how often did that start fall OUTSIDE this age region?
+ * The table prints up to three rows per age region, oldest first — the region
+ * COUNT is configurable (engine `ageRegions`, default 6) — and this counter
+ * answers exactly ONE question about them: when the model chose a fold START,
+ * how often did that start fall OUTSIDE this age region?
  *
  * The age regions are SLOTS, not content (the owner's definition, 2026-10-16):
  *
@@ -249,14 +250,20 @@ function touch<T>(map: Map<string, T>, sessionId: string, value: T): void {
  */
 export function noteAgeRegions(sessionId: string, ageRegions: readonly SeqSpan[]): void {
   touch(regions, sessionId, ageRegions.map((ageRegion) => ({ start: ageRegion.start, end: ageRegion.end })))
-  if (skips.has(sessionId)) {
-    touch(skips, sessionId, skips.get(sessionId)!)
+  // A changed age-region COUNT invalidates the slot identities: "region 3 of 6"
+  // and "region 3 of 9" are different slices of the surface, so carrying the
+  // counters across would silently re-label old choices. Reset instead — the
+  // config change is a deliberate operator action, not drift.
+  const current = skips.get(sessionId)
+  if (current !== undefined) {
+    touch(skips, sessionId, ageRegions.map((_, index) => (current.length === ageRegions.length ? current[index]! : 0)))
     return
   }
   // First sight of this session in this process: seed from the sidecar (a
-  // restart must not wipe the day's choices), padded/trimmed to this build's
-  // age region count.
-  touch(skips, sessionId, ageRegions.map((_, index) => persistedSkips(sessionId)?.[index] ?? 0))
+  // restart must not wipe the day's choices). Same count rule as above: a
+  // sidecar written under a different region count starts from zeros.
+  const persisted = persistedSkips(sessionId)
+  touch(skips, sessionId, ageRegions.map((_, index) => (persisted?.length === ageRegions.length ? persisted[index]! : 0)))
 }
 
 /**

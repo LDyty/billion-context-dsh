@@ -21,6 +21,8 @@ export interface NudgeEnvironment extends KernelConfigInput {
     readonly prompts?: ResolvedPrompts;
     /** Cache-miss ÷ cache-hit price ratio (see AcpConfig.cacheMissPriceRatio). */
     readonly cacheMissPriceRatio?: number;
+    /** Equal-weight age regions the range table is cut into (engine default 6). */
+    readonly ageRegions?: number;
 }
 export interface NudgeOutcome {
     readonly message: UserMessage;
@@ -62,7 +64,7 @@ export declare function hasActionableTarget(session: import('@deepseek-ai/dsh-se
  * same vocabulary as the nudge table.
  */
 export declare function meterMediaPriceResolver(agent: Agent, session: import('@deepseek-ai/dsh-session').Session): MediaPriceOf;
-/** Age regions the offerable list is cut into — the six 年龄区域. */
+/** DEFAULT age regions the offerable list is cut into (engine `ageRegions` overrides). */
 export declare const RANGE_TABLE_AGE_REGIONS = 6;
 /**
  * Rows printed PER age region (owner ruling, 2026-10-16; caliber changed to the
@@ -270,7 +272,7 @@ export declare function selectRangeTableRanges<T extends {
  * `UPSTREAM:` workaround for kernel ref-map drift; that drift is fixed upstream
  * (acp-kernel #207) and the workaround is gone (rule 11).
  */
-export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, context?: RangeTableContext): string;
+export declare function rangeTable(session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, context?: RangeTableContext, ageRegions?: number): string;
 /**
  * Compute a SURFACE-ONLY context breakdown for display, aligned with
  * `acp_status` (kernel `buildStatusReport`/`renderOverview`).
@@ -340,4 +342,4 @@ export declare function buildNudge(agent: Agent, env: NudgeEnvironment, lastNudg
  * When a host overrides any `prompts.nudge` slot, the template path is used so
  * `config.prompts` keeps full control (custom copy wins over kernel defaults).
  */
-export declare function buildNudgeText(nudge: NudgeDecision, emergency: boolean, session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, context?: RangeTableContext): string;
+export declare function buildNudgeText(nudge: NudgeDecision, emergency: boolean, session: import('@deepseek-ai/dsh-session').Session, kernelView: KernelRangeView, prompts?: ResolvedPrompts, mediaPriceOf?: MediaPriceOf, context?: RangeTableContext, ageRegions?: number): string;
