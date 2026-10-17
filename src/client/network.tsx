@@ -354,48 +354,79 @@ export function linkPath(from: NetNode, to: NetNode): string {
   return `M ${String(x1)} ${String(y1)} C ${String(x1 + dx)} ${String(y1)}, ${String(x2 + dx)} ${String(y2)}, ${String(x2)} ${String(y2)}`
 }
 
-/** Undirected lineage: drawn edges + range↔sweep membership (not drawn as hundreds of paths). */
-function lineageOf(id: string, layout: NetLayout, snapshot: AcpInspectSnapshot): { nodes: Set<string>; edges: Set<string> } {
-  const adjacency = new Map<string, Set<string>>()
-  const link = (a: string, b: string): void => {
-    const set = adjacency.get(a) ?? new Set<string>()
-    set.add(b)
-    adjacency.set(a, set)
-  }
-  for (const edge of layout.edges) {
-    link(edge.from, edge.to)
-    link(edge.to, edge.from)
-  }
+/**
+ * Semantic lineage (DIRECTED, not a blind BFS). A sweep is a hub: an undirected
+ * walk from a region/range through it lit up every range of every sweep, which
+ * is exactly the "wrong content highlighted" bug. Each node kind now expands
+ * only along its own meaning:
+ *
+ *   region → its ranges → their blocks / their base sweeps
+ *   range  → its region, its blocks (+ parents), its base sweep
+ *   sweep  → the ranges it covers and their regions
+ *   block  → its range, its region, parent/child blocks
+ */
+export function lineageOf(id: string, layout: NetLayout): { nodes: Set<string>; edges: Set<string> } {
+  const byId = new Map(layout.nodes.map((node) => [node.id, node]))
+  const focus = byId.get(id)
+  if (focus === undefined) return { nodes: new Set([id]), edges: new Set() }
+  const outgoing = (from: string, kind: NetEdge['kind']): string[] =>
+    layout.edges.filter((edge) => edge.from === from && edge.kind === kind).map((edge) => edge.to)
+  const incoming = (to: string, kind: NetEdge['kind']): string[] =>
+    layout.edges.filter((edge) => edge.to === to && edge.kind === kind).map((edge) => edge.from)
+  const nodes = new Set<string>([id])
+  const add = (...ids: string[]): void => { for (const entry of ids) nodes.add(entry) }
+
   const rangeByKey = new Map<string, string>()
   for (const node of layout.nodes) {
     if (node.kind === 'range' && node.span !== undefined) rangeByKey.set(rangeId(node.span.start, node.span.end), node.id)
   }
-  for (const node of layout.nodes) {
-    if (node.kind !== 'sweep' || node.sweep === undefined) continue
-    for (const span of node.sweep.spans) {
-      const target = rangeByKey.get(rangeId(span.start, span.end))
-      if (target === undefined) continue
-      link(node.id, target)
-      link(target, node.id)
+
+  if (focus.kind === 'region') {
+    for (const range of outgoing(id, 'owns')) {
+      add(range)
+      add(...outgoing(range, 'covers'))
+      add(...outgoing(range, 'sweep'))
     }
-  }
-  const nodes = new Set<string>([id])
-  const edges = new Set<string>()
-  let frontier = [id]
-  for (let depth = 0; depth < 3; depth += 1) {
-    const next: string[] = []
-    for (const current of frontier) {
-      for (const peer of adjacency.get(current) ?? []) {
-        if (nodes.has(peer)) continue
-        nodes.add(peer)
-        next.push(peer)
+  } else if (focus.kind === 'range') {
+    add(...incoming(id, 'owns'))
+    for (const block of outgoing(id, 'covers')) {
+      add(block)
+      add(...outgoing(block, 'parent'))
+    }
+    // Only the sweep that STARTS here; earlier sweeps that merely include this
+    // range are not this range's lineage.
+    add(...outgoing(id, 'sweep'))
+  } else if (focus.kind === 'sweep' && focus.sweep !== undefined) {
+    for (const span of focus.sweep.spans) {
+      const range = rangeByKey.get(rangeId(span.start, span.end))
+      if (range === undefined) continue
+      add(range)
+      add(...incoming(range, 'owns'))
+    }
+    add(...incoming(id, 'sweep'))
+  } else if (focus.kind === 'block') {
+    const ranges = incoming(id, 'covers')
+    add(...ranges)
+    for (const range of ranges) add(...incoming(range, 'owns'))
+    let frontier = [id]
+    for (let depth = 0; depth < 3; depth += 1) {
+      const next: string[] = []
+      for (const current of frontier) {
+        for (const peer of [...outgoing(current, 'parent'), ...incoming(current, 'parent')]) {
+          if (nodes.has(peer)) continue
+          nodes.add(peer)
+          next.push(peer)
+        }
       }
+      frontier = next
     }
-    frontier = next
   }
-  for (const edge of layout.edges) {
-    if (nodes.has(edge.from) && nodes.has(edge.to)) edges.add(edge.id)
-  }
+
+  const edges = new Set(
+    layout.edges
+      .filter((edge) => nodes.has(edge.from) && nodes.has(edge.to))
+      .map((edge) => edge.id),
+  )
   return { nodes, edges }
 }
 
@@ -500,8 +531,8 @@ export function CompressionNetwork(props: {
   const [lod, setLod] = useState<Lod>(initialView.z < 0.42 ? 'far' : initialView.z < 1.1 ? 'mid' : 'near')
   const focusId = pinnedId ?? hoverId
   const lineage = useMemo(
-    () => (focusId === null ? undefined : lineageOf(focusId, layout, snapshot)),
-    [focusId, layout, snapshot],
+    () => (focusId === null ? undefined : lineageOf(focusId, layout)),
+    [focusId, layout],
   )
   const placed = useMemo(
     () => layout.nodes.map((node) => ({ ...node, ...(moved[node.id] ?? {}) })),

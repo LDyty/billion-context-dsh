@@ -70,6 +70,21 @@ export declare function buildLayout(snapshot: AcpInspectSnapshot): NetLayout;
 export declare function applyStableBlockSlots(layout: NetLayout, slots: Map<string, BlockSlot>): NetLayout;
 /** Forward, backward (tier parent to an earlier tier) or same-column links. */
 export declare function linkPath(from: NetNode, to: NetNode): string;
+/**
+ * Semantic lineage (DIRECTED, not a blind BFS). A sweep is a hub: an undirected
+ * walk from a region/range through it lit up every range of every sweep, which
+ * is exactly the "wrong content highlighted" bug. Each node kind now expands
+ * only along its own meaning:
+ *
+ *   region → its ranges → their blocks / their base sweeps
+ *   range  → its region, its blocks (+ parents), its base sweep
+ *   sweep  → the ranges it covers and their regions
+ *   block  → its range, its region, parent/child blocks
+ */
+export declare function lineageOf(id: string, layout: NetLayout): {
+    nodes: Set<string>;
+    edges: Set<string>;
+};
 export declare function CompressionNetwork(props: {
     snapshot: AcpInspectSnapshot;
     sessionId: string;

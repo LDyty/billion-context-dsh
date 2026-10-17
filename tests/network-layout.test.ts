@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyStableBlockSlots, buildLayout, linkPath, type BlockSlot, type NetNode } from '../src/client/network.tsx'
+import { applyStableBlockSlots, buildLayout, lineageOf, linkPath, type BlockSlot, type NetNode } from '../src/client/network.tsx'
 import type { AcpInspectSnapshot } from '../src/inspect-types.ts'
 
 const row = (start: number, end: number, region: number) => ({
@@ -133,4 +133,29 @@ test('network layout: recommended and complement ranges sit in separate bands', 
   assert.equal(recommended?.variant, 'recommended')
   assert.equal(complement?.variant, 'complement')
   assert.ok((complement?.x ?? 0) > (recommended?.x ?? 0), 'the complement band sits beside the recommendation band')
+})
+
+test('network lineage: a region/range does not fan out to other ranges through a shared sweep', () => {
+  const snapshot = {
+    rows: [row(1, 2, 1), row(5, 6, 2)],
+    sweeps: [{ ...sweep(1), spans: [{ start: 1, end: 2 }, { start: 5, end: 6 }] }],
+    complement: undefined,
+    regions: [
+      { region: 1, start: 1, end: 2, tokens: 100, ranges: 1 },
+      { region: 2, start: 5, end: 6, tokens: 100, ranges: 1 },
+    ],
+    blocks: [block('one', 1, 1, 2), block('two', 1, 5, 6)],
+    map: [],
+  } as unknown as AcpInspectSnapshot
+  const layout = buildLayout(snapshot)
+  const region = lineageOf('r:1', layout).nodes
+  assert.ok(region.has('g:1:2'), 'the region keeps its own range')
+  assert.ok(region.has('s:1'), 'and the sweep that starts there')
+  assert.ok(!region.has('g:5:6'), 'but not the other range of that sweep')
+  assert.ok(!region.has('r:2'), 'and not the other region')
+  const range = lineageOf('g:1:2', layout).nodes
+  assert.ok(range.has('r:1') && range.has('s:1'))
+  assert.ok(!range.has('g:5:6'), 'a range does not fan out through its sweep')
+  const sweepLineage = lineageOf('s:1', layout).nodes
+  assert.ok(sweepLineage.has('g:1:2') && sweepLineage.has('g:5:6'), 'a sweep DOES show every range it covers')
 })
