@@ -817,7 +817,7 @@ export function CompressionNetwork(props: {
             return h('div', {
               key: node.id,
               'data-net-node': node.id,
-              className: `acp-net-node acp-net-${node.kind}${node.block === undefined ? '' : ` acp-net-tier-${String(node.block.tier)}`}${on ? ' on' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
+              className: `acp-net-node acp-net-${node.kind}${node.block === undefined ? '' : ` acp-net-tier-${String(node.block.tier)}`}${on ? ' on' : ''}${node.id === focusId ? ' focus' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
               style: { left: `${String(node.x)}px`, top: `${String(node.y)}px`, width: `${String(node.w)}px`, height: `${String(node.h)}px` },
               onPointerEnter: () => setHoverId(node.id),
               onPointerLeave: () => setHoverId((current) => (current === node.id ? null : current)),
