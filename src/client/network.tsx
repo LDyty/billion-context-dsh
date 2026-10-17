@@ -349,6 +349,12 @@ export function CompressionNetwork(props: {
   )
   const placed = useMemo(() => layout.nodes.map((node) => ({ ...node, ...(moved[node.id] ?? {}) })), [layout, moved])
   const byId = useMemo(() => new Map(placed.map((node) => [node.id, node])), [placed])
+  // A compression can remove the hovered/pinned node; keeping the focus id would
+  // leave `has-focus` on with no lineage, dimming the whole refreshed canvas.
+  useEffect(() => {
+    if (hoverId !== null && !byId.has(hoverId)) setHoverId(null)
+    if (pinnedId !== null && !byId.has(pinnedId)) setPinnedId(null)
+  }, [byId, hoverId, pinnedId])
 
   const overlayRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
@@ -357,6 +363,8 @@ export function CompressionNetwork(props: {
   const miniRectRef = useRef<HTMLDivElement>(null)
   const zoomRef = useRef<HTMLSpanElement>(null)
   const viewRef = useRef(initialView)
+  /** True once the reader pans/zooms manually; auto-fit then stops following. */
+  const userViewRef = useRef(false)
   const lodRef = useRef<Lod>(initialView.z < 0.42 ? 'far' : initialView.z < 1.1 ? 'mid' : 'near')
   const saveTimer = useRef<number | undefined>(undefined)
   const storageKey = `acp-net:${sessionId}`
@@ -399,6 +407,7 @@ export function CompressionNetwork(props: {
   }, [layout.height, layout.width, persist])
 
   const fit = useCallback(() => {
+    userViewRef.current = false
     const stage = stageRef.current
     if (stage === null) return
     const width = stage.clientWidth
@@ -412,6 +421,14 @@ export function CompressionNetwork(props: {
     apply()
   }, [apply, layout.height, layout.width])
 
+  // The panel polls the inspect route every 5s; a compression changes the canvas
+  // dimensions. A passive reader follows the new graph (auto-fit); a reader who
+  // has panned/zoomed keeps their viewport and only the grid/minimap re-pin.
+  useEffect(() => {
+    if (userViewRef.current) apply()
+    else fit()
+  }, [apply, fit])
+
   const zoomBy = useCallback((factor: number) => {
     const stage = stageRef.current
     if (stage === null) return
@@ -419,6 +436,7 @@ export function CompressionNetwork(props: {
     const cx = stage.clientWidth / 2
     const cy = stage.clientHeight / 2
     const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.z * factor))
+    userViewRef.current = true
     const k = z / view.z
     viewRef.current = { x: cx - (cx - view.x) * k, y: cy - (cy - view.y) * k, z }
     apply()
@@ -444,6 +462,7 @@ export function CompressionNetwork(props: {
     const frame = requestAnimationFrame(() => {
       if (saved?.view !== undefined && Number.isFinite(saved.view.z) && saved.view.z > 0) {
         viewRef.current = saved.view
+        userViewRef.current = true
         apply()
       } else {
         fit()
@@ -466,6 +485,7 @@ export function CompressionNetwork(props: {
       const cy = event.clientY - rect.top
       const view = viewRef.current
       const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.z * Math.exp(-event.deltaY * 0.0014)))
+      userViewRef.current = true
       const k = z / view.z
       viewRef.current = { x: cx - (cx - view.x) * k, y: cy - (cy - view.y) * k, z }
       apply()
@@ -491,11 +511,15 @@ export function CompressionNetwork(props: {
       }
       return
     }
-    const target = (event.target as Element).closest('[data-net-node]')
+    const target = (event.target as Element).closest<HTMLElement>('[data-net-node]')
     if (target !== null) {
       const id = target.getAttribute('data-net-node')
       const node = id === null ? undefined : byId.get(id)
       if (node === undefined) return
+      // A previous drop may have left its drag-preview transform on the DOM node
+      // (React does not own `style.transform` here). Clear it before measuring,
+      // or the next drag starts from a doubled offset.
+      target.style.transform = ''
       dragRef.current = { pointer: event.pointerId, id: node.id, x: event.clientX, y: event.clientY, nx: node.x, ny: node.y, moved: false }
     } else {
       panRef.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY, vx: viewRef.current.x, vy: viewRef.current.y }
@@ -519,6 +543,7 @@ export function CompressionNetwork(props: {
       const k = z / view.z
       const mx = ((a?.x ?? 0) + (b?.x ?? 0)) / 2
       const my = ((a?.y ?? 0) + (b?.y ?? 0)) / 2
+      userViewRef.current = true
       viewRef.current = { x: mx - (mx - view.x) * k, y: my - (my - view.y) * k, z }
       apply()
       return
@@ -535,6 +560,7 @@ export function CompressionNetwork(props: {
     }
     const pan = panRef.current
     if (pan !== null) {
+      userViewRef.current = true
       viewRef.current = {
         ...viewRef.current,
         x: pan.vx + (event.clientX - pan.x),
@@ -554,9 +580,16 @@ export function CompressionNetwork(props: {
       if (drag.moved) {
         const next = { ...movedRef.current, [drag.id]: { x: drag.nx + dx, y: drag.ny + dy } }
         movedRef.current = next
+        // CRITICAL: drop the drag-preview translate BEFORE the committed left/top
+        // lands. Otherwise the node renders at left/top + translate(dx,dy) and
+        // visibly teleports on release.
+        const element = stageRef.current?.querySelector<HTMLElement>(`[data-net-node="${drag.id}"]`)
+        if (element !== null && element !== undefined) element.style.transform = ''
         setMoved(next)
         persist(next)
       } else {
+        const element = stageRef.current?.querySelector<HTMLElement>(`[data-net-node="${drag.id}"]`)
+        if (element !== null && element !== undefined) element.style.transform = ''
         setPinnedId((current) => (current === drag.id ? null : drag.id))
       }
       dragRef.current = null
@@ -599,6 +632,7 @@ export function CompressionNetwork(props: {
     const worldX = (event.clientX - mini.left - 5) / scale
     const worldY = (event.clientY - mini.top - 5) / scale
     const view = viewRef.current
+    userViewRef.current = true
     viewRef.current = {
       ...view,
       x: stage.clientWidth / 2 - worldX * view.z,
@@ -609,6 +643,9 @@ export function CompressionNetwork(props: {
 
   const activeNode = focusId === null ? undefined : byId.get(focusId)
   const miniScale = Math.min(150 / layout.width, 104 / layout.height)
+  const captured = snapshot.capturedAt > 0
+    ? new Date(snapshot.capturedAt).toLocaleTimeString('zh-CN', { hour12: false })
+    : '—'
   const overlay = h('div', { className: 'acp-net-overlay', ref: overlayRef, role: 'dialog', 'aria-label': '压缩网络' },
     h('div', { className: 'acp-net-shell' },
       h('header', { className: 'acp-net-toolbar' },
@@ -694,7 +731,7 @@ export function CompressionNetwork(props: {
           h('div', { className: 'acp-net-mini-rect', ref: miniRectRef })),
         h('div', { className: 'acp-net-status' },
           h('span', { ref: zoomRef }, `${String(Math.round(initialView.z * 100))}%`),
-          h('span', null, ` · ${String(placed.length)} 节点 · ${String(layout.edges.length)} 连线`))),
+          h('span', null, ` · ${String(placed.length)} 节点 · ${String(layout.edges.length)} 连线 · 快照 ${captured}`))),
         h('aside', { className: 'acp-net-side' },
           h(Inspector, { snapshot, node: activeNode, pinned: pinnedId !== null && pinnedId === focusId })))),
   )
