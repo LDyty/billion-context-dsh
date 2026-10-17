@@ -121,49 +121,12 @@ export declare const compressParameters: {
     };
 };
 /**
- * How small a folded span has to be before its summary may go UNDER the kernel
- * floor (owner rule, 2026-10-16). A few hundred tokens of junk have nothing to
- * be substantive about, and padding them into 50+ characters is filler the
- * model then has to read back.
- */
-export declare const SHORT_SPAN_SUMMARY_TOKENS = 500;
-/**
- * The summary floor is the HOST's rule, and it is per ENTRY — not per call and
- * not per marker (the 2026-10-16 owner ruling replaced the `(discarded)` /
- * whole-call-waiver shape):
- *
- *  - a fold of a small span may carry a genuinely short summary;
- *  - a fold of a large span still owes a real one, whatever else the call folds
- *    (mixing junk with real content must not force filler on the junk, and must
- *    not let the real content off either);
- *  - a block-ref fold (tier 2/3 distillation) ALWAYS owes the floor: its input
- *    is already a summary, so it is the one place where a stub would break the
- *    tier chain that carries information upward.
- *
- * The kernel reads `minSummaryLength` per call, so `handleCompress` hands it 0
- * and applies this policy itself, refusing an entry with the kernel's own
- * message shape when it is too short.
- *
- * @param session - the session being folded.
- * @param range - the accepted range, with its surface edges and refs.
- * @param floor - the configured floor (`config.compress.minSummaryLength`).
- * @returns `undefined` when the entry may fold, otherwise the refusal note.
- */
-export declare function summaryFloorRefusal(session: Session, range: {
-    start: number;
-    end: number;
-    startSeq: number;
-    endSeq: number;
-    summary: string;
-}, floor: number): string | undefined;
-/**
  * ONE summary, MANY blocks (owner ruling, 2026-10-17): a sweep expands one entry
  * into N spans and a carrier split turns one entry into N runs, so the FULL text
- * lands on the FIRST surviving block and the rest carry a pointer a reader can
- * follow. MUST run AFTER the summary floor: the group is built from the entries
- * that will actually land, so (a) a refused head can never leave tail pointers
- * aimed at a block that does not exist, and (b) numbering restarts at the first
- * survivor (`part 2/M`), not at the model's original entry order.
+ * lands on the FIRST block of the group and the rest carry a pointer a reader
+ * can follow. Host-floor removal (owner ruling, 2026-10-17): length is the
+ * model's call now — the only hard gate is the items-level non-empty check — so
+ * numbering is over every accepted range.
  */
 export declare function applySharedSummaryPointers<T extends {
     summary: string;

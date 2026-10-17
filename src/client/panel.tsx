@@ -279,7 +279,7 @@ export function RangeTable(props: { snapshot: AcpInspectSnapshot }): ReactElemen
           // one remembered build, never a second opinion.
           title: sweep === undefined
             ? '这一行后面没有可加的区间'
-            : `sweep（清扫）：${String(sweep.entries)} 个区间 → ${String(sweep.messages)} 条消息折叠成 ${String(sweep.entries)} 份摘要 · `
+            : `sweep（清扫）：${String(sweep.entries)} 个区间 → ${String(sweep.messages)} 条消息折叠成 1 份共享摘要 · `
               + `回收 ~${compact(sweep.reclaims)} token（词元）· 行构成 ${mixLabel(sweep.rowCounts)} · `
               + `字符三档 tool（工具）${String(sweep.toolPct)}% · reasoning（推理）${String(sweep.reasoningPct)}% · text（正文）${String(sweep.textPct)}% · `
               + `作废 ~${compact(sweep.invalidates)} token（词元）（这一批折叠会让下一发请求重发这么多 prefix（前缀））· `

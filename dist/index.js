@@ -8868,7 +8868,10 @@ function rangeTable(session, kernelView, prompts = DEFAULT_RESOLVED, mediaPriceO
     });
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       count: proposal.entries.length,
-      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
+      // ONE shared summary since de6d00a: the parts after the first carry a
+      // pointer, so "N summaries to write" told the model to do N times the work
+      // the API asks for (and contradicted the compress schema's single field).
+      coverage: `${messages} messages \xB7 ${proposal.entries.length} spans \xB7 1 shared summary`,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       newer: `${compactTokens(Math.max(0, proposal.invalidatedTokens - proposal.reclaimedTokens))} tok`,
       // Legacy placeholder for custom templates: the whole moved prefix.
@@ -9356,7 +9359,6 @@ function parseSeq(value) {
   }
   return seq;
 }
-var SHORT_SPAN_SUMMARY_TOKENS = 500;
 function snapSharedSummarySpan(session, start, end) {
   const startRef = blockRefForSummarySeq(session, start);
   const endRef = blockRefForSummarySeq(session, end);
@@ -9388,23 +9390,6 @@ function snapSharedSummarySpan(session, start, end) {
     range,
     note: `  distillation ${String(startRef ?? start)}..${String(endRef ?? end)} lies inside a shared-summary group \u2014 widened to ${refOf(head.blockId)}..${refOf(tail.blockId)} so the full summary text is inside the distilled span`
   };
-}
-function foldedSpanTokens(session, start, end) {
-  let total = 0;
-  for (let seq = start; seq <= end; seq += 1) {
-    const event = eventAtOf(session, seq);
-    if (event !== void 0) total += hostPriceEvent(event);
-  }
-  return total;
-}
-function summaryFloorRefusal(session, range, floor) {
-  if (floor <= 0) return void 0;
-  const distilled = blockRefForSummarySeq(session, range.start) !== null || blockRefForSummarySeq(session, range.end) !== null;
-  const tokens = foldedSpanTokens(session, range.start, range.end);
-  const length = range.summary.trim().length;
-  const bound = distilled || tokens > SHORT_SPAN_SUMMARY_TOKENS;
-  if (!bound || length >= floor) return void 0;
-  return `  seqs ${String(range.startSeq)}..${String(range.endSeq)} skipped \u2014 Summary too short (${String(length)} chars, min ${String(floor)}). ${distilled ? "A block-ref distillation" : `This span is ~${String(tokens)} tokens`} needs a real summary; only spans under ~${String(SHORT_SPAN_SUMMARY_TOKENS)} tokens may fold with a shorter one.`;
 }
 function applySharedSummaryPointers(ranges) {
   const groupsOfEntry = /* @__PURE__ */ new Map();
@@ -9787,24 +9772,16 @@ async function handleCompress(env, args, exec) {
       ...(range.topic ?? args.topic) === void 0 ? {} : { topic: range.topic ?? args.topic }
     });
   }
-  const floorNotes = [];
-  const foldable = ranges.filter((range) => {
-    const refusal = summaryFloorRefusal(session, range, config.compress.minSummaryLength);
-    if (refusal === void 0) return true;
-    floorNotes.push(refusal);
-    return false;
-  });
+  const foldable = ranges;
   applySharedSummaryPointers(foldable);
   if (foldable.length === 0) {
-    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...sweepNotes, ...sharedGroupNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes];
+    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...sweepNotes, ...sharedGroupNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes];
     if (alreadyCompressedNotes.length > 0) {
       text.push("  (all requested ranges were already compressed \u2014 decompress a block to recover its originals)");
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
       text.push("  (nothing compressed \u2014 every range resolved to a span an earlier range in this call already covers)");
     } else if (rejectedNotes.length > 0) {
       text.push("  (nothing compressed \u2014 every range covered a current guarded row, an injected policy row or the active user turn; see the rejections above)");
-    } else if (floorNotes.length > 0) {
-      text.push("  (nothing compressed \u2014 every range was too big to fold as a stub; give those spans a real summary)");
     }
     return { text: text.join("\n") };
   }
@@ -9813,9 +9790,9 @@ async function handleCompress(env, args, exec) {
     messages: coreMessages,
     state: turn.state,
     // Two per-CALL kernel knobs are switched off here because this host owns
-    // both decisions, per entry:
-    //  - `minSummaryLength`: `summaryFloorRefusal` already refused the entries
-    //    that owe a real summary, and a small span may be one sentence.
+    // both decisions:
+    //  - `minSummaryLength`: length is the model's call (owner ruling,
+    //    2026-10-17); the items-level gate still refuses a missing/blank one.
     //  - `minCompressRange` (owner ruling, 2026-10-16): the model reads the fold
     //    cost — rewrites and payback — on every row it is offered, so a small
     //    fold is its call to make, not a blanket threshold's. The kernel's own
@@ -9921,7 +9898,7 @@ async function handleCompress(env, args, exec) {
     env.store.set(session, applied.state);
   }
   const summaryLine = `Compressed ${applied.result.blocksCreated} block(s), ~${applied.result.tokensCompressed} tokens reclaimed.`;
-  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length + floorNotes.length;
+  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length;
   const failedLines = applied.result.errors.map((error) => `  ${error}`);
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
@@ -9932,7 +9909,6 @@ async function handleCompress(env, args, exec) {
     ...duplicateRangeNotes,
     ...rejectedNotes,
     ...splitNotes,
-    ...floorNotes,
     ...lines
   ];
   const footer = totalSkipped > 0 ? `  (${totalSkipped} range(s) skipped or failed \u2014 see above)` : "";

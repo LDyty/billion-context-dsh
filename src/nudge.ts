@@ -628,7 +628,10 @@ export function rangeTable(
     })
     proposalOfAt.set(row.at, renderTemplate(prompts.rangeTable.batch, {
       count: proposal.entries.length,
-      coverage: `${messages} messages / ${proposal.entries.length} summaries to write`,
+      // ONE shared summary since de6d00a: the parts after the first carry a
+      // pointer, so "N summaries to write" told the model to do N times the work
+      // the API asks for (and contradicted the compress schema's single field).
+      coverage: `${messages} messages · ${proposal.entries.length} spans · 1 shared summary`,
       reclaimed: compactTokens(proposal.reclaimedTokens),
       newer: `${compactTokens(Math.max(0, proposal.invalidatedTokens - proposal.reclaimedTokens))} tok`,
       // Legacy placeholder for custom templates: the whole moved prefix.

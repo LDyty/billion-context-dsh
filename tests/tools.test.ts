@@ -149,81 +149,21 @@ test('M3: a content array that arrives as JSON text is unwrapped, not rejected',
 })
 
 /**
- * The summary floor is the HOST's rule and it is per ENTRY (owner ruling,
- * 2026-10-16): the kernel takes `minSummaryLength` per call, so a call that
- * mixes junk slivers with real content used to have to pick one floor for both.
- * Now the size of the span each entry folds decides — small spans may carry a
- * one-sentence honest summary, large ones (and block-ref distillations) owe a
- * real one, in the same call.
+ * No host summary-length floor (owner ruling, 2026-10-17): over 394 summaries
+ * the 50-char gate never fired (the model's own minimum was 145), so it only
+ * produced noise — and after the shared-pointer rewrite it measured the 179-char
+ * pointer on parts 2..N instead of the model's text. Length is the model's call
+ * now; the items-level gate still refuses a missing or whitespace-only summary
+ * (pinned by the L1 test below), and the originals stay recoverable.
  */
-/**
- * The fixture the per-entry floor needs: an old run of BIG messages, then a run
- * of SMALL ones (a few hundred characters — junk-sliver sized), then a tail big
- * enough to be the protected zone. The kernel protects the last 5 messages *or
- * 5000 tokens*, so the tail must be heavy in TOKENS: with light messages the
- * whole session would sit inside the protected zone and nothing could fold.
- * Layout: [turn] big 1..8 · small 9..26 · big tail 27..31.
- */
-function buildFloorFixture(): Session {
-  const session = buildTextSession(8)
-  for (let index = 0; index < 18; index += 1) {
-    const line = `Command output ${String(index).padStart(3, '0')} ${'cmd-result '.repeat(32)}`
-    if (index % 2 === 0) appendUser(session, line)
-    else appendAssistant(session, line, 1, index)
-  }
-  for (let index = 0; index < 5; index += 1) {
-    if (index % 2 === 0) appendUser(session, longText('tail', index))
-    else appendAssistant(session, longText('tail-reply', index), 1, index)
-  }
-  return session
-}
-
-test('M3: the summary floor is judged per entry by the size of the folded span', async () => {
-  // A fresh env per case: one store/kernel per session keeps the sub-cases
-  // independent (the kernel state is per session, but the tool holds the env).
-  const compressFor = (session: Session = buildTextSession(12)): { compress: ReturnType<typeof toolOf>; exec: ReturnType<typeof fakeExec> } => ({
-    compress: toolOf(makeEnv(), 'compress'),
-    exec: fakeExec(session),
-  })
-
-  // (a) A small span may fold with one short honest sentence — junk slivers have
-  // nothing to pad. ONE span, on its own: the kernel's "compressible content too
-  // small" gate is off for calls (the model reads the fold cost and decides), so
-  // a ~300-token sliver no longer needs five siblings to become foldable.
-  const small = compressFor(buildFloorFixture())
-  const smallResult = await small.compress.execute({
-    content: [{ startSeq: 9, endSeq: 11, summary: 'retry logs — nothing kept' }],
-  } as never, small.exec)
-  const smallText = discardResultText(smallResult)
-  assert.match(smallText, /Compressed 1 block/, `the short summary landed (${smallText.slice(0, 140)})`)
-  assert.doesNotMatch(smallText, /too small/, 'and no size gate stood in the way')
-
-  // (b) A LARGE span still owes the floor (~1K-token fixture messages).
-  const plain = compressFor()
-  const shortReal = await plain.compress.execute({
+test('M3: a short non-empty summary folds — length is the model\'s call', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(12)
+  const result = await toolOf(env, 'compress').execute({
     content: [{ startSeq: 1, endSeq: 5, summary: 'auth work' }],
-  } as never, plain.exec)
-  assert.match(discardResultText(shortReal), /Summary too short/, 'a lazy stub on real content is refused')
-
-  // (c) …and the two rules hold in ONE call: the junk slivers fold with one
-  // sentence each while the big span in the same call is refused for being a
-  // stub.
-  const mixed = compressFor(buildFloorFixture())
-  const mixedResult = await mixed.compress.execute({
-    content: [
-      { startSeq: 9, endSeq: 11, summary: 'retry logs — nothing kept' },
-      { startSeq: 1, endSeq: 3, summary: 'auth work' },
-    ],
-  } as never, mixed.exec)
-  const mixedText = discardResultText(mixedResult)
-  assert.match(mixedText, /Compressed 1 block/, `the sliver still folded (${mixedText.slice(0, 160)})`)
-  assert.match(mixedText, /Summary too short/, 'and the large one was refused in the same call')
+  } as never, fakeExec(session))
+  assert.match((result as { text: string }).text, /Compressed 1 block/, 'a short honest one-liner lands')
 })
-
-/** The result text, whether the handler returned text or an error payload. */
-function discardResultText(result: unknown): string {
-  return String((result as { text?: string }).text ?? '')
-}
 
 /** Append the assistant message that ISSUES a compress call, thinking included. */
 function appendCompressCall(session: Session, callId: string, thinking: string | null): void {
@@ -466,24 +406,25 @@ test('M3: a distillation edge inside a shared-summary group widens to the whole 
 })
 
 /**
- * The floor runs BEFORE the pointer rewrite (owner ruling, 2026-10-17). A short
- * summary used to be checked against the model's text on part 1 (refused) and
- * against the 179-char pointer on parts 2..N (accepted) — landing tail pointers
- * whose head never existed. Now every part is judged on the real text.
+ * No host floor means a short summary folds the whole sweep, and the group is
+ * still coherent: the first block carries the text and the rest carry pointers.
  */
-test('M3: a too-short shared summary refuses the whole group — no orphan pointer parts', async () => {
+test('M3: a short sweep summary folds every part with a coherent shared group', async () => {
   const env = makeEnv()
   const session = buildTextSession(24)
   const compress = toolOf(env, 'compress')
   const nodes = [...session.surface.nodes]
   const result = await compress.execute({
-    content: [{ startSeq: nodes[0]!, endSeq: 'sweep', summary: 'too short' }],
+    content: [{ startSeq: nodes[0]!, endSeq: 'sweep', summary: 'consumed' }],
   } as never, fakeExec(session))
   const text = (result as { text: string }).text
-  assert.match(text, /Compressed 0 block\(s\)/, `nothing lands (${text.slice(0, 160)})`)
-  assert.match(text, /Summary too short/)
-  assert.equal(rebuildBlockLedger(session.snapshotEvents()).length, 0, 'no headless pointer block survives')
-  assert.ok(!text.includes('shared summary — part'), 'no pointer text is written anywhere')
+  assert.match(text, /Compressed [2-9] block\(s\)/, `every part lands (${text.slice(0, 160)})`)
+  const ledger = rebuildBlockLedger(session.snapshotEvents())
+  assert.ok(ledger[0]!.summary.includes('consumed'), 'the head carries the short text')
+  assert.ok(
+    ledger.slice(1).every((entry) => entry.summary.includes('shared summary — part')),
+    'the tail still points at it instead of duplicating it',
+  )
 })
 
 test('M3: shared pointers are numbered over the survivors, never over the original entry order', () => {

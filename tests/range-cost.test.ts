@@ -249,7 +249,7 @@ test('sweep proposal: it runs FORWARD from its row, uncapped, and always beats t
     const rowPayback = Number(/pays back in ~([\d.]+) request/.exec(rows[index + 1] ?? '')?.[1])
     const sweepPayback = Number(/pays back in ~([\d.]+) request/.exec(rows[index + 2]!)?.[1])
     assert.ok(sweepPayback < rowPayback, `sweep beats its row (${String(sweepPayback)} < ${String(rowPayback)})`)
-    assert.match(rows[index + 2]!, /\(\d+ messages \/ \d+ summaries to write\)/, 'the sweep names its work')
+    assert.match(rows[index + 2]!, /\(\d+ messages · \d+ spans · 1 shared summary\)/, 'the sweep names its work')
     checked += 1
   }
   assert.ok(checked >= 1, 'the fixture still prints at least one sweep')

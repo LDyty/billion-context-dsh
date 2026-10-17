@@ -184,7 +184,7 @@ test('sweep: the rendered table carries one sweep per row, and keeps its claims'
       // compressing (the table's snapshot line says the seqs go stale).
       assert.ok(!/\d+\.\.\d+\(/.test(line), 'the sweep line lists no span entries')
       assert.match(line, /all \d+ spans in ONE call/, 'it names how many spans the batch holds')
-      assert.match(line, /\(\d+ messages \/ \d+ summaries to write\)/, 'the sweep states its coverage')
+      assert.match(line, /\(\d+ messages · \d+ spans · 1 shared summary\)/, 'the sweep states its coverage')
       assert.match(
         line,
         /~\S+ tok total \(\d+ (?:tool|assistant|user|other)(?: · \d+ (?:tool|assistant|user|other))*\)/,

@@ -227,14 +227,6 @@ function parseSeq(value: number | string): number {
 }
 
 /**
- * How small a folded span has to be before its summary may go UNDER the kernel
- * floor (owner rule, 2026-10-16). A few hundred tokens of junk have nothing to
- * be substantive about, and padding them into 50+ characters is filler the
- * model then has to read back.
- */
-export const SHORT_SPAN_SUMMARY_TOKENS = 500
-
-/**
  * A sweep stores ONE summary on its first block and a `part k/N` pointer on the
  * rest (de6d00a). That is a storage optimisation, not content: distilling a
  * SUB-range of such a group would hand the model 14 pointers and no text, and a
@@ -282,66 +274,12 @@ function snapSharedSummarySpan(
 }
 
 /**
- * The host price of one folded span: every surface event between its edges,
- * inclusive. This is the size the summary floor is judged against.
- */
-function foldedSpanTokens(session: Session, start: number, end: number): number {
-  let total = 0
-  for (let seq = start; seq <= end; seq += 1) {
-    const event = eventAtOf(session, seq)
-    if (event !== undefined) total += hostPriceEvent(event)
-  }
-  return total
-}
-
-/**
- * The summary floor is the HOST's rule, and it is per ENTRY — not per call and
- * not per marker (the 2026-10-16 owner ruling replaced the `(discarded)` /
- * whole-call-waiver shape):
- *
- *  - a fold of a small span may carry a genuinely short summary;
- *  - a fold of a large span still owes a real one, whatever else the call folds
- *    (mixing junk with real content must not force filler on the junk, and must
- *    not let the real content off either);
- *  - a block-ref fold (tier 2/3 distillation) ALWAYS owes the floor: its input
- *    is already a summary, so it is the one place where a stub would break the
- *    tier chain that carries information upward.
- *
- * The kernel reads `minSummaryLength` per call, so `handleCompress` hands it 0
- * and applies this policy itself, refusing an entry with the kernel's own
- * message shape when it is too short.
- *
- * @param session - the session being folded.
- * @param range - the accepted range, with its surface edges and refs.
- * @param floor - the configured floor (`config.compress.minSummaryLength`).
- * @returns `undefined` when the entry may fold, otherwise the refusal note.
- */
-export function summaryFloorRefusal(
-  session: Session,
-  range: { start: number; end: number; startSeq: number; endSeq: number; summary: string },
-  floor: number,
-): string | undefined {
-  if (floor <= 0) return undefined
-  // `blockRefForSummarySeq` returns `null` (not undefined) for a plain message.
-  const distilled = blockRefForSummarySeq(session, range.start) !== null
-    || blockRefForSummarySeq(session, range.end) !== null
-  const tokens = foldedSpanTokens(session, range.start, range.end)
-  const length = range.summary.trim().length
-  const bound = distilled || tokens > SHORT_SPAN_SUMMARY_TOKENS
-  if (!bound || length >= floor) return undefined
-  return `  seqs ${String(range.startSeq)}..${String(range.endSeq)} skipped — Summary too short (${String(length)} chars, min ${String(floor)}). `
-    + `${distilled ? 'A block-ref distillation' : `This span is ~${String(tokens)} tokens`} needs a real summary; `
-    + `only spans under ~${String(SHORT_SPAN_SUMMARY_TOKENS)} tokens may fold with a shorter one.`
-}
-
-/**
  * ONE summary, MANY blocks (owner ruling, 2026-10-17): a sweep expands one entry
  * into N spans and a carrier split turns one entry into N runs, so the FULL text
- * lands on the FIRST surviving block and the rest carry a pointer a reader can
- * follow. MUST run AFTER the summary floor: the group is built from the entries
- * that will actually land, so (a) a refused head can never leave tail pointers
- * aimed at a block that does not exist, and (b) numbering restarts at the first
- * survivor (`part 2/M`), not at the model's original entry order.
+ * lands on the FIRST block of the group and the rest carry a pointer a reader
+ * can follow. Host-floor removal (owner ruling, 2026-10-17): length is the
+ * model's call now — the only hard gate is the items-level non-empty check — so
+ * numbering is over every accepted range.
  */
 export function applySharedSummaryPointers<T extends { summary: string; sharedSummaryKey?: number }>(
   ranges: readonly T[],
@@ -1161,37 +1099,24 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     })
   }
 
-  // The summary floor, applied ENTRY BY ENTRY (see summaryFloorRefusal): this is
-  // the one thing the kernel cannot do, because it takes the floor per call —
-  // so a call that mixes junk slivers with real content waives it for the small
-  // spans and keeps it for the large ones, exactly as written.
-  //
-  // BEFORE the shared-pointer rewrite (owner ruling, 2026-10-17): parts 2..N are
-  // 179-char boilerplate, so checking them after the rewrite measured the pointer
-  // instead of the model's text — with a raised floor the head was refused while
-  // its tail "passed", leaving pointers aimed at a block that never landed.
-  const floorNotes: string[] = []
-  const foldable = ranges.filter((range) => {
-    const refusal = summaryFloorRefusal(session, range, config.compress.minSummaryLength)
-    if (refusal === undefined) return true
-    floorNotes.push(refusal)
-    return false
-  })
-  // Number the SURVIVORS: full text on the first one that will actually land.
+  // No host summary-length floor (owner ruling, 2026-10-17): measured over 394
+  // summaries the 50-char gate never fired (the model's own minimum was 145),
+  // and every false positive it ever produced was noise. The hard gate that
+  // remains is the items-level non-empty check in validateContentItems.
+  const foldable = ranges
+  // Full text on the first block of the group, pointers on the rest.
   applySharedSummaryPointers(foldable)
 
   // Nothing to do: every requested range was already compressed, rejected, or
   // a duplicate of an earlier range in the same call.
   if (foldable.length === 0) {
-    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...sweepNotes, ...sharedGroupNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes]
+    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...sweepNotes, ...sharedGroupNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes]
     if (alreadyCompressedNotes.length > 0) {
       text.push('  (all requested ranges were already compressed — decompress a block to recover its originals)')
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
       text.push('  (nothing compressed — every range resolved to a span an earlier range in this call already covers)')
     } else if (rejectedNotes.length > 0) {
       text.push('  (nothing compressed — every range covered a current guarded row, an injected policy row or the active user turn; see the rejections above)')
-    } else if (floorNotes.length > 0) {
-      text.push('  (nothing compressed — every range was too big to fold as a stub; give those spans a real summary)')
     }
     return { text: text.join('\n') }
   }
@@ -1201,9 +1126,9 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     messages: coreMessages,
     state: turn.state,
     // Two per-CALL kernel knobs are switched off here because this host owns
-    // both decisions, per entry:
-    //  - `minSummaryLength`: `summaryFloorRefusal` already refused the entries
-    //    that owe a real summary, and a small span may be one sentence.
+    // both decisions:
+    //  - `minSummaryLength`: length is the model's call (owner ruling,
+    //    2026-10-17); the items-level gate still refuses a missing/blank one.
     //  - `minCompressRange` (owner ruling, 2026-10-16): the model reads the fold
     //    cost — rewrites and payback — on every row it is offered, so a small
     //    fold is its call to make, not a blanket threshold's. The kernel's own
@@ -1368,7 +1293,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   }
 
   const summaryLine = `Compressed ${applied.result.blocksCreated} block(s), ~${applied.result.tokensCompressed} tokens reclaimed.`
-  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length + floorNotes.length
+  const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length
   const failedLines = applied.result.errors.map((error) => `  ${error}`)
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
@@ -1379,7 +1304,6 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     ...duplicateRangeNotes,
     ...rejectedNotes,
     ...splitNotes,
-    ...floorNotes,
     ...lines,
   ]
   const footer = totalSkipped > 0
