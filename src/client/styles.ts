@@ -168,6 +168,12 @@ export const ACP_PANEL_CSS = `
 .acp-net-node-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .acp-net-node-line .acp-net-node-title { flex: 1 1 auto; min-width: 0; }
 .acp-net-node-amount { flex: none; white-space: nowrap; }
+.acp-net-node-picks { display: flex; gap: 3px; margin-top: 1px; }
+.acp-net-node-badge { display: inline-block; margin-top: 2px; font-size: 8.5px; line-height: 1.45; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, currentColor 12%, transparent); opacity: .82; }
+.acp-net-pick { font-style: normal; font-size: 8px; line-height: 1.45; padding: 0 4px; border-radius: 999px; white-space: nowrap; }
+.acp-net-pick-cheapest { color: #9dc7ff; background: color-mix(in srgb, #6aa9ff 18%, transparent); }
+.acp-net-pick-largest { color: #a6e3c2; background: color-mix(in srgb, #7fd1a6 18%, transparent); }
+.acp-net-pick-oldest { color: #ffe0a0; background: color-mix(in srgb, #ffd166 18%, transparent); }
 .acp-net-node-bar { display: flex; height: 4px; margin-top: 3px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, currentColor 12%, transparent); }
 .acp-net-node-bar i { display: block; height: 100%; }
 .acp-net-seg-tool { background: #6aa9ff; opacity: .8; }
@@ -179,6 +185,8 @@ export const ACP_PANEL_CSS = `
 /* Semantic zoom: far = structure only, mid = labels, near = full detail. */
 .acp-net-layer[data-lod="far"] .acp-net-node-title,
 .acp-net-layer[data-lod="far"] .acp-net-node-sub,
+.acp-net-layer[data-lod="far"] .acp-net-node-picks,
+.acp-net-layer[data-lod="far"] .acp-net-node-badge,
 .acp-net-layer[data-lod="far"] .acp-net-node-bar { display: none; }
 .acp-net-layer[data-lod="far"] .acp-net-region .acp-net-node-title { display: block; }
 .acp-net-layer[data-lod="far"] .acp-net-node { border-radius: 3px; }

@@ -183,3 +183,16 @@ test('layout audit: overlap, out-of-canvas and parent-edge crossing are counted'
   assert.ok(audit.through >= 1, 'the parent edge crosses b')
   assert.ok(audit.outside >= 1, 'the node beyond the canvas height is reported')
 })
+
+test('network layout: age-region nodes carry the skipped count', () => {
+  const snapshot = {
+    rows: [{ ...row(1, 2, 1), skipped: 5 }],
+    sweeps: [],
+    complement: undefined,
+    regions: [{ region: 1, start: 1, end: 2, tokens: 100, ranges: 1 }],
+    blocks: [],
+    map: [],
+  } as unknown as AcpInspectSnapshot
+  const region = buildLayout(snapshot).nodes.find((node) => node.kind === 'region')
+  assert.equal(region?.skipped, 5, 'the network shows the same 被跳过 count as the panel')
+})

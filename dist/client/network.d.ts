@@ -33,6 +33,10 @@ export interface NetNode {
     };
     /** Range nodes only: the printed recommendation vs the sweep complement. */
     readonly variant?: 'recommended' | 'complement';
+    /** Recommended ranges only: the role labels the nudge table printed. */
+    readonly picks?: readonly ('cheapest' | 'largest' | 'oldest')[];
+    /** Age-region nodes only: how many times the model passed this region over. */
+    readonly skipped?: number;
 }
 interface NetEdge {
     readonly id: string;

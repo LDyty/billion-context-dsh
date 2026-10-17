@@ -35,6 +35,10 @@ export interface NetNode {
   readonly span?: { readonly start: number; readonly end: number }
   /** Range nodes only: the printed recommendation vs the sweep complement. */
   readonly variant?: 'recommended' | 'complement'
+  /** Recommended ranges only: the role labels the nudge table printed. */
+  readonly picks?: readonly ('cheapest' | 'largest' | 'oldest')[]
+  /** Age-region nodes only: how many times the model passed this region over. */
+  readonly skipped?: number
 }
 
 interface NetEdge {
@@ -70,12 +74,19 @@ const SWEEP_GAP = 14
 const BLOCK_GAP = 12
 const BAND_GAP = 28
 const SNAP = 8
+const RECOMMENDED_PITCH = 52
 /** Target height of a lane before it wraps into another sub-column. */
 const TARGET_LANE_HEIGHT = 1040
 
 function colsFor(count: number, pitch: number, maxCols: number): number {
   const rowsPerColumn = Math.max(1, Math.floor(TARGET_LANE_HEIGHT / pitch))
   return Math.max(1, Math.min(maxCols, Math.ceil(count / rowsPerColumn)))
+}
+
+const PICK_LABEL: Record<'cheapest' | 'largest' | 'oldest', string> = {
+  cheapest: '最便宜',
+  largest: '最大',
+  oldest: '最旧',
 }
 const MIN_ZOOM = 0.06
 const MAX_ZOOM = 3
@@ -130,7 +141,7 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
   // adding age regions or ranges widens the graph instead of growing without
   // bound. Region and sweep lanes also wrap; the three block tiers stay fixed.
   const regionCols = colsFor(regions.length, PITCH.region, 2)
-  const recommendedCols = colsFor(recommendedDefs.length, PITCH.range, 4)
+  const recommendedCols = colsFor(recommendedDefs.length, RECOMMENDED_PITCH, 4)
   const complementCols = colsFor(complementDefs.length, PITCH.range, 6)
   const recommendedWidth = recommendedCols * (NODE_W.range + RANGE_GAP) - RANGE_GAP
   const complementWidth = complementDefs.length === 0
@@ -162,6 +173,7 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
       sub: `${String(region.ranges)} 段 · ~${compact(region.tokens)}`,
       tokens: region.tokens,
       region: region.region,
+      skipped: snapshot.rows.find((row) => row.ageRegion === region.region)?.skipped ?? 0,
     })
   })
 
@@ -172,6 +184,8 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     startY: number,
     variant: 'recommended' | 'complement',
     cols: number,
+    pitch: number,
+    height: number,
   ): void => {
     list.forEach((def, index) => {
       const id = rangeId(def.start, def.end)
@@ -180,14 +194,15 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
         id,
         kind: 'range',
         x: startX + (index % cols) * (NODE_W.range + RANGE_GAP),
-        y: startY + Math.floor(index / cols) * PITCH.range,
+        y: startY + Math.floor(index / cols) * pitch,
         w: NODE_W.range,
-        h: 32,
+        h: height,
         title: `${String(def.start)}..${String(def.end)}`,
         sub: def.row === undefined ? `~${compact(def.tokens)}` : `${String(def.row.messages)} · ~${compact(def.tokens)}`,
         tokens: def.tokens,
         region: def.region,
         ...(def.row === undefined ? {} : { row: def.row }),
+        ...(def.row === undefined ? {} : { picks: def.row.picks }),
         span: { start: def.start, end: def.end },
         variant,
       })
@@ -197,8 +212,8 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
   }
   const bandTop = PAD + 16
   const complementX = rangeX + recommendedWidth + BAND_GAP
-  placeRanges(recommendedDefs, rangeX, bandTop, 'recommended', recommendedCols)
-  placeRanges(complementDefs, complementX, bandTop, 'complement', complementCols)
+  placeRanges(recommendedDefs, rangeX, bandTop, 'recommended', recommendedCols, RECOMMENDED_PITCH, 44)
+  placeRanges(complementDefs, complementX, bandTop, 'complement', complementCols, PITCH.range, 32)
   const bands = [
     { x: rangeX, y: PAD, label: `推荐区间 · ${String(recommendedDefs.length)}` },
     ...(complementDefs.length === 0
@@ -521,9 +536,11 @@ function Inspector(props: {
   const body: ReactElement[] = []
   if (node.kind === 'region') {
     const region = props.snapshot.regions.find((entry) => entry.region === node.region)
+    const skipped = props.snapshot.rows.find((row) => row.ageRegion === node.region)?.skipped ?? 0
     body.push(
       h('div', { className: 'acp-net-insp-title' }, node.title),
       h('div', null, `区间 ${String(region?.ranges ?? '—')} 段 · 可压 ~${compact(node.tokens)} token`),
+      h('div', { className: skipped > 0 ? 'acp-warn' : 'acp-muted' }, `被跳过 ${String(skipped)}×`),
       h('div', { className: 'acp-muted' }, `seq ${String(region?.start ?? '—')}..${String(region?.end ?? '—')}`),
     )
   } else if (node.kind === 'range') {
@@ -1134,6 +1151,18 @@ export function CompressionNetwork(props: {
               : h('span', { className: 'acp-net-node-stack' },
                 h('span', { className: 'acp-net-node-title' }, node.title),
                 h('span', { className: 'acp-net-node-sub' }, node.sub)),
+            node.kind === 'region'
+              ? h('span', {
+                className: (node.skipped ?? 0) > 0 ? 'acp-net-node-badge acp-warn' : 'acp-net-node-badge',
+              }, `被跳过 ${String(node.skipped ?? 0)}×`)
+              : null,
+            node.kind === 'range' && node.picks !== undefined && node.picks.length > 0
+              ? h('span', { className: 'acp-net-node-picks' },
+                node.picks.map((pick) => h('em', {
+                  key: pick,
+                  className: `acp-net-pick acp-net-pick-${pick}`,
+                }, PICK_LABEL[pick])))
+              : null,
             node.kind === 'range' && node.row !== undefined
               ? h('span', { className: 'acp-net-node-bar' },
                 h('i', { style: { width: `${String(node.row.toolPct)}%` }, className: 'acp-net-seg-tool' }),
