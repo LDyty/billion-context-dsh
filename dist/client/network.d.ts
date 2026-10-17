@@ -56,6 +56,11 @@ export interface NetLayout {
         readonly y: number;
         readonly label: string;
     }[];
+    readonly lanes: readonly {
+        readonly x: number;
+        readonly width: number;
+        readonly kind: 'region' | 'range' | 'sweep' | 'block';
+    }[];
     readonly width: number;
     readonly height: number;
 }
@@ -68,8 +73,14 @@ export declare function buildLayout(snapshot: AcpInspectSnapshot): NetLayout;
  * smallest freed row in its tier, and only compacts on "重新布局".
  */
 export declare function applyStableBlockSlots(layout: NetLayout, slots: Map<string, BlockSlot>): NetLayout;
-/** Forward, backward (tier parent to an earlier tier) or same-column links. */
 export declare function linkPath(from: NetNode, to: NetNode): string;
+export interface LayoutAudit {
+    readonly overlaps: number;
+    readonly through: number;
+    readonly outside: number;
+}
+/** Archify-style geometry audit: card overlap, off-canvas cards, edges through cards. */
+export declare function auditLayout(nodes: readonly NetNode[], edges: readonly NetEdge[], width: number, height: number): LayoutAudit;
 /**
  * Semantic lineage (DIRECTED, not a blind BFS). A sweep is a hub: an undirected
  * walk from a region/range through it lit up every range of every sweep, which

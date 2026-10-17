@@ -54,6 +54,7 @@ export interface NetLayout {
   readonly edges: readonly NetEdge[]
   readonly columns: readonly { readonly x: number; readonly label: string }[]
   readonly bands: readonly { readonly x: number; readonly y: number; readonly label: string }[]
+  readonly lanes: readonly { readonly x: number; readonly width: number; readonly kind: 'region' | 'range' | 'sweep' | 'block' }[]
   readonly width: number
   readonly height: number
 }
@@ -68,6 +69,7 @@ const RANGE_GAP = 14
 const SWEEP_GAP = 14
 const BLOCK_GAP = 12
 const BAND_GAP = 28
+const SNAP = 8
 /** Target height of a lane before it wraps into another sub-column. */
 const TARGET_LANE_HEIGHT = 1040
 
@@ -294,6 +296,12 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
       })),
     ],
     bands,
+    lanes: [
+      { x: regionX, width: regionCols * (NODE_W.region + REGION_GAP) - REGION_GAP, kind: 'region' },
+      { x: rangeX, width: rangeWidth, kind: 'range' },
+      { x: sweepX, width: sweepCols * (NODE_W.sweep + SWEEP_GAP) - SWEEP_GAP, kind: 'sweep' },
+      { x: blockX, width: tiers.length * (NODE_W.block + BLOCK_GAP) - BLOCK_GAP, kind: 'block' },
+    ],
     width: blockX + tiers.length * (NODE_W.block + BLOCK_GAP) - BLOCK_GAP + PAD,
     height,
   }
@@ -332,26 +340,92 @@ export function applyStableBlockSlots(layout: NetLayout, slots: Map<string, Bloc
   return { ...layout, nodes, height: Math.max(520, bottom + PAD) }
 }
 
-function curve(x1: number, y1: number, x2: number, y2: number): string {
-  const dx = Math.max(36, Math.abs(x2 - x1) * 0.45)
-  return `M ${String(x1)} ${String(y1)} C ${String(x1 + dx)} ${String(y1)}, ${String(x2 - dx)} ${String(y2)}, ${String(x2)} ${String(y2)}`
-}
-
 /** Forward, backward (tier parent to an earlier tier) or same-column links. */
-export function linkPath(from: NetNode, to: NetNode): string {
+function linkCurve(from: NetNode, to: NetNode): { d: string; points: { x: number; y: number }[] } {
   const y1 = from.y + from.h / 2
   const y2 = to.y + to.h / 2
+  let x1 = from.x + from.w
+  let x2 = to.x
+  let c1x = 0
+  let c2x = 0
   if (to.x + to.w <= from.x) {
-    const x1 = from.x
-    const x2 = to.x + to.w
+    x1 = from.x
+    x2 = to.x + to.w
     const dx = Math.max(36, (x1 - x2) * 0.45)
-    return `M ${String(x1)} ${String(y1)} C ${String(x1 - dx)} ${String(y1)}, ${String(x2 + dx)} ${String(y2)}, ${String(x2)} ${String(y2)}`
+    c1x = x1 - dx
+    c2x = x2 + dx
+  } else if (to.x >= from.x + from.w) {
+    const dx = Math.max(36, Math.abs(x2 - x1) * 0.45)
+    c1x = x1 + dx
+    c2x = x2 - dx
+  } else {
+    x1 = from.x + from.w
+    x2 = to.x + to.w
+    const dx = Math.max(24, Math.abs(y2 - y1) * 0.5)
+    c1x = x1 + dx
+    c2x = x2 + dx
   }
-  if (to.x >= from.x + from.w) return curve(from.x + from.w, y1, to.x, y2)
-  const x1 = from.x + from.w
-  const x2 = to.x + to.w
-  const dx = Math.max(24, Math.abs(y2 - y1) * 0.5)
-  return `M ${String(x1)} ${String(y1)} C ${String(x1 + dx)} ${String(y1)}, ${String(x2 + dx)} ${String(y2)}, ${String(x2)} ${String(y2)}`
+  const pointAt = (t: number): { x: number; y: number } => {
+    const u = 1 - t
+    return {
+      x: u * u * u * x1 + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * x2,
+      y: u * u * u * y1 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y2,
+    }
+  }
+  return {
+    d: `M ${String(x1)} ${String(y1)} C ${String(c1x)} ${String(y1)}, ${String(c2x)} ${String(y2)}, ${String(x2)} ${String(y2)}`,
+    points: Array.from({ length: 13 }, (_, index) => pointAt(index / 12)),
+  }
+}
+
+export function linkPath(from: NetNode, to: NetNode): string {
+  return linkCurve(from, to).d
+}
+
+export interface LayoutAudit {
+  readonly overlaps: number
+  readonly through: number
+  readonly outside: number
+}
+
+/** Archify-style geometry audit: card overlap, off-canvas cards, edges through cards. */
+export function auditLayout(
+  nodes: readonly NetNode[],
+  edges: readonly NetEdge[],
+  width: number,
+  height: number,
+): LayoutAudit {
+  let overlaps = 0
+  for (let a = 0; a < nodes.length; a += 1) {
+    const left = nodes[a]!
+    for (let b = a + 1; b < nodes.length; b += 1) {
+      const right = nodes[b]!
+      if (left.x < right.x + right.w && left.x + left.w > right.x
+        && left.y < right.y + right.h && left.y + left.h > right.y) overlaps += 1
+    }
+  }
+  const outside = nodes.filter((node) =>
+    node.x < 0 || node.y < 0 || node.x + node.w > width || node.y + node.h > height).length
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  let through = 0
+  for (const edge of edges) {
+    // Cross-lane edges (region→range, range→sweep, range→block) legitimately
+    // travel over the lane grid; only block-lineage edges are checked for
+    // cutting through unrelated cards.
+    if (edge.kind !== 'parent') continue
+    const from = byId.get(edge.from)
+    const to = byId.get(edge.to)
+    if (from === undefined || to === undefined) continue
+    const points = linkCurve(from, to).points.slice(2, -2)
+    const hit = nodes.some((node) => {
+      if (node.id === edge.from || node.id === edge.to) return false
+      return points.some((point) =>
+        point.x > node.x + 3 && point.x < node.x + node.w - 3
+        && point.y > node.y + 3 && point.y < node.y + node.h - 3)
+    })
+    if (hit) through += 1
+  }
+  return { overlaps, through, outside }
 }
 
 /**
@@ -505,6 +579,8 @@ export function CompressionNetwork(props: {
   const [moved, setMoved] = useState<Record<string, { x: number; y: number }>>({})
   const movedRef = useRef<Record<string, { x: number; y: number }>>({})
   useEffect(() => { movedRef.current = moved }, [moved])
+  const [sideOpen, setSideOpen] = useState(true)
+  const [query, setQuery] = useState('')
   const seenBlocksRef = useRef<Set<string> | null>(null)
   const [newBlocks, setNewBlocks] = useState<Set<string>>(new Set())
   useEffect(() => {
@@ -542,6 +618,10 @@ export function CompressionNetwork(props: {
   const canvasHeight = useMemo(
     () => Math.max(layout.height, placed.reduce((bottom, node) => Math.max(bottom, node.y + node.h), 0) + PAD),
     [layout.height, placed],
+  )
+  const audit = useMemo(
+    () => auditLayout(placed, layout.edges, layout.width, canvasHeight),
+    [placed, layout, canvasHeight],
   )
   // A compression can remove the hovered/pinned node; keeping the focus id would
   // leave `has-focus` on with no lineage, dimming the whole refreshed canvas.
@@ -810,7 +890,13 @@ export function CompressionNetwork(props: {
       const dy = (event.clientY - drag.y) / viewRef.current.z
       if (drag.moved) {
         userViewRef.current = true
-        const next = { ...movedRef.current, [drag.id]: { x: drag.nx + dx, y: drag.ny + dy } }
+        const next = {
+          ...movedRef.current,
+          [drag.id]: {
+            x: Math.round((drag.nx + dx) / SNAP) * SNAP,
+            y: Math.round((drag.ny + dy) / SNAP) * SNAP,
+          },
+        }
         movedRef.current = next
         // CRITICAL: drop the drag-preview translate BEFORE the committed left/top
         // lands. Otherwise the node renders at left/top + translate(dx,dy) and
@@ -888,6 +974,33 @@ export function CompressionNetwork(props: {
     apply()
   }
 
+  const locate = useCallback(() => {
+    const raw = query.trim().toLowerCase()
+    if (raw === '') return
+    const queryId = raw.replace(/^b:/, '')
+    const node = placed.find((entry) => {
+      if (entry.block !== undefined) {
+        return entry.block.id.toLowerCase().includes(queryId) || entry.block.shortId.toLowerCase().includes(queryId)
+      }
+      if (entry.kind === 'range') return entry.title.toLowerCase().includes(raw) || entry.id.toLowerCase() === raw
+      if (entry.kind === 'sweep') return entry.title.toLowerCase().includes(raw) || entry.id.toLowerCase() === raw
+      return entry.title.toLowerCase().includes(raw) || entry.id.toLowerCase() === raw
+    })
+    const stage = stageRef.current
+    if (node === undefined || stage === null) return
+    const view = viewRef.current
+    const z = Math.max(view.z, 0.9)
+    userViewRef.current = true
+    setPinnedId(node.id)
+    setHoverId(null)
+    viewRef.current = {
+      x: stage.clientWidth / 2 - (node.x + node.w / 2) * z,
+      y: stage.clientHeight / 2 - (node.y + node.h / 2) * z,
+      z,
+    }
+    apply()
+  }, [apply, placed, query])
+
   const activeNode = focusId === null ? undefined : byId.get(focusId)
   const miniScale = Math.min(150 / layout.width, 104 / canvasHeight)
   const captured = snapshot.capturedAt > 0
@@ -898,10 +1011,25 @@ export function CompressionNetwork(props: {
       h('header', { className: 'acp-net-toolbar' },
         h('b', null, '压缩网络'),
         h('span', { className: 'acp-net-hint' }, '拖拽平移 · 滚轮缩放 · 拖节点改位 · 点击固定 · 双击适配 · R 重新布局'),
+        h('input', {
+          className: 'acp-net-search',
+          value: query,
+          placeholder: '定位 seq / 块 id',
+          onChange: (event) => { setQuery(event.target.value) },
+          onKeyDown: (event) => {
+            if (event.key === 'Enter') locate()
+          },
+        }),
         h('div', { className: 'acp-net-actions' },
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1.2) }, '+'),
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1 / 1.2) }, '−'),
           h('button', { className: 'acp-net-btn', onClick: fit }, '适配'),
+          h('button', { className: 'acp-net-btn', title: '恢复 100% 缩放', onClick: () => zoomBy(1 / viewRef.current.z) }, '1:1'),
+          h('button', {
+            className: 'acp-net-btn',
+            title: sideOpen ? '收起右侧详情，给画布更多空间' : '展开右侧详情',
+            onClick: () => setSideOpen((open) => !open),
+          }, sideOpen ? '收起侧栏' : '展开侧栏'),
           newBlocks.size > 0
             ? h('button', {
               className: 'acp-net-btn acp-net-newbtn',
@@ -935,6 +1063,15 @@ export function CompressionNetwork(props: {
           'data-lod': lod,
           style: { transform: `translate3d(${String(initialView.x)}px, ${String(initialView.y)}px, 0) scale(${String(initialView.z)})` },
         },
+          layout.lanes.map((lane) => h('div', {
+            key: lane.kind,
+            className: `acp-net-lane acp-net-lane-${lane.kind}`,
+            style: {
+              left: `${String(lane.x)}px`,
+              width: `${String(lane.width)}px`,
+              height: `${String(canvasHeight)}px`,
+            },
+          })),
           layout.columns.map((column) => h('div', {
             key: column.label,
             className: 'acp-net-col-label',
@@ -946,6 +1083,21 @@ export function CompressionNetwork(props: {
             style: { left: `${String(band.x)}px`, top: `${String(band.y)}px` },
           }, band.label)),
           h('svg', { className: 'acp-net-links', width: layout.width, height: canvasHeight, 'aria-hidden': true },
+            h('defs', null, ([
+              ['owns', '#6aa9ff'],
+              ['sweep', '#ffd166'],
+              ['covers', '#7fd1a6'],
+              ['parent', '#c69cff'],
+            ] as const).map(([kind, color]) => h('marker', {
+              key: kind,
+              id: `acp-arrow-${kind}`,
+              viewBox: '0 0 10 10',
+              refX: 9,
+              refY: 5,
+              markerWidth: 6,
+              markerHeight: 6,
+              orient: 'auto',
+            }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: color })))),
             layout.edges.map((edge) => {
               const from = byId.get(edge.from)
               const to = byId.get(edge.to)
@@ -960,7 +1112,10 @@ export function CompressionNetwork(props: {
                 'data-to': edge.to,
                 className: `acp-net-link acp-net-link-${edge.kind}${on ? ' on' : ''}`,
                 vectorEffect: 'non-scaling-stroke',
-              })
+                markerEnd: `url(#acp-arrow-${edge.kind})`,
+              }, h('title', null,
+                `${edge.kind === 'owns' ? '归属' : edge.kind === 'sweep' ? '清扫' : edge.kind === 'covers' ? '覆盖' : '父链'}：`
+                + `${from.title} → ${to.title}`))
             })),
           placed.map((node) => {
             const on = lineage?.nodes.has(node.id) ?? false
@@ -1001,13 +1156,19 @@ export function CompressionNetwork(props: {
         h('div', { className: 'acp-net-status' },
           h('span', { ref: zoomRef }, `${String(Math.round(initialView.z * 100))}%`),
           h('span', null, ` · ${String(placed.length)} 节点 · ${String(layout.edges.length)} 连线 · 快照 ${captured}`),
+          h('span', {
+            className: audit.overlaps + audit.through + audit.outside > 0 ? 'acp-net-health acp-warn' : 'acp-net-health',
+            title: '布局检查：卡片重叠 · 父链穿过无关卡片 · 移出画布。数值来自当前几何，不隐藏问题。',
+          }, `布局 ${String(audit.overlaps)} 重叠 · ${String(audit.through)} 穿块 · ${String(audit.outside)} 越界`),
           h('span', { className: 'acp-net-legend' },
             h('span', null, h('i', { className: 'acp-net-key acp-net-key-owns' }), '归属'),
             h('span', null, h('i', { className: 'acp-net-key acp-net-key-sweep' }), '清扫'),
             h('span', null, h('i', { className: 'acp-net-key acp-net-key-covers' }), '覆盖'),
             h('span', null, h('i', { className: 'acp-net-key acp-net-key-parent' }), '父链')))),
-        h('aside', { className: 'acp-net-side' },
-          h(Inspector, { snapshot, node: activeNode, pinned: pinnedId !== null && pinnedId === focusId })))),
+        sideOpen
+          ? h('aside', { className: 'acp-net-side' },
+            h(Inspector, { snapshot, node: activeNode, pinned: pinnedId !== null && pinnedId === focusId }))
+          : null)),
   )
   // Portal to <body>: the panel lives inside the sidebar's scroll/transform
   // context, where a fixed overlay can be clipped. SSR keeps the inline shape.

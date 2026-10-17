@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyStableBlockSlots, buildLayout, lineageOf, linkPath, type BlockSlot, type NetNode } from '../src/client/network.tsx'
+import { applyStableBlockSlots, auditLayout, buildLayout, lineageOf, linkPath, type BlockSlot, type NetNode } from '../src/client/network.tsx'
 import type { AcpInspectSnapshot } from '../src/inspect-types.ts'
 
 const row = (start: number, end: number, region: number) => ({
@@ -67,6 +67,7 @@ test('network layout: region/range/sweep columns, T1–T3 lanes, ownership and l
   } as unknown as AcpInspectSnapshot
   const layout = buildLayout(snapshot)
   assert.equal(layout.columns.length, 6, 'regions → ranges → sweeps → T1 / T2 / T3')
+  assert.equal(layout.lanes.length, 4, 'one subtle background lane per column group')
   assert.deepEqual(
     [...new Set(layout.nodes.map((node) => node.kind))].sort(),
     ['block', 'range', 'region', 'sweep'],
@@ -158,4 +159,27 @@ test('network lineage: a region/range does not fan out to other ranges through a
   assert.ok(!range.has('g:5:6'), 'a range does not fan out through its sweep')
   const sweepLineage = lineageOf('s:1', layout).nodes
   assert.ok(sweepLineage.has('g:1:2') && sweepLineage.has('g:5:6'), 'a sweep DOES show every range it covers')
+})
+
+test('layout audit: overlap, out-of-canvas and parent-edge crossing are counted', () => {
+  const node = (id: string, x: number, y: number): NetNode => ({
+    id,
+    kind: 'block',
+    x,
+    y,
+    w: 100,
+    h: 30,
+    title: id,
+    sub: '',
+    tokens: 0,
+  })
+  const audit = auditLayout(
+    [node('a', 0, 0), node('b', 200, 0), node('c', 400, 0), node('overlap', 0, 0), node('out', 650, 0)],
+    [{ id: 'p', from: 'a', to: 'c', kind: 'parent' }],
+    700,
+    100,
+  )
+  assert.ok(audit.overlaps >= 1, 'the overlapping pair is reported')
+  assert.ok(audit.through >= 1, 'the parent edge crosses b')
+  assert.ok(audit.outside >= 1, 'the node beyond the canvas height is reported')
 })
