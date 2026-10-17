@@ -33,6 +33,8 @@ export interface NetNode {
   readonly sweep?: AcpInspectSweep
   readonly block?: AcpInspectBlock
   readonly span?: { readonly start: number; readonly end: number }
+  /** Range nodes only: the printed recommendation vs the sweep complement. */
+  readonly variant?: 'recommended' | 'complement'
 }
 
 interface NetEdge {
@@ -51,6 +53,7 @@ export interface NetLayout {
   readonly nodes: readonly NetNode[]
   readonly edges: readonly NetEdge[]
   readonly columns: readonly { readonly x: number; readonly label: string }[]
+  readonly bands: readonly { readonly x: number; readonly y: number; readonly label: string }[]
   readonly width: number
   readonly height: number
 }
@@ -111,39 +114,59 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     })
   })
 
-  const defs: Array<{ start: number; end: number; tokens: number; region: number; row?: AcpInspectRow }> = []
-  for (const row of snapshot.rows) {
-    defs.push({ start: row.start, end: row.end, tokens: row.tokens, region: row.ageRegion, row })
-  }
+  type RangeDef = { start: number; end: number; tokens: number; region: number; row?: AcpInspectRow }
+  const recommendedDefs: RangeDef[] = snapshot.rows.map((row) => (
+    { start: row.start, end: row.end, tokens: row.tokens, region: row.ageRegion, row }
+  ))
+  const recommendedKeys = new Set(recommendedDefs.map((def) => `${String(def.start)}:${String(def.end)}`))
+  const complementDefs: RangeDef[] = []
   for (const group of snapshot.complement?.regions ?? []) {
     for (const range of group.ranges) {
-      if (defs.some((def) => def.start === range.start && def.end === range.end)) continue
-      defs.push({ start: range.start, end: range.end, tokens: range.tokens, region: group.region })
+      const key = `${String(range.start)}:${String(range.end)}`
+      if (recommendedKeys.has(key)) continue
+      recommendedKeys.add(key)
+      complementDefs.push({ start: range.start, end: range.end, tokens: range.tokens, region: group.region })
     }
   }
-  defs.sort((left, right) => left.start - right.start || left.end - right.end)
+  const byStart = (left: RangeDef, right: RangeDef): number => left.start - right.start || left.end - right.end
+  recommendedDefs.sort(byStart)
+  complementDefs.sort(byStart)
 
   const rangeNodes = new Map<string, string>()
-  defs.forEach((def, index) => {
-    const id = rangeId(def.start, def.end)
-    rangeNodes.set(id, id)
-    nodes.push({
-      id,
-      kind: 'range',
-      x: COL_X.range + (index % RANGE_COLS) * (NODE_W.range + GRID_GAP),
-      y: PAD + Math.floor(index / RANGE_COLS) * PITCH.range,
-      w: NODE_W.range,
-      h: 32,
-      title: `${String(def.start)}..${String(def.end)}`,
-      sub: def.row === undefined ? `~${compact(def.tokens)}` : `${String(def.row.messages)} · ~${compact(def.tokens)}`,
-      tokens: def.tokens,
-      region: def.region,
-      ...(def.row === undefined ? {} : { row: def.row }),
-      span: { start: def.start, end: def.end },
+  const placeRanges = (list: readonly RangeDef[], startY: number, variant: 'recommended' | 'complement'): void => {
+    list.forEach((def, index) => {
+      const id = rangeId(def.start, def.end)
+      rangeNodes.set(id, id)
+      nodes.push({
+        id,
+        kind: 'range',
+        x: COL_X.range + (index % RANGE_COLS) * (NODE_W.range + GRID_GAP),
+        y: startY + Math.floor(index / RANGE_COLS) * PITCH.range,
+        w: NODE_W.range,
+        h: 32,
+        title: `${String(def.start)}..${String(def.end)}`,
+        sub: def.row === undefined ? `~${compact(def.tokens)}` : `${String(def.row.messages)} · ~${compact(def.tokens)}`,
+        tokens: def.tokens,
+        region: def.region,
+        ...(def.row === undefined ? {} : { row: def.row }),
+        span: { start: def.start, end: def.end },
+        variant,
+      })
+      const owner = regionNodes.get(def.region)
+      if (owner !== undefined) edges.push({ id: `o:${owner}:${id}`, from: owner, to: id, kind: 'owns' })
     })
-    const owner = regionNodes.get(def.region)
-    if (owner !== undefined) edges.push({ id: `o:${owner}:${id}`, from: owner, to: id, kind: 'owns' })
-  })
+  }
+  const recommendedTop = PAD + 16
+  const recommendedRows = Math.ceil(recommendedDefs.length / RANGE_COLS)
+  const complementTop = recommendedTop + recommendedRows * PITCH.range + 24
+  placeRanges(recommendedDefs, recommendedTop, 'recommended')
+  placeRanges(complementDefs, complementTop, 'complement')
+  const bands = [
+    { x: COL_X.range, y: PAD, label: `推荐区间 · ${String(recommendedDefs.length)}` },
+    ...(complementDefs.length === 0
+      ? []
+      : [{ x: COL_X.range, y: complementTop - 20, label: `补集区间 · ${String(complementDefs.length)}` }]),
+  ]
 
   snapshot.sweeps.forEach((sweep, index) => {
     const id = sweepId(sweep.rowStart)
@@ -227,13 +250,14 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     edges,
     columns: [
       { x: COL_X.region, label: `年龄区域 · ${String(regions.length)}` },
-      { x: COL_X.range, label: `可压区间 · ${String(defs.length)}` },
+      { x: COL_X.range, label: `可压区间 · 推荐 ${String(recommendedDefs.length)} / 补集 ${String(complementDefs.length)}` },
       { x: COL_X.sweep, label: `清扫 · ${String(snapshot.sweeps.length)}` },
       ...tiers.map((tier) => ({
         x: COL_X.block + (tier - 1) * (NODE_W.block + BLOCK_GAP),
         label: `T${String(tier)} · ${String(byTier.get(tier)!.length)}`,
       })),
     ],
+    bands,
     width: COL_X.block + tiers.length * (NODE_W.block + BLOCK_GAP) - BLOCK_GAP + PAD,
     height,
   }
@@ -849,6 +873,11 @@ export function CompressionNetwork(props: {
             className: 'acp-net-col-label',
             style: { left: `${String(column.x)}px` },
           }, column.label)),
+          layout.bands.map((band) => h('div', {
+            key: band.label,
+            className: 'acp-net-band',
+            style: { left: `${String(band.x)}px`, top: `${String(band.y)}px` },
+          }, band.label)),
           h('svg', { className: 'acp-net-links', width: layout.width, height: canvasHeight, 'aria-hidden': true },
             layout.edges.map((edge) => {
               const from = byId.get(edge.from)
@@ -871,7 +900,7 @@ export function CompressionNetwork(props: {
             return h('div', {
               key: node.id,
               'data-net-node': node.id,
-              className: `acp-net-node acp-net-${node.kind}${node.block === undefined ? '' : ` acp-net-tier-${String(node.block.tier)}`}${node.block !== undefined && newBlocks.has(node.block.id) ? ' new' : ''}${on ? ' on' : ''}${node.id === focusId ? ' focus' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
+              className: `acp-net-node acp-net-${node.kind}${node.kind === 'range' ? ` acp-net-range-${node.variant ?? 'recommended'}` : ''}${node.block === undefined ? '' : ` acp-net-tier-${String(node.block.tier)}`}${node.block !== undefined && newBlocks.has(node.block.id) ? ' new' : ''}${on ? ' on' : ''}${node.id === focusId ? ' focus' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
               style: { left: `${String(node.x)}px`, top: `${String(node.y)}px`, width: `${String(node.w)}px`, height: `${String(node.h)}px` },
               onPointerEnter: () => setHoverId(node.id),
               onPointerLeave: () => setHoverId((current) => (current === node.id ? null : current)),

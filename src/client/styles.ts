@@ -130,6 +130,7 @@ export const ACP_PANEL_CSS = `
 .acp-net-layer { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 .acp-net-links { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .acp-net-col-label { position: absolute; top: 10px; font-size: 11px; font-weight: 650; letter-spacing: .02em; color: var(--dsw-alias-label-tertiary, #9aa4b2); white-space: nowrap; pointer-events: none; }
+.acp-net-band { position: absolute; font-size: 10px; font-weight: 650; letter-spacing: .04em; color: var(--dsw-alias-label-tertiary, #9aa4b2); white-space: nowrap; pointer-events: none; opacity: .65; }
 .acp-net-link { fill: none; stroke: color-mix(in srgb, currentColor 55%, transparent); stroke-width: 1; opacity: .32; transition: opacity .15s, stroke .15s; }
 .acp-net-link-owns { stroke: #6aa9ff; opacity: .45; }
 .acp-net-link-sweep { stroke: #ffd166; opacity: .72; stroke-width: 1.25; }
@@ -146,6 +147,8 @@ export const ACP_PANEL_CSS = `
 @keyframes acp-net-pulse { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, #7fd1a6 45%, transparent); } }
 .acp-net-region { border-left: 3px solid var(--dsw-alias-brand-primary, #6aa9ff); }
 .acp-net-range { border-left: 3px solid var(--dsw-alias-state-success-primary, #7fd1a6); }
+.acp-net-range-complement { border-left-color: #8092aa; background: color-mix(in srgb, #8092aa 6%, var(--dsw-alias-bg-layer-2, #1c2027)); }
+.acp-net-range-complement .acp-net-node-title { opacity: .85; }
 .acp-net-sweep { border-left: 3px solid var(--dsw-alias-state-warning-primary, #ffd166); }
 .acp-net-block { border-left: 3px solid #c69cff; }
 .acp-net-tier-1 { border-left-color: #c69cff; }
@@ -173,6 +176,7 @@ export const ACP_PANEL_CSS = `
 .acp-net-layer[data-lod="far"] .acp-net-node { border-radius: 3px; }
 .acp-net-layer[data-lod="far"] .acp-net-region { background: color-mix(in srgb, var(--dsw-alias-brand-primary, #6aa9ff) 46%, transparent); }
 .acp-net-layer[data-lod="far"] .acp-net-range { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #7fd1a6) 34%, transparent); }
+.acp-net-layer[data-lod="far"] .acp-net-range-complement { background: color-mix(in srgb, #8092aa 30%, transparent); }
 .acp-net-layer[data-lod="far"] .acp-net-sweep { background: color-mix(in srgb, var(--dsw-alias-state-warning-primary, #ffd166) 44%, transparent); }
 .acp-net-layer[data-lod="far"] .acp-net-block { background: color-mix(in srgb, #c69cff 42%, transparent); }
 .acp-net-layer[data-lod="far"] .acp-net-tier-2 { background: color-mix(in srgb, #ffd166 42%, transparent); }

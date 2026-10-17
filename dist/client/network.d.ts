@@ -31,6 +31,8 @@ export interface NetNode {
         readonly start: number;
         readonly end: number;
     };
+    /** Range nodes only: the printed recommendation vs the sweep complement. */
+    readonly variant?: 'recommended' | 'complement';
 }
 interface NetEdge {
     readonly id: string;
@@ -47,6 +49,11 @@ export interface NetLayout {
     readonly edges: readonly NetEdge[];
     readonly columns: readonly {
         readonly x: number;
+        readonly label: string;
+    }[];
+    readonly bands: readonly {
+        readonly x: number;
+        readonly y: number;
         readonly label: string;
     }[];
     readonly width: number;

@@ -112,3 +112,25 @@ test('network layout: a new block reuses the freed slot instead of shifting exis
   assert.equal(next.nodes.find((node) => node.block?.id === 'two')!.y, twoY, 'existing block does not shift')
   assert.equal(next.nodes.find((node) => node.block?.id === 'three')!.y, 44, 'the newcomer fills the freed row')
 })
+
+test('network layout: recommended and complement ranges sit in separate bands', () => {
+  const snapshot = {
+    rows: [row(1, 2, 1)],
+    sweeps: [],
+    complement: {
+      oldest: 1,
+      total: 1,
+      regions: [{ region: 1, ranges: [{ start: 3, end: 4, tokens: 50 }] }],
+    },
+    regions: [{ region: 1, start: 1, end: 4, tokens: 150, ranges: 2 }],
+    blocks: [],
+    map: [],
+  } as unknown as AcpInspectSnapshot
+  const layout = buildLayout(snapshot)
+  assert.equal(layout.bands.length, 2, 'two labelled bands')
+  const recommended = layout.nodes.find((node) => node.span?.start === 1)
+  const complement = layout.nodes.find((node) => node.span?.start === 3)
+  assert.equal(recommended?.variant, 'recommended')
+  assert.equal(complement?.variant, 'complement')
+  assert.ok((complement?.y ?? 0) > (recommended?.y ?? 0), 'the complement band sits below the recommendation band')
+})
