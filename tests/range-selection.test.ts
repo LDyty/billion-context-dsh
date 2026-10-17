@@ -29,6 +29,7 @@ import {
   selectRangeTableRanges,
   selectRangeTableRows,
 } from '../src/nudge.ts'
+import { sweepFromBaseRange, type RangeFoldCost, type SeqCompressibleRange } from '../src/region.ts'
 
 const range = (start: number, tokens: number) => ({ start, end: start + 1, tokens })
 
@@ -84,6 +85,31 @@ test('range selection: the three roles collapse onto one row and keep every labe
  * The generic top-N helper is still available (and still defaults to size) for
  * the pure-geometry callers; the table itself uses the role selector above.
  */
+test('range selection: a contained interval is never recommended — only maximal spans', () => {
+  const wide = { start: 10, end: 500, tokens: 1000 }
+  const narrow = { start: 10, end: 100, tokens: 50 }
+  const other = { start: 600, end: 700, tokens: 900 }
+  const rows = rangeTablePicksOfGroups([[narrow, wide, other]], (entry) => (entry.start === 600 ? 1 : 9))
+  assert.deepEqual(
+    rows.map((row) => [row.range.start, row.range.end]),
+    [[10, 500], [600, 700]],
+    'the span contained in a wider one is not offered as a row of its own',
+  )
+})
+
+test('range selection: an overlapping wider span replaces the narrower sweep entry — no tail dropped', () => {
+  type Span = { start: number; end: number; tokens: number }
+  const span = (start: number, end: number, tokens: number): SeqCompressibleRange => ({ start, end, tokens } as SeqCompressibleRange)
+  const ranges = [span(10, 100, 50), span(10, 200, 120), span(300, 400, 80)]
+  const costs: RangeFoldCost[] = ranges.map(() => ({ invalidatedTokens: 1000, breakEvenRequests: 1 }))
+  const sweep = sweepFromBaseRange(ranges, costs, 0)
+  assert.deepEqual(
+    sweep?.entries.map((entry) => [entry.start, entry.end]),
+    [[10, 200], [300, 400]],
+    'the wider same-start span subsumes the narrower one instead of being skipped',
+  )
+})
+
 test('range selection: a payback ranker makes a region offer its cheapest intervals, not its largest', () => {
   const groups = [[range(10, 300), range(20, 100)]]
   assert.deepEqual(

@@ -8062,9 +8062,17 @@ function sweepFromBaseRange(ranges, costs, baseIndex) {
   const cost = costs[baseIndex];
   if (base === void 0 || cost === void 0) return void 0;
   const entries = [base];
+  let invalidatedTokens = cost.invalidatedTokens;
   for (let at = baseIndex + 1; at < ranges.length; at += 1) {
     const candidate = ranges[at];
-    if (candidate.start <= entries[entries.length - 1].end) continue;
+    const last = entries[entries.length - 1];
+    if (candidate.start <= last.end) {
+      if (candidate.start <= last.start && candidate.end > last.end) {
+        entries[entries.length - 1] = candidate;
+        if (entries.length === 1) invalidatedTokens = costs[at].invalidatedTokens;
+      }
+      continue;
+    }
     entries.push(candidate);
   }
   if (entries.length === 1) return void 0;
@@ -8074,7 +8082,7 @@ function sweepFromBaseRange(ranges, costs, baseIndex) {
     // will fold them, and the disjointness invariant is checkable left to right.
     entries,
     reclaimedTokens,
-    invalidatedTokens: cost.invalidatedTokens,
+    invalidatedTokens,
     breakEvenRequests: reclaimedTokens > 0 ? cost.invalidatedTokens / reclaimedTokens : Number.POSITIVE_INFINITY
   };
 }
@@ -8770,9 +8778,10 @@ function rangeTablePicksOfGroups(groups, costOf) {
   const rows = [];
   for (const [index, group] of groups.entries()) {
     if (group.length === 0) continue;
-    const cheapest = group.reduce((best, range) => costOf(range) < costOf(best) ? range : best);
-    const largest = group.reduce((best, range) => range.tokens > best.tokens ? range : best);
-    const oldest = group.reduce((best, range) => range.start < best.start ? range : best);
+    const candidates = group.filter((range) => !group.some((other) => other !== range && other.start <= range.start && other.end >= range.end));
+    const cheapest = candidates.reduce((best, range) => costOf(range) < costOf(best) ? range : best);
+    const largest = candidates.reduce((best, range) => range.tokens > best.tokens ? range : best);
+    const oldest = candidates.reduce((best, range) => range.start < best.start ? range : best);
     const roles = [["cheapest", cheapest], ["largest", largest], ["oldest", oldest]];
     const picksOf = /* @__PURE__ */ new Map();
     for (const [pick, range] of roles) {

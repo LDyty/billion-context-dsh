@@ -2138,9 +2138,23 @@ export function sweepFromBaseRange(
   const cost = costs[baseIndex]
   if (base === undefined || cost === undefined) return undefined
   const entries: SeqCompressibleRange[] = [base]
+  let invalidatedTokens = cost.invalidatedTokens
   for (let at = baseIndex + 1; at < ranges.length; at += 1) {
     const candidate = ranges[at]!
-    if (candidate.start <= entries[entries.length - 1]!.end) continue
+    const last = entries[entries.length - 1]!
+    if (candidate.start <= last.end) {
+      // Tool-pair edge balancing expands several adjacent kernel ranges back to
+      // the SAME pair start, so a later candidate can strictly CONTAIN the span
+      // already taken. Skipping it (the pre-2026-10-17 rule) left its tail
+      // unfolded — measured live: 83 surface rows / 15.3% of a sweep. The wider
+      // span subsumes the narrower one: replace, never skip a tail.
+      if (candidate.start <= last.start && candidate.end > last.end) {
+        entries[entries.length - 1] = candidate
+        // A widened BASE moves the rewritten prefix; re-pin the invalidation.
+        if (entries.length === 1) invalidatedTokens = costs[at]!.invalidatedTokens
+      }
+      continue
+    }
     entries.push(candidate)
   }
   // Nothing newer to pull in: the row itself IS the fold, and a "sweep" of one
@@ -2152,7 +2166,7 @@ export function sweepFromBaseRange(
     // will fold them, and the disjointness invariant is checkable left to right.
     entries,
     reclaimedTokens,
-    invalidatedTokens: cost.invalidatedTokens,
+    invalidatedTokens,
     breakEvenRequests: reclaimedTokens > 0 ? cost.invalidatedTokens / reclaimedTokens : Number.POSITIVE_INFINITY,
   }
 }

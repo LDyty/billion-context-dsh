@@ -399,9 +399,16 @@ export function rangeTablePicksOfGroups<T extends { start: number; end: number; 
   const rows: RangeTableRow<T>[] = []
   for (const [index, group] of groups.entries()) {
     if (group.length === 0) continue
-    const cheapest = group.reduce((best, range) => (costOf(range) < costOf(best) ? range : best))
-    const largest = group.reduce((best, range) => (range.tokens > best.tokens ? range : best))
-    const oldest = group.reduce((best, range) => (range.start < best.start ? range : best))
+    // Only MAXIMAL spans are offerable rows: tool-pair balancing can expand
+    // adjacent kernel ranges back to the same pair start, nesting a narrower
+    // span inside a wider one. Recommending the narrower would advertise a
+    // span the sweep (which now lets the wider one win) never takes as its own
+    // entry — measured live, such rows and the sweep disagreed.
+    const candidates = group.filter((range) =>
+      !group.some((other) => other !== range && other.start <= range.start && other.end >= range.end))
+    const cheapest = candidates.reduce((best, range) => (costOf(range) < costOf(best) ? range : best))
+    const largest = candidates.reduce((best, range) => (range.tokens > best.tokens ? range : best))
+    const oldest = candidates.reduce((best, range) => (range.start < best.start ? range : best))
     const roles: Array<[RangeTablePick, T]> = [['cheapest', cheapest], ['largest', largest], ['oldest', oldest]]
     const picksOf = new Map<T, RangeTablePick[]>()
     for (const [pick, range] of roles) {
