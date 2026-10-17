@@ -53,7 +53,7 @@ export interface NetLayout {
 const PAD = 44
 const COL_X = { region: PAD, range: 234, sweep: 830, block: 1040 }
 const NODE_W = { region: 150, range: 176, sweep: 170, block: 200 }
-const PITCH = { region: 86, range: 34, sweep: 56, block: 52 }
+const PITCH = { region: 86, range: 40, sweep: 56, block: 52 }
 const MAX_BLOCKS = 12
 const RANGE_COLS = 3
 const GRID_GAP = 14
@@ -167,9 +167,9 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
       x: COL_X.range + (index % RANGE_COLS) * (NODE_W.range + GRID_GAP),
       y: PAD + Math.floor(index / RANGE_COLS) * PITCH.range,
       w: NODE_W.range,
-      h: 26,
+      h: 32,
       title: `${String(def.start)}..${String(def.end)}`,
-      sub: def.row === undefined ? `~${compact(def.tokens)}` : `${String(def.row.messages)} 条 · ~${compact(def.tokens)}`,
+      sub: def.row === undefined ? `~${compact(def.tokens)}` : `${String(def.row.messages)} · ~${compact(def.tokens)}`,
       tokens: def.tokens,
       region: def.region,
       ...(def.row === undefined ? {} : { row: def.row }),
@@ -279,7 +279,7 @@ function curve(x1: number, y1: number, x2: number, y2: number): string {
 }
 
 /** Forward, backward (tier parent to an earlier tier) or same-column links. */
-function linkPath(from: NetNode, to: NetNode): string {
+export function linkPath(from: NetNode, to: NetNode): string {
   const y1 = from.y + from.h / 2
   const y2 = to.y + to.h / 2
   if (to.x + to.w <= from.x) {
@@ -638,6 +638,22 @@ export function CompressionNetwork(props: {
       drag.moved = true
       const element = stageRef.current?.querySelector<HTMLElement>(`[data-net-node="${drag.id}"]`)
       if (element !== null && element !== undefined) element.style.transform = `translate(${String(dx)}px, ${String(dy)}px)`
+      // Live edges: the dragged card is only a CSS transform, so React's paths
+      // still describe the old position. Re-point every edge touching it as the
+      // pointer moves, otherwise the card detaches from its links mid-drag.
+      const node = byId.get(drag.id)
+      if (node !== undefined && stageRef.current !== null) {
+        const preview = { ...node, x: node.x + dx, y: node.y + dy }
+        for (const path of stageRef.current.querySelectorAll<SVGPathElement>('path[data-net-edge]')) {
+          const fromId = path.getAttribute('data-from')
+          const toId = path.getAttribute('data-to')
+          if (fromId !== drag.id && toId !== drag.id) continue
+          const from = fromId === drag.id ? preview : byId.get(fromId ?? '')
+          const to = toId === drag.id ? preview : byId.get(toId ?? '')
+          if (from === undefined || to === undefined) continue
+          path.setAttribute('d', linkPath(from, to))
+        }
+      }
       return
     }
     const pan = panRef.current
@@ -677,6 +693,20 @@ export function CompressionNetwork(props: {
       }
       dragRef.current = null
       return
+    }
+    if (panRef.current?.pointer === event.pointerId) panRef.current = null
+  }
+
+  const pointerCancel = (event: React.PointerEvent<HTMLDivElement>): void => {
+    pointers.current.delete(event.pointerId)
+    if (pointers.current.size < 2) pinchRef.current = null
+    const drag = dragRef.current
+    if (drag !== null && drag.pointer === event.pointerId) {
+      const element = stageRef.current?.querySelector<HTMLElement>(`[data-net-node="${drag.id}"]`)
+      if (element !== null && element !== undefined) element.style.transform = ''
+      dragRef.current = null
+      // Re-render the untouched paths (the live preview may have moved them).
+      setMoved((current) => ({ ...current }))
     }
     if (panRef.current?.pointer === event.pointerId) panRef.current = null
   }
@@ -749,7 +779,7 @@ export function CompressionNetwork(props: {
           onPointerDown: pointerDown,
           onPointerMove: pointerMove,
           onPointerUp: pointerUp,
-          onPointerCancel: pointerUp,
+          onPointerCancel: pointerCancel,
           onDoubleClick: fit,
           onKeyDown: keyDown,
         },
@@ -775,6 +805,9 @@ export function CompressionNetwork(props: {
               return h('path', {
                 key: edge.id,
                 d: path,
+                'data-net-edge': edge.id,
+                'data-from': edge.from,
+                'data-to': edge.to,
                 className: `acp-net-link acp-net-link-${edge.kind}${on ? ' on' : ''}`,
                 vectorEffect: 'non-scaling-stroke',
               })
@@ -789,8 +822,13 @@ export function CompressionNetwork(props: {
               onPointerEnter: () => setHoverId(node.id),
               onPointerLeave: () => setHoverId((current) => (current === node.id ? null : current)),
             },
-            h('span', { className: 'acp-net-node-title' }, node.title),
-            h('span', { className: 'acp-net-node-sub' }, node.sub),
+            node.kind === 'range'
+              ? h('span', { className: 'acp-net-node-line' },
+                h('span', { className: 'acp-net-node-title' }, node.title),
+                h('span', { className: 'acp-net-node-sub acp-net-node-amount' }, node.sub))
+              : h('span', { className: 'acp-net-node-stack' },
+                h('span', { className: 'acp-net-node-title' }, node.title),
+                h('span', { className: 'acp-net-node-sub' }, node.sub)),
             node.kind === 'range' && node.row !== undefined
               ? h('span', { className: 'acp-net-node-bar' },
                 h('i', { style: { width: `${String(node.row.toolPct)}%` }, className: 'acp-net-seg-tool' }),
@@ -812,7 +850,12 @@ export function CompressionNetwork(props: {
           h('div', { className: 'acp-net-mini-rect', ref: miniRectRef })),
         h('div', { className: 'acp-net-status' },
           h('span', { ref: zoomRef }, `${String(Math.round(initialView.z * 100))}%`),
-          h('span', null, ` · ${String(placed.length)} 节点 · ${String(layout.edges.length)} 连线 · 快照 ${captured}`))),
+          h('span', null, ` · ${String(placed.length)} 节点 · ${String(layout.edges.length)} 连线 · 快照 ${captured}`),
+          h('span', { className: 'acp-net-legend' },
+            h('span', null, h('i', { className: 'acp-net-key acp-net-key-owns' }), '归属'),
+            h('span', null, h('i', { className: 'acp-net-key acp-net-key-sweep' }), '清扫'),
+            h('span', null, h('i', { className: 'acp-net-key acp-net-key-covers' }), '覆盖'),
+            h('span', null, h('i', { className: 'acp-net-key acp-net-key-parent' }), '父链')))),
         h('aside', { className: 'acp-net-side' },
           h(Inspector, { snapshot, node: activeNode, pinned: pinnedId !== null && pinnedId === focusId })))),
   )

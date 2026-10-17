@@ -56,6 +56,8 @@ export interface NetLayout {
 export declare function resolveCollisions(nodes: readonly NetNode[], gap?: number, fixed?: ReadonlySet<string>): NetNode[];
 /** Deterministic layered layout — no physics, so the same build always draws the same graph. */
 export declare function buildLayout(snapshot: AcpInspectSnapshot): NetLayout;
+/** Forward, backward (tier parent to an earlier tier) or same-column links. */
+export declare function linkPath(from: NetNode, to: NetNode): string;
 export declare function CompressionNetwork(props: {
     snapshot: AcpInspectSnapshot;
     sessionId: string;

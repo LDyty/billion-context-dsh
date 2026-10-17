@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildLayout, resolveCollisions, type NetNode } from '../src/client/network.tsx'
+import { buildLayout, linkPath, resolveCollisions, type NetNode } from '../src/client/network.tsx'
 import type { AcpInspectSnapshot } from '../src/inspect-types.ts'
 
 const row = (start: number, end: number, region: number) => ({
@@ -99,4 +99,13 @@ test('network layout: the collision volume keeps 8px between cards and leaves a 
   const dragged = resolveCollisions([node('a', 0, 0), node('b', 0, 10)], 8, new Set(['b']))
   assert.equal(dragged.find((entry) => entry.id === 'b')?.y, 10, 'the dragged card keeps the drop point')
   assert.equal(dragged.find((entry) => entry.id === 'a')?.y, 48, 'the other card is pushed clear of it')
+})
+
+test('network layout: a dragged card repoints its live edge', () => {
+  const from: NetNode = { id: 'a', kind: 'range', x: 234, y: 44, w: 176, h: 26, title: 'a', sub: '', tokens: 0 }
+  const to: NetNode = { id: 'b', kind: 'sweep', x: 830, y: 44, w: 170, h: 48, title: 'b', sub: '', tokens: 0 }
+  const before = linkPath(from, to)
+  const after = linkPath({ ...from, x: from.x + 100, y: from.y + 60 }, to)
+  assert.notEqual(after, before, 'the path follows the drag preview, not the last dropped position')
+  assert.ok(after.startsWith('M 510 '), `the start moved with the card (${after})`)
 })
