@@ -176,6 +176,14 @@ export const ACP_PANEL_CSS = `
   .acp-net-body { flex-direction: column; }
   .acp-net-side { width: auto; height: 34%; border-left: 0; border-top: 1px solid var(--dsw-alias-border-l1, #2a2f38); }
 }
+@media (max-width: 640px) {
+  .acp-net-shell { width: 98vw; height: 96vh; border-radius: 8px; }
+  .acp-net-toolbar { flex-wrap: wrap; gap: 4px 8px; padding: 6px 8px; }
+  .acp-net-toolbar b { flex: none; white-space: nowrap; }
+  .acp-net-hint { display: none; }
+  .acp-net-actions { margin-left: 0; flex-wrap: wrap; }
+  .acp-net-btn { padding: 2px 7px; font-size: 10.5px; }
+}
 `
 
 /** Inject the stylesheet once per document (idempotent). */
