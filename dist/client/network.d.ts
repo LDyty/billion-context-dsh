@@ -13,7 +13,7 @@
 import { type ReactElement } from 'react';
 import type { AcpInspectBlock, AcpInspectRow, AcpInspectSnapshot, AcpInspectSweep } from '../inspect-types.ts';
 type NodeKind = 'region' | 'range' | 'sweep' | 'block';
-interface NetNode {
+export interface NetNode {
     readonly id: string;
     readonly kind: NodeKind;
     readonly x: number;
@@ -48,6 +48,12 @@ export interface NetLayout {
     readonly width: number;
     readonly height: number;
 }
+/**
+ * Collision volume: nodes sharing a column may never overlap — each one owns its
+ * box plus {@link NODE_GAP} of empty space. Fixed ids (a node the reader just
+ * dragged) keep their exact y; the rest are pushed down around them.
+ */
+export declare function resolveCollisions(nodes: readonly NetNode[], gap?: number, fixed?: ReadonlySet<string>): NetNode[];
 /** Deterministic layered layout — no physics, so the same build always draws the same graph. */
 export declare function buildLayout(snapshot: AcpInspectSnapshot): NetLayout;
 export declare function CompressionNetwork(props: {

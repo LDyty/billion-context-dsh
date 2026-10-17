@@ -18,7 +18,7 @@ import type { AcpInspectBlock, AcpInspectRow, AcpInspectSnapshot, AcpInspectSwee
 type NodeKind = 'region' | 'range' | 'sweep' | 'block'
 type Lod = 'far' | 'mid' | 'near'
 
-interface NetNode {
+export interface NetNode {
   readonly id: string
   readonly kind: NodeKind
   readonly x: number
@@ -53,11 +53,13 @@ export interface NetLayout {
 const PAD = 44
 const COL_X = { region: PAD, range: 234, sweep: 830, block: 1040 }
 const NODE_W = { region: 150, range: 176, sweep: 170, block: 200 }
-const PITCH = { region: 86, range: 24, sweep: 54, block: 42 }
-const MAX_BLOCKS = 20
+const PITCH = { region: 86, range: 34, sweep: 56, block: 52 }
+const MAX_BLOCKS = 12
 const RANGE_COLS = 3
 const GRID_GAP = 14
 const BLOCK_GAP = 12
+/** Vertical breathing room between two nodes in the same column ("collision volume"). */
+const NODE_GAP = 8
 const MIN_ZOOM = 0.06
 const MAX_ZOOM = 3
 
@@ -72,6 +74,43 @@ const rangeId = (start: number, end: number): string => `g:${String(start)}:${St
 const regionId = (region: number): string => `r:${String(region)}`
 const sweepId = (rowStart: number): string => `s:${String(rowStart)}`
 const blockId = (id: string): string => `b:${id}`
+
+/**
+ * Collision volume: nodes sharing a column may never overlap — each one owns its
+ * box plus {@link NODE_GAP} of empty space. Fixed ids (a node the reader just
+ * dragged) keep their exact y; the rest are pushed down around them.
+ */
+export function resolveCollisions(
+  nodes: readonly NetNode[],
+  gap: number = NODE_GAP,
+  fixed: ReadonlySet<string> = new Set(),
+): NetNode[] {
+  const ordered = [...nodes].sort((left, right) => {
+    const leftFixed = fixed.has(left.id) ? 0 : 1
+    const rightFixed = fixed.has(right.id) ? 0 : 1
+    return leftFixed - rightFixed || left.y - right.y || left.x - right.x
+  })
+  const placed: NetNode[] = []
+  for (const node of ordered) {
+    if (fixed.has(node.id)) {
+      // The reader put it there on purpose; fixed nodes are never moved.
+      placed.push(node)
+      continue
+    }
+    let y = node.y
+    for (let guard = 0; guard <= placed.length; guard += 1) {
+      const blockers = placed.filter((other) =>
+        other.x < node.x + node.w + gap
+        && other.x + other.w + gap > node.x
+        && y < other.y + other.h + gap
+        && y + node.h + gap > other.y)
+      if (blockers.length === 0) break
+      y = Math.max(...blockers.map((other) => other.y + other.h)) + gap
+    }
+    placed.push(y === node.y ? node : { ...node, y })
+  }
+  return placed
+}
 
 /** Deterministic layered layout — no physics, so the same build always draws the same graph. */
 export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
@@ -212,15 +251,13 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     }
   })
 
+  const placedNodes = resolveCollisions(nodes)
   const height = Math.max(
-    PAD * 2 + Math.max(0, Math.ceil(defs.length / RANGE_COLS) - 1) * PITCH.range + 40,
-    PAD * 2 + Math.max(0, snapshot.sweeps.length - 1) * PITCH.sweep + 60,
-    PAD * 2 + Math.max(0, Math.max(...tiers.map((tier) => byTier.get(tier)!.length)) - 1) * PITCH.block + 60,
-    PAD * 2 + Math.max(0, regions.length - 1) * PITCH.region + 80,
-    520,
+    PAD * 2,
+    placedNodes.reduce((bottom, node) => Math.max(bottom, node.y + node.h), 0) + PAD,
   )
   return {
-    nodes,
+    nodes: placedNodes,
     edges,
     columns: [
       { x: COL_X.region, label: `年龄区域 · ${String(regions.length)}` },
@@ -381,8 +418,19 @@ export function CompressionNetwork(props: {
     () => (focusId === null ? undefined : lineageOf(focusId, layout, snapshot)),
     [focusId, layout, snapshot],
   )
-  const placed = useMemo(() => layout.nodes.map((node) => ({ ...node, ...(moved[node.id] ?? {}) })), [layout, moved])
+  const placed = useMemo(
+    () => resolveCollisions(
+      layout.nodes.map((node) => ({ ...node, ...(moved[node.id] ?? {}) })),
+      NODE_GAP,
+      new Set(Object.keys(moved)),
+    ),
+    [layout, moved],
+  )
   const byId = useMemo(() => new Map(placed.map((node) => [node.id, node])), [placed])
+  const canvasHeight = useMemo(
+    () => Math.max(layout.height, placed.reduce((bottom, node) => Math.max(bottom, node.y + node.h), 0) + PAD),
+    [layout.height, placed],
+  )
   // A compression can remove the hovered/pinned node; keeping the focus id would
   // leave `has-focus` on with no lineage, dimming the whole refreshed canvas.
   useEffect(() => {
@@ -424,7 +472,7 @@ export function CompressionNetwork(props: {
     }
     const stage = stageRef.current
     if (stage !== null && miniRectRef.current !== null) {
-      const scale = Math.min(150 / layout.width, 104 / layout.height)
+      const scale = Math.min(150 / layout.width, 104 / canvasHeight)
       const rect = miniRectRef.current
       rect.style.left = `${String(5 + (-view.x / view.z) * scale)}px`
       rect.style.top = `${String(5 + (-view.y / view.z) * scale)}px`
@@ -438,7 +486,7 @@ export function CompressionNetwork(props: {
     }
     window.clearTimeout(saveTimer.current)
     saveTimer.current = window.setTimeout(persist, 280)
-  }, [layout.height, layout.width, persist])
+  }, [canvasHeight, layout.width, persist])
 
   const fit = useCallback(() => {
     userViewRef.current = false
@@ -446,14 +494,14 @@ export function CompressionNetwork(props: {
     if (stage === null) return
     const width = stage.clientWidth
     const height = stage.clientHeight
-    const z = Math.max(MIN_ZOOM, Math.min((width - 80) / layout.width, (height - 80) / layout.height, 1.15))
+    const z = Math.max(MIN_ZOOM, Math.min((width - 80) / layout.width, (height - 80) / canvasHeight, 1.15))
     viewRef.current = {
       x: (width - layout.width * z) / 2,
-      y: (height - layout.height * z) / 2,
+      y: (height - canvasHeight * z) / 2,
       z,
     }
     apply()
-  }, [apply, layout.height, layout.width])
+  }, [apply, canvasHeight, layout.width])
 
   // The panel polls the inspect route every 5s; a compression changes the canvas
   // dimensions. A passive reader follows the new graph (auto-fit); a reader who
@@ -612,6 +660,7 @@ export function CompressionNetwork(props: {
       const dx = (event.clientX - drag.x) / viewRef.current.z
       const dy = (event.clientY - drag.y) / viewRef.current.z
       if (drag.moved) {
+        userViewRef.current = true
         const next = { ...movedRef.current, [drag.id]: { x: drag.nx + dx, y: drag.ny + dy } }
         movedRef.current = next
         // CRITICAL: drop the drag-preview translate BEFORE the committed left/top
@@ -662,7 +711,7 @@ export function CompressionNetwork(props: {
     const stage = stageRef.current
     const mini = event.currentTarget.getBoundingClientRect()
     if (stage === null) return
-    const scale = Math.min(150 / layout.width, 104 / layout.height)
+    const scale = Math.min(150 / layout.width, 104 / canvasHeight)
     const worldX = (event.clientX - mini.left - 5) / scale
     const worldY = (event.clientY - mini.top - 5) / scale
     const view = viewRef.current
@@ -676,7 +725,7 @@ export function CompressionNetwork(props: {
   }
 
   const activeNode = focusId === null ? undefined : byId.get(focusId)
-  const miniScale = Math.min(150 / layout.width, 104 / layout.height)
+  const miniScale = Math.min(150 / layout.width, 104 / canvasHeight)
   const captured = snapshot.capturedAt > 0
     ? new Date(snapshot.capturedAt).toLocaleTimeString('zh-CN', { hour12: false })
     : '—'
@@ -716,7 +765,7 @@ export function CompressionNetwork(props: {
             className: 'acp-net-col-label',
             style: { left: `${String(column.x)}px` },
           }, column.label)),
-          h('svg', { className: 'acp-net-links', width: layout.width, height: layout.height, 'aria-hidden': true },
+          h('svg', { className: 'acp-net-links', width: layout.width, height: canvasHeight, 'aria-hidden': true },
             layout.edges.map((edge) => {
               const from = byId.get(edge.from)
               const to = byId.get(edge.to)
@@ -758,7 +807,7 @@ export function CompressionNetwork(props: {
         h('div', { className: 'acp-net-mini', onPointerDown: miniJump },
           h('div', {
             className: 'acp-net-mini-canvas',
-            style: { width: `${String(layout.width * miniScale)}px`, height: `${String(layout.height * miniScale)}px` },
+            style: { width: `${String(layout.width * miniScale)}px`, height: `${String(canvasHeight * miniScale)}px` },
           }),
           h('div', { className: 'acp-net-mini-rect', ref: miniRectRef })),
         h('div', { className: 'acp-net-status' },

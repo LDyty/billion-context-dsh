@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildLayout } from '../src/client/network.tsx'
+import { buildLayout, resolveCollisions, type NetNode } from '../src/client/network.tsx'
 import type { AcpInspectSnapshot } from '../src/inspect-types.ts'
 
 const row = (start: number, end: number, region: number) => ({
@@ -80,4 +80,23 @@ test('network layout: region/range/sweep columns, T1–T3 lanes, ownership and l
   const blockX = layout.nodes.filter((node) => node.kind === 'block').map((node) => `${String(node.block?.tier)}:${String(node.x)}`)
   assert.equal(new Set(blockX.map((entry) => entry.split(':')[1])).size, 2, 'each tier gets its own column')
   assert.ok(layout.height > 0 && layout.width > 0)
+})
+
+test('network layout: the collision volume keeps 8px between cards and leaves a dragged card fixed', () => {
+  const node = (id: string, x: number, y: number, h = 30): NetNode => ({
+    id,
+    kind: 'range',
+    x,
+    y,
+    w: 100,
+    h,
+    title: id,
+    sub: '',
+    tokens: 0,
+  })
+  const stacked = resolveCollisions([node('a', 0, 0), node('b', 0, 10), node('c', 0, 20)])
+  assert.deepEqual(stacked.map((entry) => entry.y), [0, 38, 76], 'each card keeps its own height + 8px')
+  const dragged = resolveCollisions([node('a', 0, 0), node('b', 0, 10)], 8, new Set(['b']))
+  assert.equal(dragged.find((entry) => entry.id === 'b')?.y, 10, 'the dragged card keeps the drop point')
+  assert.equal(dragged.find((entry) => entry.id === 'a')?.y, 48, 'the other card is pushed clear of it')
 })
