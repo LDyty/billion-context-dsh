@@ -143,6 +143,9 @@ export const ACP_PANEL_CSS = `
 .acp-net-range { border-left: 3px solid var(--dsw-alias-state-success-primary, #7fd1a6); }
 .acp-net-sweep { border-left: 3px solid var(--dsw-alias-state-warning-primary, #ffd166); }
 .acp-net-block { border-left: 3px solid #c69cff; }
+.acp-net-tier-1 { border-left-color: #c69cff; }
+.acp-net-tier-2 { border-left-color: #ffd166; }
+.acp-net-tier-3 { border-left-color: #ff8ad4; }
 .acp-net-node-title { display: block; font-size: 10.5px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acp-net-node-sub { display: block; font-size: 9px; line-height: 1.25; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .acp-net-node-bar { display: flex; height: 4px; margin-top: 3px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, currentColor 12%, transparent); }
@@ -163,6 +166,8 @@ export const ACP_PANEL_CSS = `
 .acp-net-layer[data-lod="far"] .acp-net-range { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #7fd1a6) 34%, transparent); }
 .acp-net-layer[data-lod="far"] .acp-net-sweep { background: color-mix(in srgb, var(--dsw-alias-state-warning-primary, #ffd166) 44%, transparent); }
 .acp-net-layer[data-lod="far"] .acp-net-block { background: color-mix(in srgb, #c69cff 42%, transparent); }
+.acp-net-layer[data-lod="far"] .acp-net-tier-2 { background: color-mix(in srgb, #ffd166 42%, transparent); }
+.acp-net-layer[data-lod="far"] .acp-net-tier-3 { background: color-mix(in srgb, #ff8ad4 42%, transparent); }
 .acp-net-layer[data-lod="mid"] .acp-net-node-bar { display: none; }
 .acp-net-mini { position: absolute; right: 12px; bottom: 12px; width: 160px; height: 114px; border: 1px solid var(--dsw-alias-border-l2, #2a2f38); border-radius: 6px; background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #14161a) 88%, transparent); overflow: hidden; cursor: crosshair; }
 .acp-net-mini-canvas { position: absolute; left: 5px; top: 5px; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 2px; opacity: .7; }

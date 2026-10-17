@@ -53,7 +53,7 @@ const block = (id: string, tier: number, start: number, end: number, parents?: s
   ...(parents === undefined ? {} : { parents }),
 })
 
-test('network layout: four columns, range ownership, sweep membership and block lineage', () => {
+test('network layout: region/range/sweep columns, T1–T3 lanes, ownership and lineage', () => {
   const snapshot = {
     rows: [row(1, 2, 1), row(5, 6, 2)],
     sweeps: [sweep(1)],
@@ -66,7 +66,7 @@ test('network layout: four columns, range ownership, sweep membership and block 
     map: [],
   } as unknown as AcpInspectSnapshot
   const layout = buildLayout(snapshot)
-  assert.equal(layout.columns.length, 4, 'regions → ranges → sweeps → blocks')
+  assert.equal(layout.columns.length, 6, 'regions → ranges → sweeps → T1 / T2 / T3')
   assert.deepEqual(
     [...new Set(layout.nodes.map((node) => node.kind))].sort(),
     ['block', 'range', 'region', 'sweep'],
@@ -77,5 +77,7 @@ test('network layout: four columns, range ownership, sweep membership and block 
   assert.equal(kinds.filter((kind) => kind === 'sweep').length, 1, 'the sweep hangs off its base range')
   assert.equal(kinds.filter((kind) => kind === 'covers').length, 2, 'both blocks cover their range')
   assert.equal(kinds.filter((kind) => kind === 'parent').length, 1, 'tier-2 carries its parent link')
+  const blockX = layout.nodes.filter((node) => node.kind === 'block').map((node) => `${String(node.block?.tier)}:${String(node.x)}`)
+  assert.equal(new Set(blockX.map((entry) => entry.split(':')[1])).size, 2, 'each tier gets its own column')
   assert.ok(layout.height > 0 && layout.width > 0)
 })

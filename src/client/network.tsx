@@ -52,12 +52,12 @@ export interface NetLayout {
 
 const PAD = 44
 const COL_X = { region: PAD, range: 234, sweep: 830, block: 1040 }
-const NODE_W = { region: 150, range: 176, sweep: 170, block: 220 }
+const NODE_W = { region: 150, range: 176, sweep: 170, block: 200 }
 const PITCH = { region: 86, range: 24, sweep: 54, block: 42 }
-const MAX_BLOCKS = 30
+const MAX_BLOCKS = 20
 const RANGE_COLS = 3
-const BLOCK_COLS = 2
 const GRID_GAP = 14
+const BLOCK_GAP = 12
 const MIN_ZOOM = 0.06
 const MAX_ZOOM = 3
 
@@ -175,14 +175,28 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
   for (const block of allBlocks) if (block.tier > 1) include(block)
   for (const block of allBlocks.slice(-MAX_BLOCKS)) include(block)
   const blocks = [...selectedBlocks.values()].sort((left, right) => left.createdAt - right.createdAt)
+  // Three tier lanes: T1 (bulk), T2 and T3 each get their own column so the
+  // distillation levels read as levels instead of one crowded stack.
+  const tiers = [1, 2, 3] as const
+  const byTier = new Map<number, AcpInspectBlock[]>(tiers.map((tier) => [tier, []]))
+  for (const block of blocks) {
+    const tier = block.tier === 2 || block.tier === 3 ? block.tier : 1
+    byTier.get(tier)!.push(block)
+  }
+  const slotOf = new Map<string, { tier: number; index: number }>()
+  for (const tier of tiers) {
+    const list = byTier.get(tier)!.sort((left, right) => left.createdAt - right.createdAt)
+    list.forEach((block, index) => slotOf.set(block.id, { tier, index }))
+  }
   const visibleBlocks = new Set(blocks.map((block) => block.id))
-  blocks.forEach((block, index) => {
+  blocks.forEach((block) => {
     const id = blockId(block.id)
+    const slot = slotOf.get(block.id) ?? { tier: 1, index: 0 }
     nodes.push({
       id,
       kind: 'block',
-      x: COL_X.block + (index % BLOCK_COLS) * (NODE_W.block + GRID_GAP),
-      y: PAD + Math.floor(index / BLOCK_COLS) * PITCH.block,
+      x: COL_X.block + (slot.tier - 1) * (NODE_W.block + BLOCK_GAP),
+      y: PAD + slot.index * PITCH.block,
       w: NODE_W.block,
       h: 44,
       title: `${block.shortId} · T${String(block.tier)}`,
@@ -201,7 +215,7 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
   const height = Math.max(
     PAD * 2 + Math.max(0, Math.ceil(defs.length / RANGE_COLS) - 1) * PITCH.range + 40,
     PAD * 2 + Math.max(0, snapshot.sweeps.length - 1) * PITCH.sweep + 60,
-    PAD * 2 + Math.max(0, Math.ceil(blocks.length / BLOCK_COLS) - 1) * PITCH.block + 60,
+    PAD * 2 + Math.max(0, Math.max(...tiers.map((tier) => byTier.get(tier)!.length)) - 1) * PITCH.block + 60,
     PAD * 2 + Math.max(0, regions.length - 1) * PITCH.region + 80,
     520,
   )
@@ -212,9 +226,12 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
       { x: COL_X.region, label: `年龄区域 · ${String(regions.length)}` },
       { x: COL_X.range, label: `可压区间 · ${String(defs.length)}` },
       { x: COL_X.sweep, label: `清扫 · ${String(snapshot.sweeps.length)}` },
-      { x: COL_X.block, label: `已压块 · 最近 ${String(blocks.length)}` },
+      ...tiers.map((tier) => ({
+        x: COL_X.block + (tier - 1) * (NODE_W.block + BLOCK_GAP),
+        label: `T${String(tier)} · ${String(byTier.get(tier)!.length)}`,
+      })),
     ],
-    width: COL_X.block + BLOCK_COLS * (NODE_W.block + GRID_GAP) - GRID_GAP + PAD,
+    width: COL_X.block + tiers.length * (NODE_W.block + BLOCK_GAP) - BLOCK_GAP + PAD,
     height,
   }
 }
@@ -222,6 +239,23 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
 function curve(x1: number, y1: number, x2: number, y2: number): string {
   const dx = Math.max(36, Math.abs(x2 - x1) * 0.45)
   return `M ${String(x1)} ${String(y1)} C ${String(x1 + dx)} ${String(y1)}, ${String(x2 - dx)} ${String(y2)}, ${String(x2)} ${String(y2)}`
+}
+
+/** Forward, backward (tier parent to an earlier tier) or same-column links. */
+function linkPath(from: NetNode, to: NetNode): string {
+  const y1 = from.y + from.h / 2
+  const y2 = to.y + to.h / 2
+  if (to.x + to.w <= from.x) {
+    const x1 = from.x
+    const x2 = to.x + to.w
+    const dx = Math.max(36, (x1 - x2) * 0.45)
+    return `M ${String(x1)} ${String(y1)} C ${String(x1 - dx)} ${String(y1)}, ${String(x2 + dx)} ${String(y2)}, ${String(x2)} ${String(y2)}`
+  }
+  if (to.x >= from.x + from.w) return curve(from.x + from.w, y1, to.x, y2)
+  const x1 = from.x + from.w
+  const x2 = to.x + to.w
+  const dx = Math.max(24, Math.abs(y2 - y1) * 0.5)
+  return `M ${String(x1)} ${String(y1)} C ${String(x1 + dx)} ${String(y1)}, ${String(x2 + dx)} ${String(y2)}, ${String(x2)} ${String(y2)}`
 }
 
 /** Undirected lineage: drawn edges + range↔sweep membership (not drawn as hundreds of paths). */
@@ -688,9 +722,7 @@ export function CompressionNetwork(props: {
               const to = byId.get(edge.to)
               if (from === undefined || to === undefined) return null
               const on = lineage?.edges.has(edge.id) ?? false
-              const path = edge.kind === 'parent'
-                ? curve(from.x + from.w, from.y + from.h / 2, to.x + to.w, to.y + to.h / 2)
-                : curve(from.x + from.w, from.y + from.h / 2, to.x, to.y + to.h / 2)
+              const path = linkPath(from, to)
               return h('path', {
                 key: edge.id,
                 d: path,
@@ -703,7 +735,7 @@ export function CompressionNetwork(props: {
             return h('div', {
               key: node.id,
               'data-net-node': node.id,
-              className: `acp-net-node acp-net-${node.kind}${on ? ' on' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
+              className: `acp-net-node acp-net-${node.kind}${node.block === undefined ? '' : ` acp-net-tier-${String(node.block.tier)}`}${on ? ' on' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
               style: { left: `${String(node.x)}px`, top: `${String(node.y)}px`, width: `${String(node.w)}px`, height: `${String(node.h)}px` },
               onPointerEnter: () => setHoverId(node.id),
               onPointerLeave: () => setHoverId((current) => (current === node.id ? null : current)),
