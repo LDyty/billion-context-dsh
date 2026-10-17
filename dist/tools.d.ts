@@ -156,6 +156,19 @@ export declare function summaryFloorRefusal(session: Session, range: {
     endSeq: number;
     summary: string;
 }, floor: number): string | undefined;
+/**
+ * ONE summary, MANY blocks (owner ruling, 2026-10-17): a sweep expands one entry
+ * into N spans and a carrier split turns one entry into N runs, so the FULL text
+ * lands on the FIRST surviving block and the rest carry a pointer a reader can
+ * follow. MUST run AFTER the summary floor: the group is built from the entries
+ * that will actually land, so (a) a refused head can never leave tail pointers
+ * aimed at a block that does not exist, and (b) numbering restarts at the first
+ * survivor (`part 2/M`), not at the model's original entry order.
+ */
+export declare function applySharedSummaryPointers<T extends {
+    summary: string;
+    sharedSummaryKey?: number;
+}>(ranges: readonly T[]): void;
 /** Exported so the ref-width contract test can pin it without a 100K-message fixture. */
 export declare function mnRefIndex(value: string): number | null;
 /**

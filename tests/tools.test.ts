@@ -7,7 +7,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { AcpStateStore } from '../src/state.ts'
-import { buildSearchDocs, edgeRefForSeq, makeTools, mnRefIndex, type ToolEnvironment } from '../src/tools.ts'
+import { applySharedSummaryPointers, buildSearchDocs, edgeRefForSeq, makeTools, mnRefIndex, type ToolEnvironment } from '../src/tools.ts'
 import { blockRegistry, rebuildBlockLedger, reasoningOf, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
 import { rangeTable } from '../src/nudge.ts'
 import { SUMMARY_FRAME_PREFIX, reasoningForToolCall } from '../src/messages.ts'
@@ -463,6 +463,41 @@ test('M3: a distillation edge inside a shared-summary group widens to the whole 
     registry.map((entry) => entry.blockId).sort(),
     'every part of the group is a parent — no tail pointer is left behind',
   )
+})
+
+/**
+ * The floor runs BEFORE the pointer rewrite (owner ruling, 2026-10-17). A short
+ * summary used to be checked against the model's text on part 1 (refused) and
+ * against the 179-char pointer on parts 2..N (accepted) — landing tail pointers
+ * whose head never existed. Now every part is judged on the real text.
+ */
+test('M3: a too-short shared summary refuses the whole group — no orphan pointer parts', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(24)
+  const compress = toolOf(env, 'compress')
+  const nodes = [...session.surface.nodes]
+  const result = await compress.execute({
+    content: [{ startSeq: nodes[0]!, endSeq: 'sweep', summary: 'too short' }],
+  } as never, fakeExec(session))
+  const text = (result as { text: string }).text
+  assert.match(text, /Compressed 0 block\(s\)/, `nothing lands (${text.slice(0, 160)})`)
+  assert.match(text, /Summary too short/)
+  assert.equal(rebuildBlockLedger(session.snapshotEvents()).length, 0, 'no headless pointer block survives')
+  assert.ok(!text.includes('shared summary — part'), 'no pointer text is written anywhere')
+})
+
+test('M3: shared pointers are numbered over the survivors, never over the original entry order', () => {
+  // Part 1 was refused by the floor; these are the two parts that actually land.
+  const survivors = [
+    { summary: 'the real text', sharedSummaryKey: 0 },
+    { summary: 'the real text', sharedSummaryKey: 0 },
+  ]
+  applySharedSummaryPointers(survivors)
+  assert.equal(survivors[0]!.summary, 'the real text', 'the first survivor carries the full text')
+  assert.match(survivors[1]!.summary, /part 2\/2/, 'and numbering restarts at 1, not at the refused part')
+  const solo = [{ summary: 'only survivor', sharedSummaryKey: 3 }]
+  applySharedSummaryPointers(solo)
+  assert.equal(solo[0]!.summary, 'only survivor', 'a single survivor never becomes a pointer')
 })
 
 test('M3: compress accepts multiple disjoint ranges in one call, each its own block', async () => {

@@ -9406,6 +9406,22 @@ function summaryFloorRefusal(session, range, floor) {
   if (!bound || length >= floor) return void 0;
   return `  seqs ${String(range.startSeq)}..${String(range.endSeq)} skipped \u2014 Summary too short (${String(length)} chars, min ${String(floor)}). ${distilled ? "A block-ref distillation" : `This span is ~${String(tokens)} tokens`} needs a real summary; only spans under ~${String(SHORT_SPAN_SUMMARY_TOKENS)} tokens may fold with a shorter one.`;
 }
+function applySharedSummaryPointers(ranges) {
+  const groupsOfEntry = /* @__PURE__ */ new Map();
+  for (const range of ranges) {
+    const key = range.sharedSummaryKey ?? -1;
+    const list = groupsOfEntry.get(key);
+    if (list === void 0) groupsOfEntry.set(key, [range]);
+    else list.push(range);
+  }
+  for (const group of groupsOfEntry.values()) {
+    if (group.length < 2) continue;
+    for (const [index, range] of group.entries()) {
+      if (index === 0) continue;
+      range.summary = `[shared summary \u2014 part ${String(index + 1)}/${String(group.length)} of this compress call; the full text is on its first block]`;
+    }
+  }
+}
 var MN_RE = /^m0*(\d{1,7})(?:#.*)?$/i;
 function mnRefIndex(value) {
   const match = MN_RE.exec(value.trim());
@@ -9771,20 +9787,6 @@ async function handleCompress(env, args, exec) {
       ...(range.topic ?? args.topic) === void 0 ? {} : { topic: range.topic ?? args.topic }
     });
   }
-  const groupsOfEntry = /* @__PURE__ */ new Map();
-  for (const range of ranges) {
-    const key = range.sharedSummaryKey ?? -1;
-    const list = groupsOfEntry.get(key);
-    if (list === void 0) groupsOfEntry.set(key, [range]);
-    else list.push(range);
-  }
-  for (const group of groupsOfEntry.values()) {
-    if (group.length < 2) continue;
-    for (const [index, range] of group.entries()) {
-      if (index === 0) continue;
-      range.summary = `[shared summary \u2014 part ${String(index + 1)}/${String(group.length)} of this compress call; the full text is on its first block]`;
-    }
-  }
   const floorNotes = [];
   const foldable = ranges.filter((range) => {
     const refusal = summaryFloorRefusal(session, range, config.compress.minSummaryLength);
@@ -9792,6 +9794,7 @@ async function handleCompress(env, args, exec) {
     floorNotes.push(refusal);
     return false;
   });
+  applySharedSummaryPointers(foldable);
   if (foldable.length === 0) {
     const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...sweepNotes, ...sharedGroupNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes];
     if (alreadyCompressedNotes.length > 0) {

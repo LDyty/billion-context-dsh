@@ -335,6 +335,34 @@ export function summaryFloorRefusal(
 }
 
 /**
+ * ONE summary, MANY blocks (owner ruling, 2026-10-17): a sweep expands one entry
+ * into N spans and a carrier split turns one entry into N runs, so the FULL text
+ * lands on the FIRST surviving block and the rest carry a pointer a reader can
+ * follow. MUST run AFTER the summary floor: the group is built from the entries
+ * that will actually land, so (a) a refused head can never leave tail pointers
+ * aimed at a block that does not exist, and (b) numbering restarts at the first
+ * survivor (`part 2/M`), not at the model's original entry order.
+ */
+export function applySharedSummaryPointers<T extends { summary: string; sharedSummaryKey?: number }>(
+  ranges: readonly T[],
+): void {
+  const groupsOfEntry = new Map<number, T[]>()
+  for (const range of ranges) {
+    const key = range.sharedSummaryKey ?? -1
+    const list = groupsOfEntry.get(key)
+    if (list === undefined) groupsOfEntry.set(key, [range])
+    else list.push(range)
+  }
+  for (const group of groupsOfEntry.values()) {
+    if (group.length < 2) continue
+    for (const [index, range] of group.entries()) {
+      if (index === 0) continue
+      range.summary = `[shared summary — part ${String(index + 1)}/${String(group.length)} of this compress call; the full text is on its first block]`
+    }
+  }
+}
+
+/**
  * Match a drilldown mN ref: "m00306" / "m306" (kernel `refToIndex` semantics,
  * `m0*(\d{1,7})`), tolerating a trailing `#callId` fragment (symmetric with
  * `parseSeq`'s `#` handling). Returns the ref index, or null for non-mN input.
@@ -1133,32 +1161,15 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     })
   }
 
-  // ONE summary, MANY blocks (owner ruling, 2026-10-17): a sweep expands one entry
-  // into N spans and a carrier split turns one entry into N runs, and every one of
-  // them used to store the model's summary verbatim — measured live, a 12-part
-  // sweep carried twelve copies of the same 923-token text (~10K tokens of pure
-  // duplication on the surface). So the FULL text lands on the FIRST block of the
-  // group and the rest carry a pointer that a reader can follow: the parts sit next
-  // to each other on the surface, so "this call's first block" needs no block id.
-  const groupsOfEntry = new Map<number, typeof ranges>()
-  for (const range of ranges) {
-    const key = range.sharedSummaryKey ?? -1
-    const list = groupsOfEntry.get(key)
-    if (list === undefined) groupsOfEntry.set(key, [range])
-    else list.push(range)
-  }
-  for (const group of groupsOfEntry.values()) {
-    if (group.length < 2) continue
-    for (const [index, range] of group.entries()) {
-      if (index === 0) continue
-      range.summary = `[shared summary — part ${String(index + 1)}/${String(group.length)} of this compress call; the full text is on its first block]`
-    }
-  }
-
   // The summary floor, applied ENTRY BY ENTRY (see summaryFloorRefusal): this is
   // the one thing the kernel cannot do, because it takes the floor per call —
   // so a call that mixes junk slivers with real content waives it for the small
   // spans and keeps it for the large ones, exactly as written.
+  //
+  // BEFORE the shared-pointer rewrite (owner ruling, 2026-10-17): parts 2..N are
+  // 179-char boilerplate, so checking them after the rewrite measured the pointer
+  // instead of the model's text — with a raised floor the head was refused while
+  // its tail "passed", leaving pointers aimed at a block that never landed.
   const floorNotes: string[] = []
   const foldable = ranges.filter((range) => {
     const refusal = summaryFloorRefusal(session, range, config.compress.minSummaryLength)
@@ -1166,6 +1177,8 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     floorNotes.push(refusal)
     return false
   })
+  // Number the SURVIVORS: full text on the first one that will actually land.
+  applySharedSummaryPointers(foldable)
 
   // Nothing to do: every requested range was already compressed, rejected, or
   // a duplicate of an earlier range in the same call.
