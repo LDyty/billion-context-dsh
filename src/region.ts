@@ -81,6 +81,100 @@ export interface AcpBlockLedgerEntry {
   readonly createdAt: number
 }
 
+/**
+ * A sweep (and a carrier split) writes ONE model summary and stores it on the
+ * first block only; every later part carries this pointer instead of a ~1K
+ * duplicate. The pointer names its position (`part k/N`) — enough to locate the
+ * whole group in ledger order without writing a block id into the visible text
+ * (owner ruling: the summary text stays free of `bN` references).
+ */
+const SHARED_SUMMARY_POINTER = /\[shared summary — part (\d+)\/(\d+) of this compress call; the full text is on its first block\]/
+
+/** Parse a shared-summary pointer; undefined for a real summary. */
+export function sharedSummaryPartOf(summary: string): { part: number; total: number } | undefined {
+  const match = SHARED_SUMMARY_POINTER.exec(summary)
+  if (match === null) return undefined
+  const part = Number(match[1])
+  const total = Number(match[2])
+  if (!Number.isInteger(part) || !Number.isInteger(total) || part < 2 || total < part) return undefined
+  return { part, total }
+}
+
+/** Where a shared-summary group sits in the ledger (creation order). */
+export interface SharedSummaryGroup {
+  /** Index of the block that carries the full text. */
+  readonly headIndex: number
+  /** Index of the group's last part. */
+  readonly tailIndex: number
+  /** This block's own part number (≥2 — the head is not a pointer). */
+  readonly part: number
+  readonly total: number
+}
+
+/**
+ * Locate the whole group a pointer block belongs to. The group is contiguous in
+ * ledger order (one compress call creates its parts together), so the pointer's
+ * `part k/N` gives the head at `index − (k−1)`. Every step is validated — a
+ * malformed or hand-edited pointer degrades to `undefined` (no resolution)
+ * rather than pointing a distillation at the wrong text.
+ */
+export function sharedSummaryGroupOf(
+  ledger: readonly AcpBlockLedgerEntry[],
+  blockId: string,
+): SharedSummaryGroup | undefined {
+  const index = ledger.findIndex((entry) => entry.blockId === blockId)
+  if (index < 0) return undefined
+  const own = sharedSummaryPartOf(ledger[index]!.summary)
+  if (own === undefined) return undefined
+  const headIndex = index - (own.part - 1)
+  const tailIndex = headIndex + own.total - 1
+  if (headIndex < 0 || tailIndex >= ledger.length) return undefined
+  // The head must carry real text, not another pointer.
+  if (sharedSummaryPartOf(ledger[headIndex]!.summary) !== undefined) return undefined
+  for (let at = headIndex + 1; at <= tailIndex; at += 1) {
+    const parsed = sharedSummaryPartOf(ledger[at]!.summary)
+    if (parsed === undefined || parsed.total !== own.total || parsed.part !== at - headIndex + 1) return undefined
+  }
+  return { headIndex, tailIndex, part: own.part, total: own.total }
+}
+
+/**
+ * Every entry's summary with shared-summary pointers resolved to the text on
+ * their group's head. One linear pass; a group that fails validation keeps its
+ * literal text (a malformed log must never mis-attribute another block's text).
+ */
+export function resolvedSummariesOf(ledger: readonly AcpBlockLedgerEntry[]): string[] {
+  const out = ledger.map((entry) => entry.summary)
+  let at = 0
+  while (at < ledger.length) {
+    const own = sharedSummaryPartOf(ledger[at]!.summary)
+    if (own === undefined) {
+      at += 1
+      continue
+    }
+    const headIndex = at - (own.part - 1)
+    const tailIndex = headIndex + own.total - 1
+    if (headIndex >= 0 && tailIndex < ledger.length && sharedSummaryPartOf(ledger[headIndex]!.summary) === undefined) {
+      let valid = true
+      for (let index = headIndex + 1; index <= tailIndex; index += 1) {
+        const parsed = sharedSummaryPartOf(ledger[index]!.summary)
+        if (parsed === undefined || parsed.total !== own.total || parsed.part !== index - headIndex + 1) {
+          valid = false
+          break
+        }
+      }
+      if (valid) {
+        const text = ledger[headIndex]!.summary
+        for (let index = headIndex; index <= tailIndex; index += 1) out[index] = text
+        at = tailIndex + 1
+        continue
+      }
+    }
+    at += 1
+  }
+  return out
+}
+
 /** The open turn number, or null when the log ends between turns. */
 export function findOpenTurn(events: readonly SessionEvent[]): number | null {
   let open: number | null = null

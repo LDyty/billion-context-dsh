@@ -74,6 +74,37 @@ test('M2: kernel blocks rehydrate from the log with tier and original coverage',
   assert.equal(state.nextBlockId, 3, 'next kernel block id continues after the rehydrated max')
 })
 
+/**
+ * A sweep's later parts store a `part k/N` pointer, not the summary text. The
+ * kernel must never reason over the pointer: rehydration resolves every part to
+ * the head's real text (the durable log keeps the pointer — only the kernel view
+ * is resolved).
+ */
+test('M2: a rehydrated sweep group exposes the real summary, not the pointer', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(24)
+  const compress = toolOf(env, 'compress')
+  const nodes = [...session.surface.nodes]
+  const shared = 'Sweep round: consumed probe output and its retries; the raw logs stay recoverable by decompress. '.repeat(4)
+  await compress.execute({
+    content: [{ startSeq: nodes[0]!, endSeq: 'sweep', summary: shared }],
+  } as never, fakeExec(session))
+  const ledger = rebuildBlockLedger(session.snapshotEvents())
+  assert.ok(ledger.length >= 2, `the sweep produced a group (${String(ledger.length)} blocks)`)
+  assert.ok(ledger[0]!.summary.includes('Sweep round'), 'the head carries the text')
+  assert.ok(
+    ledger.slice(1).every((entry) => entry.summary.includes('shared summary — part')),
+    'the other parts carry a pointer on the surface',
+  )
+  const state = new AcpStateStore().stateFor(session)
+  assert.equal(state.blocks.length, ledger.length)
+  assert.deepEqual(
+    state.blocks.map((block) => block.summary),
+    ledger.map(() => ledger[0]!.summary),
+    'every rehydrated part sees the head text, so search/status/distillation never read a pointer',
+  )
+})
+
 test('M2: rehydrated blocks stay anchorable — tier 3 works after a restart', async () => {
   const env = makeEnv()
   const session = buildTextSession(12)

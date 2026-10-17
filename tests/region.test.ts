@@ -19,6 +19,8 @@ import {
   resolveSurfaceRange,
   runCompactionTransaction,
   shadowedSeqsOf,
+  sharedSummaryGroupOf,
+  sharedSummaryPartOf,
   stripOrphanedSurfaceToolMessages,
 } from '../src/region.ts'
 import { appendTurn, appendToolCall, appendToolResult, appendEmptyToolResult, appendMultiToolCall, appendUser, appendAssistant, buildTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
@@ -32,6 +34,37 @@ test('M2: AcpStateStore initialises one state per session', () => {
   assert.notEqual(store.stateFor(other), first, 'different session gets its own state')
   store.delete(session)
   assert.notEqual(store.stateFor(session), first, 'delete drops the cache')
+})
+
+test('shared summary groups: a pointer resolves to its head, malformed pointers degrade', () => {
+  const entry = (blockId: string, summary: string) => ({
+    blockId,
+    summary,
+    shadowedSeqs: [] as number[],
+    shadowedTokenCount: 0,
+    start: 0,
+    end: 0,
+    tier: 1 as const,
+    parentBlockIds: [] as string[],
+    createdAt: 1,
+  })
+  const pointer = (part: number, total: number): string =>
+    `[Model-written summary — not user words]\n[shared summary — part ${String(part)}/${String(total)} of this compress call; the full text is on its first block]`
+  const good = [entry('h', 'real text'), entry('p2', pointer(2, 3)), entry('p3', pointer(3, 3))]
+  assert.deepEqual(sharedSummaryGroupOf(good, 'p2'), { headIndex: 0, tailIndex: 2, part: 2, total: 3 })
+  assert.deepEqual(sharedSummaryGroupOf(good, 'p3'), { headIndex: 0, tailIndex: 2, part: 3, total: 3 })
+  assert.equal(sharedSummaryGroupOf(good, 'h'), undefined, 'the head is real text, not a group member')
+  // A gap (a real summary where part 2 belongs) breaks the run: refuse rather
+  // than point a distillation at the wrong block's text.
+  assert.equal(
+    sharedSummaryGroupOf([entry('h', 'real'), entry('x', 'other real text'), entry('p3', pointer(3, 3))], 'p3'),
+    undefined,
+  )
+  // Out of range / nonsense part numbers are not pointers.
+  assert.equal(sharedSummaryPartOf(pointer(1, 3)), undefined)
+  assert.equal(sharedSummaryPartOf(pointer(0, 3)), undefined)
+  assert.equal(sharedSummaryPartOf(pointer(4, 3)), undefined)
+  assert.equal(sharedSummaryPartOf('a real summary'), undefined)
 })
 
 test('M5: findOpenTurn / assertNoActiveCompaction track the durable lock', () => {

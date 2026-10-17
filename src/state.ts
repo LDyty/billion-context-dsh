@@ -20,7 +20,7 @@
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { createInitialState, type CompressionBlock, type CompressionState } from 'acp-kernel'
 import { DEFAULT_SESSION_CACHE_LIMIT, LruMap } from './lru.ts'
-import { rebuildBlockLedger } from './region.ts'
+import { rebuildBlockLedger, resolvedSummariesOf } from './region.ts'
 import { sessionEventsOf } from './session-events.ts'
 
 /** Rebuild kernel `CompressionBlock`s from the durable ledger (no kernel run needed). */
@@ -53,9 +53,16 @@ function rebuildKernelBlocks(events: readonly SessionEvent[]): CompressionBlock[
   for (const entry of ledger) {
     for (const parent of entry.parentBlockIds) consumed.add(parent)
   }
+  const resolvedSummaries = resolvedSummariesOf(ledger)
   const blocks: CompressionBlock[] = []
-  for (const entry of ledger) {
+  for (const [ledgerIndex, entry] of ledger.entries()) {
     const blockId = kernelIdOf.get(entry.blockId)!
+    // A shared-summary pointer ("part k/N, full text on the first block") is a
+    // storage optimisation, not a summary: the kernel must see the real text so
+    // search/docs/status and any later distillation reason over content rather
+    // than 14 copies of a pointer. The durable log keeps the pointer; only the
+    // rehydrated kernel view is resolved.
+    const summary = resolvedSummaries[ledgerIndex] ?? entry.summary
     // The kernel anchors a block by its effectiveMessageIds. Since the tier
     // feature, the transaction records the kernel block's raw coverage
     // (direct/effective message ids) verbatim, so rehydration is faithful —
@@ -72,7 +79,7 @@ function rebuildKernelBlocks(events: readonly SessionEvent[]): CompressionBlock[
       blockId,
       runId: `r${blocks.length + 1}`,
       tier: entry.tier,
-      summary: entry.summary,
+      summary,
       ...(entry.topic === undefined ? {} : { topic: entry.topic }),
       directMessageIds: [...direct],
       effectiveMessageIds: [...effective],

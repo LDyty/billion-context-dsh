@@ -40,6 +40,8 @@ import {
   openToolCallIds,
   sliceDecompressPage,
   surfaceSummary,
+  sharedSummaryGroupOf,
+  resolvedSummariesOf,
   buildCompressibleSeqRanges,
   foldCostsOfRanges,
   sweepFromBaseRange,
@@ -231,6 +233,53 @@ function parseSeq(value: number | string): number {
  * model then has to read back.
  */
 export const SHORT_SPAN_SUMMARY_TOKENS = 500
+
+/**
+ * A sweep stores ONE summary on its first block and a `part k/N` pointer on the
+ * rest (de6d00a). That is a storage optimisation, not content: distilling a
+ * SUB-range of such a group would hand the model 14 pointers and no text, and a
+ * partial fold would consume the head while leaving tail pointers behind.
+ * So any distillation edge that lands inside a shared group is widened to the
+ * group's full extent (head..tail), and the result says so. Plain message
+ * ranges are untouched — they never touch a live carrier in the first place.
+ */
+function snapSharedSummarySpan(
+  session: Session,
+  start: number,
+  end: number,
+): { range: ResolvedSurfaceRange; note: string } | undefined {
+  const startRef = blockRefForSummarySeq(session, start)
+  const endRef = blockRefForSummarySeq(session, end)
+  if (startRef === null && endRef === null) return undefined
+  const ledger = rebuildBlockLedger(sessionEventsOf(session))
+  const registry = blockRegistry(session)
+  const indexOfRef = (ref: string): number => {
+    const blockId = registry.find((entry) => entry.kernelBlockId === ref)?.blockId
+    return blockId === undefined ? -1 : ledger.findIndex((entry) => entry.blockId === blockId)
+  }
+  const groupOfRef = (ref: string): { headIndex: number; tailIndex: number } | undefined => {
+    const at = indexOfRef(ref)
+    if (at < 0) return undefined
+    return sharedSummaryGroupOf(ledger, ledger[at]!.blockId)
+  }
+  const startGroup = startRef === null ? undefined : groupOfRef(startRef)
+  const endGroup = endRef === null ? undefined : groupOfRef(endRef)
+  if (startGroup === undefined && endGroup === undefined) return undefined
+  const headIndex = Math.min(startGroup?.headIndex ?? Number.POSITIVE_INFINITY, endGroup?.headIndex ?? Number.POSITIVE_INFINITY)
+  const tailIndex = Math.max(startGroup?.tailIndex ?? -1, endGroup?.tailIndex ?? -1)
+  if (!Number.isFinite(headIndex) || tailIndex < 0) return undefined
+  const head = ledger[headIndex]
+  const tail = ledger[tailIndex]
+  if (head?.summarySeq == null || tail?.summarySeq == null) return undefined
+  if (head.summarySeq === start && tail.summarySeq === end) return undefined
+  const range = resolveSurfaceRange(session, head.summarySeq, tail.summarySeq)
+  const refOf = (blockId: string): string => registry.find((entry) => entry.blockId === blockId)?.kernelBlockId ?? blockId.slice(0, 8)
+  return {
+    range,
+    note: `  distillation ${String(startRef ?? start)}..${String(endRef ?? end)} lies inside a shared-summary group — `
+      + `widened to ${refOf(head.blockId)}..${refOf(tail.blockId)} so the full summary text is inside the distilled span`,
+  }
+}
 
 /**
  * The host price of one folded span: every surface event between its edges,
@@ -877,6 +926,10 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // Ranges salvaged by cutting them around live checkpoint carriers (see the
   // carrier branch below): facts for the model, not failures.
   const splitNotes: string[] = []
+  // Distillation edges widened to their shared-summary group (see
+  // snapSharedSummarySpan): the group stores one text + pointers, so a partial
+  // fold would distil pointers instead of content.
+  const sharedGroupNotes: string[] = []
   const carrierSpans = env.carrierSpans ?? 'split'
   for (const [entryIndex, range] of expanded.entries()) {
     /** Which of the model's entries this range descends from (a sweep's parts and
@@ -908,6 +961,14 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
         continue
       }
       throw error
+    }
+    // Resolve shared-summary pointers at the boundary: a distillation that named
+    // a pointer part must include the block carrying the text (and the whole
+    // group, so no tail pointer outlives its consumed head).
+    const snapped = snapSharedSummarySpan(session, resolved.start, resolved.end)
+    if (snapped !== undefined) {
+      resolved = snapped.range
+      sharedGroupNotes.push(snapped.note)
     }
     // A span is not allowed to FOLD a CURRENT injected policy row: the host
     // re-injects the newest AGENTS.md copy the moment it leaves the surface
@@ -1109,7 +1170,7 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
   // Nothing to do: every requested range was already compressed, rejected, or
   // a duplicate of an earlier range in the same call.
   if (foldable.length === 0) {
-    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...sweepNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes]
+    const text = ['Compressed 0 block(s), ~0 tokens reclaimed.', ...sweepNotes, ...sharedGroupNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes]
     if (alreadyCompressedNotes.length > 0) {
       text.push('  (all requested ranges were already compressed — decompress a block to recover its originals)')
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
@@ -1274,12 +1335,32 @@ async function handleCompress(env: ToolEnvironment, args: CompressArgs, exec: To
     )
   }
 
+  // The durable log stores ONE text + pointers for a sweep; the live kernel
+  // view is resolved here — AFTER the transactions above landed — so it matches
+  // what a restarted engine rehydrates (state.ts). Search, status and any later
+  // distillation then see the real text instead of "part k/N".
+  {
+    const liveLedger = rebuildBlockLedger(sessionEventsOf(session))
+    const liveSummaries = resolvedSummariesOf(liveLedger)
+    const summaryByKernelId = new Map<string, string>()
+    for (const [index, entry] of liveLedger.entries()) {
+      if (entry.kernelBlockId === undefined) continue
+      summaryByKernelId.set(entry.kernelBlockId, liveSummaries[index]!)
+    }
+    applied.state.blocks = applied.state.blocks.map((block) => {
+      const summary = summaryByKernelId.get(block.blockId)
+      return summary === undefined || summary === block.summary ? block : { ...block, summary }
+    })
+    env.store.set(session, applied.state)
+  }
+
   const summaryLine = `Compressed ${applied.result.blocksCreated} block(s), ~${applied.result.tokensCompressed} tokens reclaimed.`
   const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length + floorNotes.length
   const failedLines = applied.result.errors.map((error) => `  ${error}`)
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
     ...sweepNotes,
+    ...sharedGroupNotes,
     ...failedLines,
     ...alreadyCompressedNotes,
     ...duplicateRangeNotes,
@@ -1410,17 +1491,21 @@ export function buildSearchDocs(session: Session): SearchDoc[] {
   const cached = searchDocsCache.get(events)
   if (cached !== undefined) return cached
   const ledger = rebuildBlockLedger(events)
+  const resolvedSummaries = resolvedSummariesOf(ledger)
   const docs: SearchDoc[] = []
   const claimed = new Set<number>()
-  for (const block of ledger) {
+  for (const [ledgerIndex, block] of ledger.entries()) {
+    // A sweep's later parts carry only a pointer; search must index the text
+    // they point at, or a query for the folded material finds 14 dead ends.
+    const summary = resolvedSummaries[ledgerIndex] ?? block.summary
     docs.push({
       kind: 'block',
       ref: block.blockId,
-      text: block.summary,
-      title: block.summary.slice(0, 60) || block.blockId,
+      text: summary,
+      title: summary.slice(0, 60) || block.blockId,
       blockId: block.blockId,
       tier: block.tier,
-      tokens: defaultCountTokens(block.summary),
+      tokens: defaultCountTokens(summary),
     })
     for (const seq of expandShadowedSeqs(session, block.blockId)) {
       if (claimed.has(seq)) continue

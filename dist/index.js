@@ -7184,6 +7184,61 @@ function acpGuidanceMessageToInject(session, prompts) {
 }
 
 // src/region.ts
+var SHARED_SUMMARY_POINTER = /\[shared summary — part (\d+)\/(\d+) of this compress call; the full text is on its first block\]/;
+function sharedSummaryPartOf(summary) {
+  const match = SHARED_SUMMARY_POINTER.exec(summary);
+  if (match === null) return void 0;
+  const part = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isInteger(part) || !Number.isInteger(total) || part < 2 || total < part) return void 0;
+  return { part, total };
+}
+function sharedSummaryGroupOf(ledger, blockId) {
+  const index = ledger.findIndex((entry) => entry.blockId === blockId);
+  if (index < 0) return void 0;
+  const own = sharedSummaryPartOf(ledger[index].summary);
+  if (own === void 0) return void 0;
+  const headIndex = index - (own.part - 1);
+  const tailIndex = headIndex + own.total - 1;
+  if (headIndex < 0 || tailIndex >= ledger.length) return void 0;
+  if (sharedSummaryPartOf(ledger[headIndex].summary) !== void 0) return void 0;
+  for (let at = headIndex + 1; at <= tailIndex; at += 1) {
+    const parsed = sharedSummaryPartOf(ledger[at].summary);
+    if (parsed === void 0 || parsed.total !== own.total || parsed.part !== at - headIndex + 1) return void 0;
+  }
+  return { headIndex, tailIndex, part: own.part, total: own.total };
+}
+function resolvedSummariesOf(ledger) {
+  const out = ledger.map((entry) => entry.summary);
+  let at = 0;
+  while (at < ledger.length) {
+    const own = sharedSummaryPartOf(ledger[at].summary);
+    if (own === void 0) {
+      at += 1;
+      continue;
+    }
+    const headIndex = at - (own.part - 1);
+    const tailIndex = headIndex + own.total - 1;
+    if (headIndex >= 0 && tailIndex < ledger.length && sharedSummaryPartOf(ledger[headIndex].summary) === void 0) {
+      let valid = true;
+      for (let index = headIndex + 1; index <= tailIndex; index += 1) {
+        const parsed = sharedSummaryPartOf(ledger[index].summary);
+        if (parsed === void 0 || parsed.total !== own.total || parsed.part !== index - headIndex + 1) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid) {
+        const text = ledger[headIndex].summary;
+        for (let index = headIndex; index <= tailIndex; index += 1) out[index] = text;
+        at = tailIndex + 1;
+        continue;
+      }
+    }
+    at += 1;
+  }
+  return out;
+}
 function findOpenTurn(events) {
   let open = null;
   for (const event of events) {
@@ -8222,16 +8277,18 @@ function rebuildKernelBlocks(events) {
   for (const entry of ledger) {
     for (const parent of entry.parentBlockIds) consumed.add(parent);
   }
+  const resolvedSummaries = resolvedSummariesOf(ledger);
   const blocks = [];
-  for (const entry of ledger) {
+  for (const [ledgerIndex, entry] of ledger.entries()) {
     const blockId = kernelIdOf.get(entry.blockId);
+    const summary = resolvedSummaries[ledgerIndex] ?? entry.summary;
     const direct = entry.directMessageIds ?? [...entry.shadowedSeqs.map(String)];
     const effective = entry.effectiveMessageIds ?? (entry.tier > 1 ? entry.summarySeq === void 0 ? [...entry.shadowedSeqs.map(String)] : [String(entry.summarySeq)] : [...entry.shadowedSeqs.map(String)]);
     blocks.push({
       blockId,
       runId: `r${blocks.length + 1}`,
       tier: entry.tier,
-      summary: entry.summary,
+      summary,
       ...entry.topic === void 0 ? {} : { topic: entry.topic },
       directMessageIds: [...direct],
       effectiveMessageIds: [...effective],
@@ -9300,6 +9357,38 @@ function parseSeq(value) {
   return seq;
 }
 var SHORT_SPAN_SUMMARY_TOKENS = 500;
+function snapSharedSummarySpan(session, start, end) {
+  const startRef = blockRefForSummarySeq(session, start);
+  const endRef = blockRefForSummarySeq(session, end);
+  if (startRef === null && endRef === null) return void 0;
+  const ledger = rebuildBlockLedger(sessionEventsOf(session));
+  const registry3 = blockRegistry(session);
+  const indexOfRef = (ref) => {
+    const blockId = registry3.find((entry) => entry.kernelBlockId === ref)?.blockId;
+    return blockId === void 0 ? -1 : ledger.findIndex((entry) => entry.blockId === blockId);
+  };
+  const groupOfRef = (ref) => {
+    const at = indexOfRef(ref);
+    if (at < 0) return void 0;
+    return sharedSummaryGroupOf(ledger, ledger[at].blockId);
+  };
+  const startGroup = startRef === null ? void 0 : groupOfRef(startRef);
+  const endGroup = endRef === null ? void 0 : groupOfRef(endRef);
+  if (startGroup === void 0 && endGroup === void 0) return void 0;
+  const headIndex = Math.min(startGroup?.headIndex ?? Number.POSITIVE_INFINITY, endGroup?.headIndex ?? Number.POSITIVE_INFINITY);
+  const tailIndex = Math.max(startGroup?.tailIndex ?? -1, endGroup?.tailIndex ?? -1);
+  if (!Number.isFinite(headIndex) || tailIndex < 0) return void 0;
+  const head = ledger[headIndex];
+  const tail = ledger[tailIndex];
+  if (head?.summarySeq == null || tail?.summarySeq == null) return void 0;
+  if (head.summarySeq === start && tail.summarySeq === end) return void 0;
+  const range = resolveSurfaceRange(session, head.summarySeq, tail.summarySeq);
+  const refOf = (blockId) => registry3.find((entry) => entry.blockId === blockId)?.kernelBlockId ?? blockId.slice(0, 8);
+  return {
+    range,
+    note: `  distillation ${String(startRef ?? start)}..${String(endRef ?? end)} lies inside a shared-summary group \u2014 widened to ${refOf(head.blockId)}..${refOf(tail.blockId)} so the full summary text is inside the distilled span`
+  };
+}
 function foldedSpanTokens(session, start, end) {
   let total = 0;
   for (let seq = start; seq <= end; seq += 1) {
@@ -9564,6 +9653,7 @@ async function handleCompress(env, args, exec) {
   const duplicateRangeNotes = [];
   const guardedSeqs = guardedSurfaceSeqsOf(session);
   const splitNotes = [];
+  const sharedGroupNotes = [];
   const carrierSpans = env.carrierSpans ?? "split";
   for (const [entryIndex, range] of expanded.entries()) {
     const sharedSummaryKey = range.sharedSummaryKey ?? entryIndex;
@@ -9582,6 +9672,11 @@ async function handleCompress(env, args, exec) {
         continue;
       }
       throw error;
+    }
+    const snapped = snapSharedSummarySpan(session, resolved.start, resolved.end);
+    if (snapped !== void 0) {
+      resolved = snapped.range;
+      sharedGroupNotes.push(snapped.note);
     }
     const shadowedSpan = shadowedSeqsOf(session, resolved.start, resolved.end);
     const instructionHits = guardedRowsInSpan(guardedSeqs, shadowedSpan);
@@ -9698,7 +9793,7 @@ async function handleCompress(env, args, exec) {
     return false;
   });
   if (foldable.length === 0) {
-    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...sweepNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes];
+    const text = ["Compressed 0 block(s), ~0 tokens reclaimed.", ...sweepNotes, ...sharedGroupNotes, ...alreadyCompressedNotes, ...duplicateRangeNotes, ...rejectedNotes, ...splitNotes, ...floorNotes];
     if (alreadyCompressedNotes.length > 0) {
       text.push("  (all requested ranges were already compressed \u2014 decompress a block to recover its originals)");
     } else if (duplicateRangeNotes.length > 0 && rejectedNotes.length === 0) {
@@ -9808,12 +9903,27 @@ async function handleCompress(env, args, exec) {
       `  block ${compactionId.slice(0, 8)}: seqs ${start}..${end}, ${shadowed.length} messages shadowed${tierLabel2}${readingsLabel}${note}`
     );
   }
+  {
+    const liveLedger = rebuildBlockLedger(sessionEventsOf(session));
+    const liveSummaries = resolvedSummariesOf(liveLedger);
+    const summaryByKernelId = /* @__PURE__ */ new Map();
+    for (const [index, entry] of liveLedger.entries()) {
+      if (entry.kernelBlockId === void 0) continue;
+      summaryByKernelId.set(entry.kernelBlockId, liveSummaries[index]);
+    }
+    applied.state.blocks = applied.state.blocks.map((block) => {
+      const summary = summaryByKernelId.get(block.blockId);
+      return summary === void 0 || summary === block.summary ? block : { ...block, summary };
+    });
+    env.store.set(session, applied.state);
+  }
   const summaryLine = `Compressed ${applied.result.blocksCreated} block(s), ~${applied.result.tokensCompressed} tokens reclaimed.`;
   const totalSkipped = skippedRanges + alreadyCompressedNotes.length + duplicateRangeNotes.length + rejectedNotes.length + floorNotes.length;
   const failedLines = applied.result.errors.map((error) => `  ${error}`);
   const warningLines = [
     ...freeWarnings.map((warning) => `  ${warning}`),
     ...sweepNotes,
+    ...sharedGroupNotes,
     ...failedLines,
     ...alreadyCompressedNotes,
     ...duplicateRangeNotes,
@@ -9908,17 +10018,19 @@ function buildSearchDocs(session) {
   const cached = searchDocsCache.get(events);
   if (cached !== void 0) return cached;
   const ledger = rebuildBlockLedger(events);
+  const resolvedSummaries = resolvedSummariesOf(ledger);
   const docs = [];
   const claimed = /* @__PURE__ */ new Set();
-  for (const block of ledger) {
+  for (const [ledgerIndex, block] of ledger.entries()) {
+    const summary = resolvedSummaries[ledgerIndex] ?? block.summary;
     docs.push({
       kind: "block",
       ref: block.blockId,
-      text: block.summary,
-      title: block.summary.slice(0, 60) || block.blockId,
+      text: summary,
+      title: summary.slice(0, 60) || block.blockId,
       blockId: block.blockId,
       tier: block.tier,
-      tokens: defaultCountTokens(block.summary)
+      tokens: defaultCountTokens(summary)
     });
     for (const seq of expandShadowedSeqs(session, block.blockId)) {
       if (claimed.has(seq)) continue;

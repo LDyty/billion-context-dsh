@@ -7,7 +7,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { AcpStateStore } from '../src/state.ts'
-import { edgeRefForSeq, makeTools, mnRefIndex, type ToolEnvironment } from '../src/tools.ts'
+import { buildSearchDocs, edgeRefForSeq, makeTools, mnRefIndex, type ToolEnvironment } from '../src/tools.ts'
 import { blockRegistry, rebuildBlockLedger, reasoningOf, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
 import { rangeTable } from '../src/nudge.ts'
 import { SUMMARY_FRAME_PREFIX, reasoningForToolCall } from '../src/messages.ts'
@@ -406,6 +406,62 @@ test('M3: `endSeq: "sweep"` folds the whole forward run in one call with a share
   assert.ok(
     summaries.slice(1).every((entry) => !entry.includes(shared)),
     'no duplicate of the full text',
+  )
+})
+
+/**
+ * A sweep stores ONE summary on its first block and pointers on the rest. A
+ * distillation that names only a pointer part would otherwise fold pointers
+ * into a tier-2 block while the real text sits outside it, and a partial fold
+ * would consume the head while tail pointers stayed visible. The host widens
+ * such an edge to the whole group and says so.
+ */
+test('M3: a distillation edge inside a shared-summary group widens to the whole group', async () => {
+  const env = makeEnv()
+  const session = buildTextSession(24)
+  const nodes = [...session.surface.nodes]
+  const compress = toolOf(env, 'compress')
+  const shared = 'Sweep round: consumed probe output and its retries — decompress for the raw logs.'
+  const swept = await compress.execute({
+    content: [{ startSeq: nodes[0]!, endSeq: 'sweep', summary: shared }],
+  } as never, fakeExec(session))
+  assert.match((swept as { text: string }).text, /Compressed [2-9] block\(s\)/)
+  const registry = blockRegistry(session)
+  assert.ok(registry.length >= 2, `the sweep produced a group (${String(registry.length)} blocks)`)
+  // Live kernel state and the search index resolve the pointers too — a sweep
+  // must not leave the running process reasoning over "part k/N".
+  const liveState = env.store.stateFor(session)
+  assert.ok(
+    liveState.blocks.slice(1).every((block) => block.summary === liveState.blocks[0]!.summary),
+    'live kernel blocks carry the head text, not the pointer',
+  )
+  const blockDocs = buildSearchDocs(session).filter((doc) => doc.kind === 'block')
+  assert.ok(
+    blockDocs.slice(1).every((doc) => doc.text === blockDocs[0]!.text),
+    'the search index resolves pointers to the text they point at',
+  )
+  const head = registry[0]!
+  const tail = registry.at(-1)!
+  // Naming ONLY the last pointer part must widen to head..tail: the head carries
+  // the text, the tail proves the far edge is covered too.
+  const result = await compress.execute({
+    content: [{
+      startSeq: tail.kernelBlockId,
+      endSeq: tail.kernelBlockId,
+      summary: 'Distilled sweep material: one shared summary, probe output already consumed, raw logs recoverable by decompress.',
+    }],
+  } as never, fakeExec(session))
+  const text = (result as { text: string }).text
+  assert.match(text, /lies inside a shared-summary group/, `the widening is reported (${text.slice(0, 200)})`)
+  assert.match(text, new RegExp(`widened to ${head.kernelBlockId}\\.\\.${tail.kernelBlockId}`), 'the note names the whole group')
+  assert.match(text, /tier 2/, 'the widened call is a distillation')
+  const ledger = rebuildBlockLedger(session.snapshotEvents())
+  const distilled = ledger.at(-1)!
+  assert.equal(distilled.tier, 2)
+  assert.deepEqual(
+    [...distilled.parentBlockIds].sort(),
+    registry.map((entry) => entry.blockId).sort(),
+    'every part of the group is a parent — no tail pointer is left behind',
   )
 })
 

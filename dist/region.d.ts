@@ -43,6 +43,35 @@ export interface AcpBlockLedgerEntry {
     /** Unix epoch ms of the compaction/summary event. */
     readonly createdAt: number;
 }
+/** Parse a shared-summary pointer; undefined for a real summary. */
+export declare function sharedSummaryPartOf(summary: string): {
+    part: number;
+    total: number;
+} | undefined;
+/** Where a shared-summary group sits in the ledger (creation order). */
+export interface SharedSummaryGroup {
+    /** Index of the block that carries the full text. */
+    readonly headIndex: number;
+    /** Index of the group's last part. */
+    readonly tailIndex: number;
+    /** This block's own part number (≥2 — the head is not a pointer). */
+    readonly part: number;
+    readonly total: number;
+}
+/**
+ * Locate the whole group a pointer block belongs to. The group is contiguous in
+ * ledger order (one compress call creates its parts together), so the pointer's
+ * `part k/N` gives the head at `index − (k−1)`. Every step is validated — a
+ * malformed or hand-edited pointer degrades to `undefined` (no resolution)
+ * rather than pointing a distillation at the wrong text.
+ */
+export declare function sharedSummaryGroupOf(ledger: readonly AcpBlockLedgerEntry[], blockId: string): SharedSummaryGroup | undefined;
+/**
+ * Every entry's summary with shared-summary pointers resolved to the text on
+ * their group's head. One linear pass; a group that fails validation keeps its
+ * literal text (a malformed log must never mis-attribute another block's text).
+ */
+export declare function resolvedSummariesOf(ledger: readonly AcpBlockLedgerEntry[]): string[];
 /** The open turn number, or null when the log ends between turns. */
 export declare function findOpenTurn(events: readonly SessionEvent[]): number | null;
 /**
