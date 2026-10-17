@@ -243,7 +243,7 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
  * Stable block slots across refreshes. The naive layout re-indexes every tier
  * from the top, so one new compression would shift EVERY existing block upward.
  * This allocator keeps an existing block's row forever, gives a new block the
- * smallest freed row in its tier, and only compacts on "恢复布局".
+ * smallest freed row in its tier, and only compacts on "重新布局".
  */
 export function applyStableBlockSlots(layout: NetLayout, slots: Map<string, BlockSlot>): NetLayout {
   const present = new Set<string>()
@@ -525,10 +525,11 @@ export function CompressionNetwork(props: {
   }, [apply, canvasHeight, layout.width])
 
   /**
-   * One-click restore: forget every dragged node position and return to the
-   * fitted, un-messed layout. The clean state is written back to localStorage.
+   * One-click re-layout: forget every dragged node position, compact the stable
+   * block slots, and fit the current data. The clean state is written back to
+   * localStorage.
    */
-  const restore = useCallback(() => {
+  const relayout = useCallback(() => {
     blockSlotsRef.current.clear()
     setSlotEpoch((epoch) => epoch + 1)
     setNewBlocks(new Set())
@@ -767,7 +768,7 @@ export function CompressionNetwork(props: {
     else if (event.key === '+' || event.key === '=') { zoomBy(1.2); return }
     else if (event.key === '-') { zoomBy(1 / 1.2); return }
     else if (event.key === '0') { fit(); return }
-    else if (event.key === 'r' || event.key === 'R') { restore(); return }
+    else if (event.key === 'r' || event.key === 'R') { relayout(); return }
     else return
     event.preventDefault()
     apply()
@@ -805,7 +806,7 @@ export function CompressionNetwork(props: {
     h('div', { className: 'acp-net-shell' },
       h('header', { className: 'acp-net-toolbar' },
         h('b', null, '压缩网络'),
-        h('span', { className: 'acp-net-hint' }, '拖拽平移 · 滚轮缩放 · 拖节点改位 · 点击固定 · 双击适配 · R 恢复布局'),
+        h('span', { className: 'acp-net-hint' }, '拖拽平移 · 滚轮缩放 · 拖节点改位 · 点击固定 · 双击适配 · R 重新布局'),
         h('div', { className: 'acp-net-actions' },
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1.2) }, '+'),
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1 / 1.2) }, '−'),
@@ -819,9 +820,9 @@ export function CompressionNetwork(props: {
             : null,
           h('button', {
             className: 'acp-net-btn',
-            title: '清除所有拖动位置，恢复未打乱的布局与适配视图（快捷键 R）',
-            onClick: restore,
-          }, '恢复布局'),
+            title: '清除所有拖动位置，按当前数据重新排版并适配视图（快捷键 R）',
+            onClick: relayout,
+          }, '重新布局'),
           h('button', { className: 'acp-net-btn', onClick: toggleFullscreen }, '全屏'),
           h('button', { className: 'acp-net-btn acp-net-close', onClick: props.onClose }, '关闭'))),
       h('div', { className: 'acp-net-body' },

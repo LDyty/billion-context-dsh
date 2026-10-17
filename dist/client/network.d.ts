@@ -58,7 +58,7 @@ export declare function buildLayout(snapshot: AcpInspectSnapshot): NetLayout;
  * Stable block slots across refreshes. The naive layout re-indexes every tier
  * from the top, so one new compression would shift EVERY existing block upward.
  * This allocator keeps an existing block's row forever, gives a new block the
- * smallest freed row in its tier, and only compacts on "恢复布局".
+ * smallest freed row in its tier, and only compacts on "重新布局".
  */
 export declare function applyStableBlockSlots(layout: NetLayout, slots: Map<string, BlockSlot>): NetLayout;
 /** Forward, backward (tier parent to an earlier tier) or same-column links. */
