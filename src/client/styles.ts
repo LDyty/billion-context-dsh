@@ -122,6 +122,7 @@ export const ACP_PANEL_CSS = `
 .acp-net-btn { border: 1px solid var(--dsw-alias-border-l1, #2a2f38); background: var(--dsw-alias-bg-layer-2, #1c2027); color: inherit; border-radius: 6px; font-size: 11px; padding: 2px 9px; cursor: pointer; font-family: inherit; }
 .acp-net-btn:hover { border-color: var(--dsw-alias-brand-primary, #6aa9ff); }
 .acp-net-close { color: var(--dsw-alias-state-error-primary, #ff8a8a); }
+.acp-net-newbtn { color: #7fd1a6; border-color: color-mix(in srgb, #7fd1a6 55%, transparent); }
 .acp-net-body { flex: 1; min-height: 0; display: flex; }
 .acp-net-stage { flex: 1; position: relative; overflow: hidden; outline: none; touch-action: none; cursor: grab; background: var(--dsw-alias-bg-layer-1, #14161a); }
 .acp-net-stage:active { cursor: grabbing; }
@@ -141,6 +142,8 @@ export const ACP_PANEL_CSS = `
 .acp-net-node.moved { z-index: 4; box-shadow: 0 0 0 1px color-mix(in srgb, var(--dsw-alias-brand-primary, #6aa9ff) 55%, transparent); }
 /* The hovered/pinned card gets a neutral focus ring; lineage colours stay intact. */
 .acp-net-node.focus { border-color: var(--dsw-alias-label-primary, #e6e8ec); box-shadow: 0 0 0 1px color-mix(in srgb, var(--dsw-alias-label-primary, #e6e8ec) 55%, transparent), 0 3px 14px color-mix(in srgb, #000 45%, transparent); }
+.acp-net-node.new { border-color: #7fd1a6; animation: acp-net-pulse 1.1s ease-in-out 3; }
+@keyframes acp-net-pulse { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, #7fd1a6 45%, transparent); } }
 .acp-net-region { border-left: 3px solid var(--dsw-alias-brand-primary, #6aa9ff); }
 .acp-net-range { border-left: 3px solid var(--dsw-alias-state-success-primary, #7fd1a6); }
 .acp-net-sweep { border-left: 3px solid var(--dsw-alias-state-warning-primary, #ffd166); }

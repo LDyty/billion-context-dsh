@@ -42,6 +42,11 @@ interface NetEdge {
   readonly kind: 'owns' | 'sweep' | 'covers' | 'parent'
 }
 
+export interface BlockSlot {
+  readonly tier: number
+  readonly index: number
+}
+
 export interface NetLayout {
   readonly nodes: readonly NetNode[]
   readonly edges: readonly NetEdge[]
@@ -58,8 +63,6 @@ const MAX_BLOCKS = 12
 const RANGE_COLS = 3
 const GRID_GAP = 14
 const BLOCK_GAP = 12
-/** Vertical breathing room between two nodes in the same column ("collision volume"). */
-const NODE_GAP = 8
 const MIN_ZOOM = 0.06
 const MAX_ZOOM = 3
 
@@ -74,43 +77,6 @@ const rangeId = (start: number, end: number): string => `g:${String(start)}:${St
 const regionId = (region: number): string => `r:${String(region)}`
 const sweepId = (rowStart: number): string => `s:${String(rowStart)}`
 const blockId = (id: string): string => `b:${id}`
-
-/**
- * Collision volume: nodes sharing a column may never overlap — each one owns its
- * box plus {@link NODE_GAP} of empty space. Fixed ids (a node the reader just
- * dragged) keep their exact y; the rest are pushed down around them.
- */
-export function resolveCollisions(
-  nodes: readonly NetNode[],
-  gap: number = NODE_GAP,
-  fixed: ReadonlySet<string> = new Set(),
-): NetNode[] {
-  const ordered = [...nodes].sort((left, right) => {
-    const leftFixed = fixed.has(left.id) ? 0 : 1
-    const rightFixed = fixed.has(right.id) ? 0 : 1
-    return leftFixed - rightFixed || left.y - right.y || left.x - right.x
-  })
-  const placed: NetNode[] = []
-  for (const node of ordered) {
-    if (fixed.has(node.id)) {
-      // The reader put it there on purpose; fixed nodes are never moved.
-      placed.push(node)
-      continue
-    }
-    let y = node.y
-    for (let guard = 0; guard <= placed.length; guard += 1) {
-      const blockers = placed.filter((other) =>
-        other.x < node.x + node.w + gap
-        && other.x + other.w + gap > node.x
-        && y < other.y + other.h + gap
-        && y + node.h + gap > other.y)
-      if (blockers.length === 0) break
-      y = Math.max(...blockers.map((other) => other.y + other.h)) + gap
-    }
-    placed.push(y === node.y ? node : { ...node, y })
-  }
-  return placed
-}
 
 /** Deterministic layered layout — no physics, so the same build always draws the same graph. */
 export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
@@ -251,7 +217,7 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     }
   })
 
-  const placedNodes = resolveCollisions(nodes)
+  const placedNodes = nodes
   const height = Math.max(
     PAD * 2,
     placedNodes.reduce((bottom, node) => Math.max(bottom, node.y + node.h), 0) + PAD,
@@ -271,6 +237,39 @@ export function buildLayout(snapshot: AcpInspectSnapshot): NetLayout {
     width: COL_X.block + tiers.length * (NODE_W.block + BLOCK_GAP) - BLOCK_GAP + PAD,
     height,
   }
+}
+
+/**
+ * Stable block slots across refreshes. The naive layout re-indexes every tier
+ * from the top, so one new compression would shift EVERY existing block upward.
+ * This allocator keeps an existing block's row forever, gives a new block the
+ * smallest freed row in its tier, and only compacts on "恢复布局".
+ */
+export function applyStableBlockSlots(layout: NetLayout, slots: Map<string, BlockSlot>): NetLayout {
+  const present = new Set<string>()
+  for (const node of layout.nodes) {
+    if (node.kind === 'block' && node.block !== undefined) present.add(node.block.id)
+  }
+  for (const id of [...slots.keys()]) {
+    if (!present.has(id)) slots.delete(id)
+  }
+  const nodes = layout.nodes.map((node) => ({ ...node }))
+  for (const node of nodes) {
+    if (node.kind !== 'block' || node.block === undefined) continue
+    const tier = node.block.tier === 2 || node.block.tier === 3 ? node.block.tier : 1
+    let slot = slots.get(node.block.id)
+    if (slot === undefined || slot.tier !== tier) {
+      const used = new Set<number>()
+      for (const entry of slots.values()) if (entry.tier === tier) used.add(entry.index)
+      let index = 0
+      while (used.has(index)) index += 1
+      slot = { tier, index }
+      slots.set(node.block.id, slot)
+    }
+    node.y = PAD + slot.index * PITCH.block
+  }
+  const bottom = nodes.reduce((max, node) => Math.max(max, node.y + node.h), 0)
+  return { ...layout, nodes, height: Math.max(520, bottom + PAD) }
 }
 
 function curve(x1: number, y1: number, x2: number, y2: number): string {
@@ -405,10 +404,36 @@ export function CompressionNetwork(props: {
   initialView?: { x: number; y: number; z: number }
 }): ReactElement {
   const { snapshot, sessionId } = props
-  const layout = useMemo(() => buildLayout(snapshot), [snapshot])
+  const baseLayout = useMemo(() => buildLayout(snapshot), [snapshot])
+  const blockSlotsRef = useRef(new Map<string, BlockSlot>())
+  const [slotEpoch, setSlotEpoch] = useState(0)
+  const layout = useMemo(
+    () => applyStableBlockSlots(baseLayout, blockSlotsRef.current),
+    [baseLayout, slotEpoch],
+  )
   const [moved, setMoved] = useState<Record<string, { x: number; y: number }>>({})
   const movedRef = useRef<Record<string, { x: number; y: number }>>({})
   useEffect(() => { movedRef.current = moved }, [moved])
+  const seenBlocksRef = useRef<Set<string> | null>(null)
+  const [newBlocks, setNewBlocks] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    const ids = new Set(
+      layout.nodes
+        .filter((node) => node.kind === 'block' && node.block !== undefined)
+        .map((node) => node.block!.id),
+    )
+    const seen = seenBlocksRef.current
+    if (seen === null) {
+      seenBlocksRef.current = ids
+      return undefined
+    }
+    const added = [...ids].filter((id) => !seen.has(id))
+    seenBlocksRef.current = ids
+    if (added.length === 0) return undefined
+    setNewBlocks(new Set(added))
+    const timer = window.setTimeout(() => setNewBlocks(new Set()), 8000)
+    return () => window.clearTimeout(timer)
+  }, [layout])
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [pinnedId, setPinnedId] = useState<string | null>(null)
   const initialView = props.initialView ?? { x: 0, y: 0, z: 1 }
@@ -419,11 +444,7 @@ export function CompressionNetwork(props: {
     [focusId, layout, snapshot],
   )
   const placed = useMemo(
-    () => resolveCollisions(
-      layout.nodes.map((node) => ({ ...node, ...(moved[node.id] ?? {}) })),
-      NODE_GAP,
-      new Set(Object.keys(moved)),
-    ),
+    () => layout.nodes.map((node) => ({ ...node, ...(moved[node.id] ?? {}) })),
     [layout, moved],
   )
   const byId = useMemo(() => new Map(placed.map((node) => [node.id, node])), [placed])
@@ -502,6 +523,26 @@ export function CompressionNetwork(props: {
     }
     apply()
   }, [apply, canvasHeight, layout.width])
+
+  /**
+   * One-click restore: forget every dragged node position and return to the
+   * fitted, un-messed layout. The clean state is written back to localStorage.
+   */
+  const restore = useCallback(() => {
+    blockSlotsRef.current.clear()
+    setSlotEpoch((epoch) => epoch + 1)
+    setNewBlocks(new Set())
+    movedRef.current = {}
+    setMoved({})
+    userViewRef.current = false
+    try {
+      localStorage.removeItem(storageKey)
+    } catch {
+      /* ignore */
+    }
+    // Fit after the cleared positions have rendered (canvasHeight may shrink).
+    window.requestAnimationFrame(() => fit())
+  }, [fit, storageKey])
 
   // The panel polls the inspect route every 5s; a compression changes the canvas
   // dimensions. A passive reader follows the new graph (auto-fit); a reader who
@@ -726,6 +767,7 @@ export function CompressionNetwork(props: {
     else if (event.key === '+' || event.key === '=') { zoomBy(1.2); return }
     else if (event.key === '-') { zoomBy(1 / 1.2); return }
     else if (event.key === '0') { fit(); return }
+    else if (event.key === 'r' || event.key === 'R') { restore(); return }
     else return
     event.preventDefault()
     apply()
@@ -763,12 +805,23 @@ export function CompressionNetwork(props: {
     h('div', { className: 'acp-net-shell' },
       h('header', { className: 'acp-net-toolbar' },
         h('b', null, '压缩网络'),
-        h('span', { className: 'acp-net-hint' }, '拖拽平移 · 滚轮缩放 · 拖节点改位 · 点击固定 · 双击适配'),
+        h('span', { className: 'acp-net-hint' }, '拖拽平移 · 滚轮缩放 · 拖节点改位 · 点击固定 · 双击适配 · R 恢复布局'),
         h('div', { className: 'acp-net-actions' },
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1.2) }, '+'),
           h('button', { className: 'acp-net-btn', onClick: () => zoomBy(1 / 1.2) }, '−'),
           h('button', { className: 'acp-net-btn', onClick: fit }, '适配'),
-          h('button', { className: 'acp-net-btn', onClick: () => { movedRef.current = {}; setMoved({}); viewRef.current = { x: 0, y: 0, z: 1 }; apply(); fit() } }, '重置'),
+          newBlocks.size > 0
+            ? h('button', {
+              className: 'acp-net-btn acp-net-newbtn',
+              title: '画布刷新后新增的已压块；点击适配到新布局',
+              onClick: () => { fit(); setNewBlocks(new Set()) },
+            }, `新增 ${String(newBlocks.size)} 块 · 定位`)
+            : null,
+          h('button', {
+            className: 'acp-net-btn',
+            title: '清除所有拖动位置，恢复未打乱的布局与适配视图（快捷键 R）',
+            onClick: restore,
+          }, '恢复布局'),
           h('button', { className: 'acp-net-btn', onClick: toggleFullscreen }, '全屏'),
           h('button', { className: 'acp-net-btn acp-net-close', onClick: props.onClose }, '关闭'))),
       h('div', { className: 'acp-net-body' },
@@ -817,7 +870,7 @@ export function CompressionNetwork(props: {
             return h('div', {
               key: node.id,
               'data-net-node': node.id,
-              className: `acp-net-node acp-net-${node.kind}${node.block === undefined ? '' : ` acp-net-tier-${String(node.block.tier)}`}${on ? ' on' : ''}${node.id === focusId ? ' focus' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
+              className: `acp-net-node acp-net-${node.kind}${node.block === undefined ? '' : ` acp-net-tier-${String(node.block.tier)}`}${node.block !== undefined && newBlocks.has(node.block.id) ? ' new' : ''}${on ? ' on' : ''}${node.id === focusId ? ' focus' : ''}${node.id === pinnedId ? ' pinned' : ''}${moved[node.id] === undefined ? '' : ' moved'}`,
               style: { left: `${String(node.x)}px`, top: `${String(node.y)}px`, width: `${String(node.w)}px`, height: `${String(node.h)}px` },
               onPointerEnter: () => setHoverId(node.id),
               onPointerLeave: () => setHoverId((current) => (current === node.id ? null : current)),

@@ -38,6 +38,10 @@ interface NetEdge {
     readonly to: string;
     readonly kind: 'owns' | 'sweep' | 'covers' | 'parent';
 }
+export interface BlockSlot {
+    readonly tier: number;
+    readonly index: number;
+}
 export interface NetLayout {
     readonly nodes: readonly NetNode[];
     readonly edges: readonly NetEdge[];
@@ -48,14 +52,15 @@ export interface NetLayout {
     readonly width: number;
     readonly height: number;
 }
-/**
- * Collision volume: nodes sharing a column may never overlap — each one owns its
- * box plus {@link NODE_GAP} of empty space. Fixed ids (a node the reader just
- * dragged) keep their exact y; the rest are pushed down around them.
- */
-export declare function resolveCollisions(nodes: readonly NetNode[], gap?: number, fixed?: ReadonlySet<string>): NetNode[];
 /** Deterministic layered layout — no physics, so the same build always draws the same graph. */
 export declare function buildLayout(snapshot: AcpInspectSnapshot): NetLayout;
+/**
+ * Stable block slots across refreshes. The naive layout re-indexes every tier
+ * from the top, so one new compression would shift EVERY existing block upward.
+ * This allocator keeps an existing block's row forever, gives a new block the
+ * smallest freed row in its tier, and only compacts on "恢复布局".
+ */
+export declare function applyStableBlockSlots(layout: NetLayout, slots: Map<string, BlockSlot>): NetLayout;
 /** Forward, backward (tier parent to an earlier tier) or same-column links. */
 export declare function linkPath(from: NetNode, to: NetNode): string;
 export declare function CompressionNetwork(props: {
